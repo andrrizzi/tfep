@@ -1,0 +1,26 @@
+name: test
+channels:
+
+  - conda-forge
+
+  - defaults
+dependencies:
+    # Base depends
+  - python
+  - pip
+
+    # Testing
+  - pytest
+  - pytest-cov
+  - codecov
+
+    # External packages.
+  - mdanalysis
+  - numpy
+  - pint
+  - pytorch
+
+    # Pip-only installs
+  #- pip:
+  #  - codecov
+
