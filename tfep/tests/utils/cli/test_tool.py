@@ -22,6 +22,47 @@ from tfep.utils.cli.tool import CLITool, KeyValueOption, FlagOption, AbsolutePat
 
 
 # =============================================================================
+# TEST UTILITIES
+# =============================================================================
+
+def check_command(cmd, executable, args=None, flags=None, kwargs=None):
+    """Compares commands where keyword arguments can be in different order."""
+    # Default arguments.
+    if args is None:
+        args = []
+    if flags is None:
+        flags = []
+    if kwargs is None:
+        kwargs = {}
+
+    # Check executable and args are in the first and last positions.
+    assert cmd[0] == executable
+    if len(args) > 0:
+        assert cmd[-len(args):] == args
+
+    # Make a copy of the command with only flags and kwargs.
+    if len(args) > 0:
+        cmd = cmd[1:-len(args)]
+    else:
+        cmd = cmd[1:]
+
+    # Search flags.
+    for flag in flags:
+        flag_idx = cmd.index(flag)
+        del cmd[flag_idx]
+
+    # For each kwarg, search its position and check
+    # that the next one is the correct value.
+    for k, v in kwargs.items():
+        k_idx = cmd.index(k)
+        assert cmd.pop(k_idx + 1) == v
+        del cmd[k_idx]
+
+    # Check that all arguments have been found.
+    assert len(cmd) == 0
+
+
+# =============================================================================
 # TESTS
 # =============================================================================
 
@@ -36,16 +77,26 @@ def test_unknown_kwarg():
 
 
 def test_key_value_option_tool():
-    """The ``KeyValueOption`` descriptor converts values to strings.."""
+    """The ``KeyValueOption`` descriptor converts values to strings.
+
+    Also checks that when the option is not given, it is not added to the command.
+
+    """
     class Grep(CLITool):
         EXECUTABLE_PATH = 'grep'
         patterns_file_path = KeyValueOption('-f')
         max_count = KeyValueOption('-m')
+        not_passed = KeyValueOption('-n')
 
-    grep_cmd = Grep('input.txt', 2,
-                    patterns_file_path='my_patterns.txt', max_count=3)
+    grep_cmd = Grep('input.txt', 2, max_count=3,
+                    patterns_file_path='my_patterns.txt')
     subprocess_cmd = grep_cmd.to_subprocess()
-    assert set(subprocess_cmd) == set(['grep', '-f', 'my_patterns.txt', '-m', '3', 'input.txt', '2'])
+    check_command(
+        subprocess_cmd,
+        executable='grep',
+        args=['input.txt', '2'],
+        kwargs={'-f': 'my_patterns.txt', '-m': '3'}
+    )
 
 
 def test_absolute_path_option():
@@ -61,12 +112,12 @@ def test_absolute_path_option():
     assert grep_cmd.patterns_file_path == expected_path
 
 
-@pytest.mark.parametrize('value,expected_cmd', [
-    (True, ['mytool', '-a', '-b', '--c']),
-    (None, ['mytool']),
-    (False, ['mytool', '-no-a', '--noooc'])
+@pytest.mark.parametrize('value,expected_flags', [
+    (True, ['-a', '-b', '--c']),
+    (None, []),
+    (False, ['-no-a', '--noooc'])
 ])
-def test_flag_option(value, expected_cmd):
+def test_flag_option(value, expected_flags):
     """Test the ``FlagOption`` descriptor.
 
     This tests that:
@@ -83,7 +134,7 @@ def test_flag_option(value, expected_cmd):
         prepended_double = FlagOption('--c', prepend_to_false='nooo')
 
     subprocess_cmd = MyTool(prepended=value, unprepended=value, prepended_double=value).to_subprocess()
-    assert set(subprocess_cmd) == set(expected_cmd)
+    check_command(subprocess_cmd, executable='mytool', flags=expected_flags)
 
 
 def test_flag_option_sanitization():

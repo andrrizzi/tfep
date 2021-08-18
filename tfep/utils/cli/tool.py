@@ -24,7 +24,7 @@ import os
 
 
 # =============================================================================
-# CLITool
+# CLITOOL
 # =============================================================================
 
 class CLITool:
@@ -33,7 +33,7 @@ class CLITool:
     The class mainly fulfills two roles:
 
     1. Encapsulates input and outputs of a command and provide a command
-       specification that can be understood by :class:`~tfep.utils.cli.Launcher`.
+       specification that can be understood by :class:`tfep.utils.cli.Launcher`.
     2. Converts and sanitizes Python types to string command line parameters.
     3. Provides CLI interfaces with readable parameter names avoiding abbreviations
        that makes the code harder to read.
@@ -48,6 +48,14 @@ class CLITool:
 
     The path to the executable (or simply the executable name if it is in the
     system path) must be given in the class variable ``EXECUTABLE_PATH``.
+
+    Once defined and instantiated, a command can be run either using a
+    :class:`~tfep.utils.cli.Launcher` class or the standard module ``subprocess``
+    after building the command with the :func:`.CLITool.to_subprocess` method.
+
+    See Also
+    --------
+    `tfep.utils.cli.Launcher` : Launch and run commands.
 
     Examples
     --------
@@ -125,7 +133,7 @@ class CLITool:
         return options_descriptors
 
 # =============================================================================
-# CLI options
+# CLI OPTIONS
 # =============================================================================
 
 class CLIOption(abc.ABC):
@@ -181,8 +189,10 @@ class KeyValueOption(CLIOption):
 
     def to_subprocess(self, owner_instance):
         """Implements ``CLIOption.to_subprocess()``."""
-        str_value = str(getattr(owner_instance, self.private_name))
-        return [self.option_name, str_value]
+        value = getattr(owner_instance, self.private_name, None)
+        if value is None:
+            return []
+        return [self.option_name, str(value)]
 
 
 class AbsolutePathOption(KeyValueOption):
