@@ -6,7 +6,7 @@
 # =============================================================================
 
 """
-Test objects and function in the module tfep.dataset.dataset.
+Test objects and function in the module ``tfep.dataset.dataset``.
 """
 
 
