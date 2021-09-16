@@ -47,11 +47,18 @@ class CLITool:
     Ordered arguments must be strings are appended to the command as strings.
 
     The path to the executable (or simply the executable name if it is in the
-    system path) must be given in the class variable ``EXECUTABLE_PATH``.
+    system path) can be set globally through the class variable ``EXECUTABLE_PATH``,
+    or it can be specific to the command instance as specified in the constructor.
 
     Once defined and instantiated, a command can be run either using a
     :class:`~tfep.utils.cli.Launcher` class or the standard module ``subprocess``
     after building the command with the :func:`.CLITool.to_subprocess` method.
+
+    Parameters
+    ----------
+    executable_path : str, optional
+        The executable path associated to the instance of the command. If this
+        is not specified, the ``EXECUTABLE_PATH`` class variable is used instead.
 
     See Also
     --------
@@ -91,8 +98,9 @@ class CLITool:
 
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, executable_path=None, **kwargs):
         self.args = args
+        self._executable_path = executable_path
 
         # Check that keyword arguments match.
         options_descriptions = self._get_defined_options()
@@ -103,6 +111,17 @@ class CLITool:
             # Set the value.
             setattr(self, k, v)
 
+    @property
+    def executable_path(self):
+        """The path to the command executable to run."""
+        if self._executable_path is None:
+            return self.EXECUTABLE_PATH
+        return self._executable_path
+
+    @executable_path.setter
+    def executable_path(self, value):
+        self._executable_path = value
+
     def to_subprocess(self):
         """Convert the command to a list that can be run with the ``subprocess`` module.
 
@@ -112,7 +131,7 @@ class CLITool:
             The command in subprocess format. For example ``['grep', '-v']``.
 
         """
-        subprocess_cmd = [self.EXECUTABLE_PATH]
+        subprocess_cmd = [self.executable_path]
 
         # Append all options.
         for option_descriptor in self._get_defined_options().values():
