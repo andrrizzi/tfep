@@ -25,7 +25,7 @@ from tfep.utils.cli.tool import CLITool, KeyValueOption, FlagOption, AbsolutePat
 # TEST UTILITIES
 # =============================================================================
 
-def check_command(cmd, executable, args=None, flags=None, kwargs=None):
+def check_command(cmd, executable, subprogram=None, args=None, flags=None, kwargs=None):
     """Compares commands where keyword arguments can be in different order."""
     # Default arguments.
     if args is None:
@@ -40,11 +40,18 @@ def check_command(cmd, executable, args=None, flags=None, kwargs=None):
     if len(args) > 0:
         assert cmd[-len(args):] == args
 
+    # Check subprogram.
+    if subprogram is not None:
+        assert cmd[1] == subprogram
+        first_kwarg_idx = 2
+    else:
+        first_kwarg_idx = 1
+
     # Make a copy of the command with only flags and kwargs.
     if len(args) > 0:
-        cmd = cmd[1:-len(args)]
+        cmd = cmd[first_kwarg_idx:-len(args)]
     else:
-        cmd = cmd[1:]
+        cmd = cmd[first_kwarg_idx:]
 
     # Search flags.
     for flag in flags:
@@ -74,6 +81,27 @@ def test_unknown_kwarg():
 
     with pytest.raises(AttributeError, match='undefined'):
         MyTool(undefined=5)
+
+
+def test_executable_subprogram():
+    """Setting the SUBPROGRAM class variable result in the correct command."""
+    class MyTool(CLITool):
+        EXECUTABLE_PATH = 'mytool'
+        SUBPROGRAM = 'subprog'
+        mypar = KeyValueOption('-p')
+
+    cmd = MyTool('orderedarg', mypar='keywordarg')
+    subprocess_cmd = cmd.to_subprocess()
+
+    print(subprocess_cmd)
+
+    check_command(
+        subprocess_cmd,
+        executable='mytool',
+        subprogram='subprog',
+        args=['orderedarg'],
+        kwargs={'-p': 'keywordarg'}
+    )
 
 
 def test_key_value_option_tool():

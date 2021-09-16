@@ -50,6 +50,11 @@ class CLITool:
     system path) can be set globally through the class variable ``EXECUTABLE_PATH``,
     or it can be specific to the command instance as specified in the constructor.
 
+    To associate a command to a particular subprogram, you can use the
+    ``SUBPROGRAM`` class variable. E.g., for the gmx program in the GROMACS suite,
+    creating ``CLITool`` that prepare a ``gmx mdrun ...`` command requires
+     setting ``SUBPROGRAM = 'mdrun'``.
+
     Once defined and instantiated, a command can be run either using a
     :class:`~tfep.utils.cli.Launcher` class or the standard module ``subprocess``
     after building the command with the :func:`.CLITool.to_subprocess` method.
@@ -98,6 +103,8 @@ class CLITool:
 
     """
 
+    SUBPROGRAM = None
+
     def __init__(self, *args, executable_path=None, **kwargs):
         self.args = args
         self._executable_path = executable_path
@@ -132,6 +139,10 @@ class CLITool:
 
         """
         subprocess_cmd = [self.executable_path]
+
+        # Add subprogram
+        if self.SUBPROGRAM is not None:
+            subprocess_cmd.append(self.SUBPROGRAM)
 
         # Append all options.
         for option_descriptor in self._get_defined_options().values():
