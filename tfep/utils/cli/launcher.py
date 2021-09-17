@@ -24,6 +24,7 @@ import contextlib
 import subprocess
 
 from tfep.utils.cli import CLITool, KeyValueOption
+from tfep.utils.misc import temporary_cd
 
 
 # =============================================================================
@@ -321,9 +322,11 @@ class SRunLauncher(Launcher):
 
         Parameters
         ----------
-        commands : List[str] or tfep.utils.cli.CLITool
+        *commands
             One or more commands to execute, either in the same list format used
             by ``subprocess.Popen`` or as a :class:`~tfep.utils.cli.CLITool`.
+        **kwargs
+            Other keyword arguments to pass to :class:`.Launcher.run`.
 
         Returns
         -------
@@ -359,9 +362,12 @@ class SRunLauncher(Launcher):
         # Prepend srun to all commands.
         srun_commands = self._create_srun_commands(commands)
 
-        # Create a srun configuration file if necessary.
+        # Create a srun configuration file if necessary. The path must be
+        # relative to the working directory, which can be changed with the
+        # cwd keyword argument.
         if len(commands) > 1 and self.multiprog:
-            self._create_multiprog_config_file(commands)
+            with temporary_cd(kwargs.get('cwd', None)):
+                self._create_multiprog_config_file(srun_commands)
 
         super().run(*srun_commands, **kwargs)
 
