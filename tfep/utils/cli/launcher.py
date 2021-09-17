@@ -367,7 +367,7 @@ class SRunLauncher(Launcher):
         # cwd keyword argument.
         if len(commands) > 1 and self.multiprog:
             with temporary_cd(kwargs.get('cwd', None)):
-                self._create_multiprog_config_file(srun_commands)
+                self._create_multiprog_config_file(commands)
 
         super().run(*srun_commands, **kwargs)
 
@@ -423,10 +423,10 @@ class SRunLauncher(Launcher):
         return [srun.to_subprocess()]
 
     def _create_multiprog_config_file(self, commands):
-        """Create the configuration file to be passed to the --multi-prog option.
+        """Create the configuration file to be passed to the --multi-prog option."""
+        # Convert commands to list format.
+        commands = [cmd if not isinstance(cmd, CLITool) else cmd.to_subprocess() for cmd in commands]
 
-        ``commands`` must already be a list of commands in list format (not CLITool).
-        """
         # Make sure n_tasks is a list.
         n_tasks = _ensure_lists(len(commands), [self.n_tasks])[0]
 
