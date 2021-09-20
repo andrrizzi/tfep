@@ -760,7 +760,7 @@ def _run_psi4(
     -------
     energies : pint.Quantity, optional
         If ``batch_positions`` was not given or if it is of shape ``(n_atoms, 3)``,
-        this is a single float. Otherwise, ``potentials[i]`` is the potential of
+        this is a single float. Otherwise, ``energies[i]`` is the potential of
         configuration ``batch_positions[i]``.
 
         This is returned only if ``return_energy`` is ``True``.
@@ -869,42 +869,6 @@ def _run_psi4(
         forces = batch_results[0]
     if return_wfn:
         wavefunctions = batch_results[-1]
-
-    # # Determine common kwargs for each batch sample. If we need both energies
-    # # and forces, we need to return the wavefunction (storing the energies) anyway.
-    # more_kwargs = {'name': name}
-    # more_kwargs['return_wfn'] = True if return_force and return_energy else return_wfn
-    #
-    # # Run serially all batches.
-    # for batch_idx, (positions, ref, write_orb, restart) in enumerate(zip(
-    #         batch_positions_bohr, ref_wfn, write_orbitals, restart_file)):
-    #     # If positions is None, then we need to use the molecule's internal geometry.
-    #     if positions is not None:
-    #         molecule.set_geometry(psi4.core.Matrix.from_array(positions))
-    #         molecule.update_geometry()
-    #
-    #     # We cannot pass restart_file = None as psi4 will crash.
-    #     if restart is None:
-    #         even_more_kwargs = {}
-    #     else:
-    #         even_more_kwargs = {'restart_file': restart}
-    #
-    #     # Run the function.
-    #     result = func(ref_wfn=ref, write_orbitals=write_orb,
-    #                   **kwargs, **more_kwargs, **even_more_kwargs)
-    #
-    #     if more_kwargs['return_wfn']:
-    #         result_wfn = result[1]
-    #         result = result[0]
-    #     if return_wfn:
-    #         wavefunctions.append(result_wfn)
-    #     if return_force:
-    #         # If func is psi4.gradient, the result is a matrix.
-    #         forces[batch_idx] = result.to_array()
-    #         if return_energy:
-    #             energies[batch_idx] = result_wfn.energy()
-    #     elif return_energy:
-    #         energies[batch_idx] = result
 
     # Prepare returned values and handle units.
     returned_values = []
