@@ -837,22 +837,6 @@ def _run_psi4(
     if use_ref_wfn and use_restart_file:
             raise ValueError('Cannot pass both ref_wfn and restart_file.')
 
-    # Determine the number of atoms.
-    if batch_positions is not None:
-        n_atoms = batch_positions_bohr.shape[1]
-    elif molecule is not None:
-        n_atoms = molecule.natom()
-    else:
-        n_atoms = psi4.core.get_active_molecule().natom()
-
-    # Initialize return values.
-    if return_energy:
-        energies = np.empty((batch_size,))
-    if return_force:
-        forces = np.empty((batch_size, n_atoms, 3))
-    if return_wfn:
-        wavefunctions = []
-
     # Run all batches with the provided parallelization strategy.
     # We use functools.partial to encode the arguments that are common to all tasks.
     task = functools.partial(_run_psi4_task, func, molecule, name, return_energy, return_force, return_wfn, kwargs)
