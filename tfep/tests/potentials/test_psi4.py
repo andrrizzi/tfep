@@ -76,6 +76,12 @@ def create_water_molecule(batch_size=None, **kwargs):
 def pool_process_initializer(psi4_config):
     """Initialize a subprocess for pool parallelization."""
     molecule, _ = create_water_molecule()
+
+    # Use a different scratch dir for each process.
+    if 'psi4_scratch_dir_path' in psi4_config:
+        subdir = os.path.join(psi4_config['psi4_scratch_dir_path'], str(os.getpid()))
+        os.makedirs(subdir, exist_ok=True)
+        psi4_config['psi4_scratch_dir_path'] = subdir
     configure_psi4(active_molecule=molecule, **psi4_config)
 
 
@@ -85,12 +91,6 @@ def parallelization_strategy(strategy_name, psi4_config):
     if strategy_name == 'serial':
         yield SerialStrategy()
     else:
-        # Use a different scratch dir for each process.
-        if 'psi4_scratch_dir_path' in psi4_config:
-            subdir = os.path.join(psi4_config['psi4_scratch_dir_path'], str(os.getpid()))
-            os.makedirs(subdir, exist_ok=True)
-            psi4_config['psi4_scratch_dir_path'] = subdir
-
         # Keep the pool of processes open until the contextmanager is left.
         with torch.multiprocessing.Pool(2, pool_process_initializer, initargs=[psi4_config]) as p:
             yield ProcessPoolStrategy(p)
