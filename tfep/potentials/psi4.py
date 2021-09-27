@@ -21,7 +21,8 @@ import numpy as np
 import pint
 import torch
 
-from tfep.utils.geometry import flattened_to_standard, standard_to_flattened
+from tfep.utils.geometry import flattened_to_standard
+from tfep.utils.misc import energies_array_to_tensor, forces_array_to_tensor
 from tfep.utils.parallel import SerialStrategy
 
 
@@ -214,7 +215,6 @@ class PotentialPsi4(torch.nn.Module):
         self.precompute_gradient = precompute_gradient
         self.parallelization_strategy = parallelization_strategy
         self.kwargs = kwargs
-
 
     def forward(self, batch_positions):
         """Compute a differential potential energy for a batch of configurations.
@@ -518,8 +518,8 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
             energies, forces = _run_psi4(return_force=True, **run_psi4_kwargs)
 
             # Save the variables used to compute the gradient in backpropagation.
-            forces = PotentialEnergyPsi4Func._convert_forces_to_tensor(
-                forces, energy_unit, positions_unit, dtype=batch_positions.dtype)
+            forces = forces_array_to_tensor(forces, positions_unit, energy_unit,
+                                            dtype=batch_positions.dtype)
             ctx.save_for_backward(forces)
         else:
             # Compute the potential energies. Save the wavefunction so that
@@ -541,16 +541,9 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
             ctx.parallelization_strategy = parallelization_strategy
             ctx.kwargs = kwargs
 
-        # Convert units. Psi4 returns the energy in Hartrees.
-        if energy_unit is not None:
-            try:
-                # Convert to Hartree/mol.
-                energies = (energies * energy_unit._REGISTRY.avogadro_constant).to(energy_unit)
-            except TypeError:
-                energies = energies.to(energy_unit)
-
-        # Reconvert Pint array to tensor.
-        return torch.tensor(energies.magnitude, dtype=batch_positions.dtype)
+        # Convert to unitless tensor.
+        energies = energies_array_to_tensor(energies, energy_unit, batch_positions.dtype)
+        return energies
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -577,28 +570,13 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
                     parallelization_strategy=ctx.parallelization_strategy,
                     **ctx.kwargs,
                 )
-                forces = PotentialEnergyPsi4Func._convert_forces_to_tensor(
-                    forces, ctx.energy_unit, ctx.positions_unit, dtype=grad_output.dtype)
+                forces = forces_array_to_tensor(
+                    forces, ctx.positions_unit, ctx.energy_unit, dtype=grad_output.dtype)
 
             # Accumulate gradient.
             grad_input[0] = forces * grad_output[:, None]
 
         return tuple(grad_input)
-
-    @staticmethod
-    def _convert_forces_to_tensor(forces, energy_unit, positions_unit, dtype):
-        """Helper function to convert the Psi4 forces to a PyTorch tensor."""
-        if (energy_unit is not None) and (positions_unit is not None):
-            force_unit = energy_unit / positions_unit
-            try:
-                # Convert to Hartree/(Bohr mol).
-                forces = (forces * force_unit._REGISTRY.avogadro_constant).to(force_unit)
-            except TypeError:
-                forces = forces.to(force_unit)
-
-        # The tensor must be unitless and with shape (batch_size, n_atoms*3).
-        forces = standard_to_flattened(forces)
-        return torch.tensor(forces.magnitude, dtype=dtype)
 
 
 def potential_energy_psi4(
