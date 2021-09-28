@@ -192,7 +192,7 @@ class CLIOption(abc.ABC):
         if owner_instance is None:
             # This was call from the owner class. Return the descriptor object.
             return self
-        return getattr(owner_instance, self.private_name)
+        return getattr(owner_instance, self.private_name, None)
 
     def __set__(self, owner_instance, value):
         setattr(owner_instance, self.private_name, value)
