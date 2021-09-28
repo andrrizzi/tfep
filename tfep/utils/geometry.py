@@ -64,7 +64,7 @@ def standard_to_flattened(positions):
     flattened_to_standard
 
     """
-    n_atoms = positions.shape[-1]
+    n_atoms = positions.shape[-2]
     if len(positions.shape) > 2:
         batch_size = positions.shape[0]
         flattened_shape = (batch_size, n_atoms*3)
