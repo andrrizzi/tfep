@@ -35,6 +35,14 @@ from tfep.potentials.psi4 import (
 # GLOBAL VARIABLES
 # =============================================================================
 
+# The module requires a Python installation of Psi4.
+try:
+    import psi4
+except ImportError:
+    PSI4_INSTALLED = False
+else:
+    PSI4_INSTALLED = True
+
 # Common unit registry for all tests.
 _UREG = pint.UnitRegistry()
 
@@ -100,6 +108,7 @@ def parallelization_strategy(strategy_name, psi4_config):
 # TESTS
 # =============================================================================
 
+@pytest.mark.skipif(not PSI4_INSTALLED, reason='requires a Python installation of Psi4')
 @pytest.mark.parametrize('batch_size', [None, 1, 2])
 def test_run_psi4_energy(batch_size):
     """Test that the calculation of energies with _run_psi4.
@@ -171,6 +180,7 @@ def test_run_psi4_energy(batch_size):
             assert isinstance(wfn[0], psi4.core.Wavefunction)
 
 
+@pytest.mark.skipif(not PSI4_INSTALLED, reason='requires a Python installation of Psi4')
 @pytest.mark.parametrize('batch_size,name', [
     (None, 'scf'),
     (1, 'scf'),
@@ -282,6 +292,7 @@ def test_run_psi4_force(batch_size, name):
     assert np.all(forces.magnitude != 0)
 
 
+@pytest.mark.skipif(not PSI4_INSTALLED, reason='requires a Python installation of Psi4')
 @pytest.mark.parametrize('name', ['scf', 'mp2'])
 def test_potential_energy_psi4_gradcheck(name):
     """Test that potential_energy_psi4 implements the correct gradient."""
