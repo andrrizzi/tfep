@@ -213,6 +213,20 @@ class SRunTool(CLITool):
     n_cpus_per_task = KeyValueOption('--cpus-per-task')
     multiprog_config_file_path = KeyValueOption('--multi-prog')
 
+    def to_subprocess(self):
+        # For some reason, srun crashes if --multi-prog is not the last keyword
+        # arguments so we overwrite CLITool's method to fix the order.
+        cmd = super().to_subprocess()
+
+        # Search the --multi-prog option.
+        if self.multiprog_config_file_path is not None:
+            multi_prog_idx = cmd.index('--multi-prog')
+            if multi_prog_idx != len(cmd)-2:
+                # Move --multi-prog at the end.
+                cmd = cmd[:multi_prog_idx] + cmd[multi_prog_idx+2:] + cmd[multi_prog_idx:multi_prog_idx+2]
+
+        return cmd
+
 
 class SRunLauncher(Launcher):
     """Launch a command through SLURM's srun.
@@ -243,7 +257,7 @@ class SRunLauncher(Launcher):
         The number of cpus per task to pass to ``srun``. If multiple commands
         are executed in parallel, it is possible to specify the number of cpus
         per task for each command as a list.
-    multiprog_ranks : bool, optional
+    multiprog : bool, optional
         If ``True`` multiple commands are run in parallel using the ``--multi-prog``
         argument. In this case, ``srun`` is invoked only once, and thus ``n_nodes``
         ``n_tasks_per_node``, etc. must be integers.
