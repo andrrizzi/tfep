@@ -14,7 +14,14 @@ Test objects and function in the module ``tfep.potentials.psi4``.
 # GLOBAL IMPORTS
 # =============================================================================
 
-# DO NOT IMPORT PSI4 HERE! Psi4 is an optional dependency of tfep.
+# Psi4 is an optional dependency of tfep.
+try:
+    import psi4
+except ImportError:
+    PSI4_INSTALLED = False
+else:
+    PSI4_INSTALLED = True
+
 import contextlib
 import os
 import tempfile
@@ -34,14 +41,6 @@ from tfep.potentials.psi4 import (
 # =============================================================================
 # GLOBAL VARIABLES
 # =============================================================================
-
-# The module requires a Python installation of Psi4.
-try:
-    import psi4
-except ImportError:
-    PSI4_INSTALLED = False
-else:
-    PSI4_INSTALLED = True
 
 # Common unit registry for all tests.
 _UREG = pint.UnitRegistry()
