@@ -20,6 +20,9 @@ dependencies:
   - pint
   - pytorch
 
+    # Optional dependencies (here for completeness to test locally)
+    # - psi4 (this can be found on the psi4 conda channel)
+
     # Pip-only installs
   #- pip:
   #  - codecov
