@@ -224,6 +224,8 @@ def test_prepare_cpmd_command(update_positions):
         new_box_vectors = None
 
     with tempfile.TemporaryDirectory() as tmp_dir_path:
+        tmp_dir_path = os.path.realpath(tmp_dir_path)
+
         # Run the tested function
         new_cpmd_cmd, _ = _prepare_cpmd_command(cpmd_cmd, tmp_dir_path, new_positions, new_box_vectors)
 
