@@ -273,7 +273,7 @@ class FlagOption(CLIOption):
 
     def to_subprocess(self, owner_instance):
         """Implements ``CLIOption.to_subprocess()``."""
-        value = getattr(owner_instance, self.private_name)
+        value = getattr(owner_instance, self.private_name, None)
         if (value is None or (
                 (not value and self.prepend_to_false is None))):
             return []
