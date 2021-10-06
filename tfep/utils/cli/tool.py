@@ -99,7 +99,7 @@ class CLITool:
 
     >>> my_grep_cmd = MyGrep('input.txt', patterns_file_path='my_patterns.txt', max_count=3)
     >>> my_grep_cmd.to_subprocess()
-    ['grep', '-m', '3', '-f' 'my_patterns.txt', 'input.txt']
+    ['grep', '-m', '3', '-f', 'my_patterns.txt', 'input.txt']
 
     """
 
