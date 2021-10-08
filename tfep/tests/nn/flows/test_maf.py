@@ -32,7 +32,15 @@ from ..utils import create_random_input
 # =============================================================================
 
 @pytest.mark.parametrize('dimensions_hidden', [1, 4])
-@pytest.mark.parametrize('dimension_conditioning', [0, 2])
+@pytest.mark.parametrize('conditioning_indices', [
+    [],
+    [0, 1],
+    [0, 3],
+    [1, 3],
+    [0, 4],
+    [2, 4],
+    [3, 4]
+])
 @pytest.mark.parametrize('degrees_in', ['input', 'reversed'])
 @pytest.mark.parametrize('weight_norm', [False, True])
 @pytest.mark.parametrize('split_conditioner', [True, False])
@@ -43,7 +51,7 @@ from ..utils import create_random_input
     NeuralSplineTransformer(x0=torch.tensor(-2), xf=torch.tensor(2), n_bins=3),
     MobiusTransformer(blocks=3, shorten_last_block=True)
 ])
-def test_identity_initialization_MAF(dimensions_hidden, dimension_conditioning, degrees_in,
+def test_identity_initialization_MAF(dimensions_hidden, conditioning_indices, degrees_in,
                                      weight_norm, split_conditioner, transformer):
     """Test that the identity initialization of MAF works.
 
@@ -58,7 +66,7 @@ def test_identity_initialization_MAF(dimensions_hidden, dimension_conditioning, 
     maf = MAF(
         dimension,
         dimensions_hidden,
-        dimension_conditioning=dimension_conditioning,
+        conditioning_indices=conditioning_indices,
         degrees_in=degrees_in,
         weight_norm=weight_norm,
         split_conditioner=split_conditioner,
@@ -79,7 +87,15 @@ def test_identity_initialization_MAF(dimensions_hidden, dimension_conditioning, 
     assert torch.allclose(log_det_J, torch.zeros(batch_size), atol=1e-6)
 
 
-@pytest.mark.parametrize('dimension_conditioning', [0, 2])
+@pytest.mark.parametrize('conditioning_indices', [
+    [],
+    [0, 1],
+    [0, 3],
+    [1, 3],
+    [0, 4],
+    [2, 4],
+    [3, 4]
+])
 @pytest.mark.parametrize('degrees_in', ['input', 'reversed', 'random'])
 @pytest.mark.parametrize('split_conditioner', [True, False])
 @pytest.mark.parametrize('transformer', [
@@ -87,11 +103,12 @@ def test_identity_initialization_MAF(dimensions_hidden, dimension_conditioning, 
     MobiusTransformer(blocks=3, shorten_last_block=True)
 ])
 @pytest.mark.parametrize('weight_norm', [False, True])
-def test_round_trip_MAF(dimension_conditioning, degrees_in, weight_norm, split_conditioner, transformer):
+def test_round_trip_MAF(conditioning_indices, degrees_in, weight_norm, split_conditioner, transformer):
     """Test that the MAF.inverse(MAF.forward(x)) equals the identity."""
     dimension = 5
     dimensions_hidden = 2
     batch_size = 2
+    n_conditioning_dofs = len(conditioning_indices)
 
     # Temporarily set default precision to double to improve comparisons.
     old_dtype = torch.get_default_dtype()
@@ -99,14 +116,14 @@ def test_round_trip_MAF(dimension_conditioning, degrees_in, weight_norm, split_c
 
     # With the Mobius transformer, we need block dependencies.
     if isinstance(transformer, MobiusTransformer):
-        blocks = generate_block_sizes(dimension-dimension_conditioning, transformer.blocks,
+        blocks = generate_block_sizes(dimension-n_conditioning_dofs, transformer.blocks,
                                       transformer.shorten_last_block)
         shorten_last_block = transformer.shorten_last_block
         n_blocks = len(blocks)
     else:
         blocks = 1
         shorten_last_block = False
-        n_blocks = dimension - dimension_conditioning
+        n_blocks = dimension - n_conditioning_dofs
 
     # Make sure the permutation is reproducible.
     if degrees_in == 'random':
@@ -116,7 +133,7 @@ def test_round_trip_MAF(dimension_conditioning, degrees_in, weight_norm, split_c
     # We don't initialize as the identity function to make the test meaningful.
     maf = MAF(
         dimension, dimensions_hidden,
-        dimension_conditioning=dimension_conditioning,
+        conditioning_indices=conditioning_indices,
         degrees_in=degrees_in,
         weight_norm=weight_norm,
         blocks=blocks,
@@ -131,7 +148,7 @@ def test_round_trip_MAF(dimension_conditioning, degrees_in, weight_norm, split_c
 
     # The conditioning features are always left unchanged.
     y, log_det_J = maf.forward(x)
-    assert torch.allclose(x[:, :dimension_conditioning], y[:, :dimension_conditioning])
+    assert torch.allclose(x[:, conditioning_indices], y[:, conditioning_indices])
 
     # Inverting the transformation produces the input vector.
     x_inv, log_det_J_inv = maf.inverse(y)

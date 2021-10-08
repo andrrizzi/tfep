@@ -25,9 +25,13 @@ from ..utils import create_random_input
 # TESTS
 # =============================================================================
 
-@pytest.mark.parametrize('dimension_conditioning', [0, 1, 2])
+@pytest.mark.parametrize('conditioning_indices', [
+    [],
+    [0],
+    [1, 3],
+])
 @pytest.mark.parametrize('weight_norm', [False, True])
-def test_round_trip_PartialFlow(dimension_conditioning, weight_norm):
+def test_round_trip_PartialFlow(conditioning_indices, weight_norm):
     """Test that the PartialFlow.inverse(PartialFlow.forward(x)) equals the identity."""
     dimension = 7
     dimensions_hidden = 2
@@ -41,7 +45,7 @@ def test_round_trip_PartialFlow(dimension_conditioning, weight_norm):
         flows.append(MAF(
             dimension_in=dimension - len(constant_input_indices),
             dimensions_hidden=dimensions_hidden,
-            dimension_conditioning=dimension_conditioning,
+            conditioning_indices=conditioning_indices,
             degrees_in=degrees_in,
             weight_norm=weight_norm,
             initialize_identity=False

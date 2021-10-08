@@ -50,10 +50,10 @@ class MAF(torch.nn.Module):
         where ``out_per_dimension`` is the number of output nodes for each
         input feature. If a list, ``dimensions_hidden[l]`` must be the number
         of nodes in the l-th hidden layer. Default is 1.
-    dimension_conditioning : int, optional
-        If greater than zero the first ``dimension_conditioning`` input
-        features will be used to condition the output of the conditioner,
-        but they won't be affected by the normalizing flow.
+    conditioning_indices : List[int], optional
+        The indices of the input features corresponding to the conditioning
+        features. These features affect the output, but they are not mapped
+        by the flow.
     degrees_in : str or numpy.ndarray, optional
         The degrees to assign to the input/output nodes. Effectively this
         controls the dependencies between variables in the conditioner.
@@ -62,7 +62,7 @@ class MAF(torch.nn.Module):
         be a permutation of ``numpy.arange(0, n_blocks)``, where ``n_blocks``
         is the number of blocks passed to the constructor. If blocks are
         not used, this corresponds to the number of non-conditioning features
-        (i.e., ``dimension_in - dimension_conditioning``). Default is ``'input'``.
+        (i.e., ``dimension_in - len(conditioning_indices)``). Default is ``'input'``.
     degrees_hidden_motif : numpy.ndarray, optional
         The degrees of the hidden nodes of the conditioner are assigned
         using this array in a round-robin fashion. If not given, they
@@ -114,7 +114,7 @@ class MAF(torch.nn.Module):
             self,
             dimension_in,
             dimensions_hidden=1,
-            dimension_conditioning=0,
+            conditioning_indices=None,
             degrees_in='input',
             degrees_hidden_motif=None,
             weight_norm=False,
@@ -145,7 +145,7 @@ class MAF(torch.nn.Module):
                 dimension_in=dimension_in,
                 dimensions_hidden=dimensions_hidden,
                 out_per_dimension=out_per_dimension,
-                dimension_conditioning=dimension_conditioning,
+                conditioning_indices=conditioning_indices,
                 degrees_in=degrees_in,
                 degrees_hidden_motif=degrees_hidden_motif,
                 weight_norm=weight_norm,
@@ -153,10 +153,18 @@ class MAF(torch.nn.Module):
                 shorten_last_block=shorten_last_block,
             ))
 
+        # We cache the indices of the mapped degrees of
+        # freedom which is necessary to forward() and inverse().
+        if conditioning_indices is None or len(conditioning_indices) == 0:
+            self._mapped_indices = None
+        else:
+            conditioning_indices_set = set(conditioning_indices)
+            self._mapped_indices = [i for i in range(dimension_in) if i not in conditioning_indices_set]
+
         # Initialize the log_scale and shift nets to 0.0 so that at
         # the beginning the MAF layer performs the identity function.
         if initialize_identity:
-            dimension_out = dimension_in - dimension_conditioning
+            dimension_out = dimension_in - len(conditioning_indices)
 
             # Determine the conditioner that will make the transformer the identity function.
             identity_conditioner = self._transformer.get_identity_parameters(dimension_out)
@@ -184,6 +192,11 @@ class MAF(torch.nn.Module):
     def dimension_conditioning(self):
         """int: Number of conditioning features."""
         return self._conditioners[0].dimension_conditioning
+
+    @property
+    def conditioning_indices(self):
+        """List[int]: The indices of the conditioning degrees of freedom."""
+        return self._conditioners[0].conditioning_indices
 
     @property
     def degrees_in(self):
@@ -214,44 +227,48 @@ class MAF(torch.nn.Module):
         parameters = self._run_conditioners(x)
 
         # Make sure the conditioning dimensions are not altered.
-        dimension_conditioning = self.dimension_conditioning
-        if dimension_conditioning == 0:
+        if self._mapped_indices is None:
             y, log_det_J = self._transformer(x, parameters)
         else:
             # There are conditioning dimensions.
             y = torch.empty_like(x)
-            y[:, :dimension_conditioning] = x[:, :dimension_conditioning]
-            y[:, dimension_conditioning:], log_det_J = self._transformer(
-                x[:, dimension_conditioning:], parameters)
+
+            conditioning_indices = self.conditioning_indices
+            y[:, conditioning_indices] = x[:, conditioning_indices]
+            y[:, self._mapped_indices], log_det_J = self._transformer(
+                x[:, self._mapped_indices], parameters)
 
         return y, log_det_J
 
     def inverse(self, y):
-        # This is slower because to evaluate x_i we need all x_<i.
-        # For algorithm, see Eq 39 in reference [3] above.
-        dimension_conditioning = self.dimension_conditioning
+        # This is slower than forward because to evaluate x_i we need
+        # all x_<i. For the algorithm, see Eq 39 in reference [3] above.
+        degrees_in = self._conditioners[0].degrees_in
 
         # Initialize x to an arbitrary value.
         x = torch.zeros_like(y)
-        if dimension_conditioning > 0:
+
+        if self._mapped_indices is not None:
+            conditioning_indices = self.conditioning_indices
+
             # All outputs of the nets depend on the conditioning features,
             # which are not transformed by the MAF.
-            x[:, :dimension_conditioning] = y[:, :dimension_conditioning]
+            x[:, conditioning_indices] = y[:, conditioning_indices]
 
-        # Isolate the features that are not conditioning.
-        y_nonconditioning = y[:, dimension_conditioning:]
+            # Isolate the features that are mapped.
+            y = y[:, self._mapped_indices]
+            degrees_in = degrees_in[self._mapped_indices]
 
         # We need to process each block in the order given
         # by their degree to respect the dependencies.
         blocks = self._conditioners[0].blocks
-        degrees_in_nonconditioning = self._conditioners[0].degrees_in[dimension_conditioning:]
 
         block_start_idx = 0
         blocks_start_indices = []
         blocks_degrees = []
         for block_size in blocks:
             blocks_start_indices.append(block_start_idx)
-            blocks_degrees.append(degrees_in_nonconditioning[block_start_idx])
+            blocks_degrees.append(degrees_in[block_start_idx])
             block_start_idx += block_size
 
         # Order the block by their degree.
@@ -259,23 +276,27 @@ class MAF(torch.nn.Module):
 
         # Now compute the inverse.
         for block_idx in blocks_order:
-            block_size = blocks[block_idx]
-            block_start_idx = blocks_start_indices[block_idx]
-            block_end_idx = block_start_idx + block_size
-
             # Compute the inversion with the current x.
             # Cloning, allows to compute gradients on inverse.
             parameters = self._run_conditioners(x.clone())
 
             # The log_det_J that we compute with the last pass is the total log_det_J.
-            x_temp, log_det_J = self._transformer.inverse(y_nonconditioning, parameters)
+            x_temp, log_det_J = self._transformer.inverse(y, parameters)
 
-            # There is no output for the conditioning dimensions.
-            input_start_idx = block_start_idx + dimension_conditioning
-            input_end_idx = block_end_idx + dimension_conditioning
+            # Determine the indices of x_temp that correspond to the computed block.
+            block_size = blocks[block_idx]
+            block_start_idx = blocks_start_indices[block_idx]
+            block_end_idx = block_start_idx + block_size
+
+            # Determine the indices of the computed DOFs in the output
+            # tensor (which also include the conditioning DOFs).
+            if self._mapped_indices is None:
+                input_indices = slice(block_start_idx, block_end_idx)
+            else:
+                input_indices = self._mapped_indices[block_start_idx:block_end_idx]
 
             # No need to update all the xs, but only those we can update at this point.
-            x[:, input_start_idx:input_end_idx] = x_temp[:, block_start_idx:block_end_idx]
+            x[:, input_indices] = x_temp[:, block_start_idx:block_end_idx]
 
             block_start_idx += block_size
 
