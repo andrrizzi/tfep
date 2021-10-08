@@ -19,11 +19,11 @@ import pytest
 import torch
 
 from tfep.nn.utils import generate_block_sizes
-from tfep.nn.transformers.affine import AffineTransformer
-from tfep.nn.transformers.sos import SOSPolynomialTransformer
-from tfep.nn.transformers.spline import NeuralSplineTransformer
-from tfep.nn.transformers.mobius import MobiusTransformer
-from tfep.nn.flows.maf import MAF
+from tfep.nn.transformers import (
+    AffineTransformer, SOSPolynomialTransformer,
+    NeuralSplineTransformer, MobiusTransformer
+)
+from tfep.nn.flows import MAF
 from ..utils import create_random_input
 
 

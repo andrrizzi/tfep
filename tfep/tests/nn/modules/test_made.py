@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 import torch
 
-from tfep.nn.modules.made import MADE
+from tfep.nn.modules import MADE
 
 
 # =============================================================================
