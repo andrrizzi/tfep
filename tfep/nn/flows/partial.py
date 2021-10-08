@@ -34,17 +34,16 @@ class PartialFlow(torch.nn.Module):
 
     Parameters
     ----------
-    *flows : torch.nn.Module
-        One or more normalizing flows mapping the non-constant degrees of freedom
-        that must be executed in the given order.
+    flow : torch.nn.Module
+        The wrapped normalizing flows mapping the non-constant degrees of freedom.
     constant_indices : List[int], optional
         The indices of the degrees of freedom that must be kept constant.
 
     """
 
-    def __init__(self, *flows, constant_indices):
+    def __init__(self, flow, constant_indices):
         super().__init__()
-        self.flows = torch.nn.ModuleList(flows)
+        self.flow = flow
         self._constant_indices = constant_indices
 
         # We also need the indices that we are not factoring out.
@@ -68,42 +67,27 @@ class PartialFlow(torch.nn.Module):
         return self._pass(y, inverse=True)
 
     def _pass(self, x, inverse):
-        batch_size = x.size(0)
-        cumulative_log_det_J = torch.zeros(batch_size, dtype=x.dtype)
+        # Check if we have already cached the propagated indices. The
+        # _constant_indices attribute is private so caching is "safe".
+        if self._propagated_indices is None:
+            constant_indices_set = set(self._constant_indices)
+            self._propagated_indices =  list(i for i in range(x.size(1))
+                                             if i not in constant_indices_set)
 
-        # Check if we need to traverse the flows in forward or inverse pass.
-        layer_indices = range(len(self.flows))
-        if inverse:
-            flow_func_name = 'inverse'
-            layer_indices = reversed(layer_indices)
-        else:
-            flow_func_name = 'forward'
+        # This will be the returned tensors.
+        y = torch.empty_like(x)
+        y[:, self._constant_indices] = x[:, self._constant_indices]
 
-        # Take care of the constant dimensions.
-        if self._constant_indices is not None:
-            # Check that we have already cached the propagated indices.
-            if self._propagated_indices is None:
-                constant_indices_set = set(self._constant_indices)
-                self._propagated_indices =  list(i for i in range(x.size(1))
-                                                 if i not in constant_indices_set)
-
-            # This will be the returned tensors.
-            final_x = torch.empty_like(x)
-            final_x[:, self._constant_indices] = x[:, self._constant_indices]
-
-            # This tensor goes through the flow.
-            x = x[:, self._propagated_indices]
+        # This tensor goes through the flow.
+        x = x[:, self._propagated_indices]
 
         # Now go through the flow layers.
-        for layer_idx in layer_indices:
-            flow = self.flows[layer_idx]
-            # flow_func_name can be 'forward' or 'inv'.
-            x, log_det_J = getattr(flow, flow_func_name)(x)
-            cumulative_log_det_J += log_det_J
+        if inverse:
+            x, log_det_J = self.flow.inverse(x)
+        else:
+            x, log_det_J = self.flow(x)
 
         # Add to the factored out dimensions.
-        if self._constant_indices is not None:
-            final_x[:, self._propagated_indices] = x
-            x = final_x
+        y[:, self._propagated_indices] = x
 
-        return x, cumulative_log_det_J
+        return y, log_det_J

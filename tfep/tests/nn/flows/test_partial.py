@@ -17,8 +17,7 @@ Test layers in tfep.nn.flows.partial.
 import pytest
 import torch
 
-from tfep.nn.flows.maf import MAF
-from tfep.nn.flows.partial import PartialFlow
+from tfep.nn.flows import MAF, SequentialFlow, PartialFlow
 from ..utils import create_random_input
 
 
@@ -26,26 +25,21 @@ from ..utils import create_random_input
 # TESTS
 # =============================================================================
 
-@pytest.mark.parametrize('constant_input_indices', [None, [1, 4]])
 @pytest.mark.parametrize('dimension_conditioning', [0, 1, 2])
 @pytest.mark.parametrize('weight_norm', [False, True])
-def test_round_trip_PartialFlow(constant_input_indices, dimension_conditioning, weight_norm):
+def test_round_trip_PartialFlow(dimension_conditioning, weight_norm):
     """Test that the PartialFlow.inverse(PartialFlow.forward(x)) equals the identity."""
     dimension = 7
     dimensions_hidden = 2
     batch_size = 2
-
-    if constant_input_indices is None:
-        n_constant_input_indices = 0
-    else:
-        n_constant_input_indices = len(constant_input_indices)
+    constant_input_indices = [1, 4]
 
     # Add a stack of three MAF layers
     flows = []
     for degrees_in in ['input', 'reversed', 'input']:
         # We don't initialize as the identity function to make the test meaningful.
         flows.append(MAF(
-            dimension_in=dimension - n_constant_input_indices,
+            dimension_in=dimension - len(constant_input_indices),
             dimensions_hidden=dimensions_hidden,
             dimension_conditioning=dimension_conditioning,
             degrees_in=degrees_in,
@@ -53,7 +47,7 @@ def test_round_trip_PartialFlow(constant_input_indices, dimension_conditioning, 
             initialize_identity=False
         ))
     flow = PartialFlow(
-        *flows,
+        SequentialFlow(*flows),
         constant_indices=constant_input_indices,
     )
 
@@ -84,7 +78,7 @@ def test_constant_input_multiscale_architect():
             initialize_identity=False
         ))
     flow = PartialFlow(
-        *flows,
+        SequentialFlow(*flows),
         constant_indices=constant_input_indices
     )
 
