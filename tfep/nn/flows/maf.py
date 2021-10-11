@@ -49,7 +49,7 @@ class MAF(torch.nn.Module):
         each hidden layer will be set to ``(dimension_in - 1) * out_per_dimension``
         where ``out_per_dimension`` is the number of output nodes for each
         input feature. If a list, ``dimensions_hidden[l]`` must be the number
-        of nodes in the l-th hidden layer. Default is 1.
+        of nodes in the l-th hidden layer.
     conditioning_indices : List[int], optional
         The indices of the input features corresponding to the conditioning
         features. These features affect the output, but they are not mapped
@@ -71,7 +71,7 @@ class MAF(torch.nn.Module):
         layer.
     weight_norm : bool, optional
         If True, weight normalization is applied to the masked linear
-        modules. Default is False.
+        modules.
     blocks : int or List[int], optional
         If an integer, the non-conditioning input features are divided
         into contiguous blocks of size ``blocks`` that are assigned the
@@ -113,11 +113,11 @@ class MAF(torch.nn.Module):
     def __init__(
             self,
             dimension_in,
-            dimensions_hidden=1,
+            dimensions_hidden=2,
             conditioning_indices=None,
             degrees_in='input',
             degrees_hidden_motif=None,
-            weight_norm=False,
+            weight_norm=True,
             blocks=1,
             shorten_last_block=False,
             split_conditioner=True,
