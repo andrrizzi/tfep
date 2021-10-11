@@ -36,15 +36,15 @@ class PartialFlow(torch.nn.Module):
     ----------
     flow : torch.nn.Module
         The wrapped normalizing flows mapping the non-constant degrees of freedom.
-    constant_indices : List[int], optional
+    fixed_indices : List[int], optional
         The indices of the degrees of freedom that must be kept constant.
 
     """
 
-    def __init__(self, flow, constant_indices):
+    def __init__(self, flow, fixed_indices):
         super().__init__()
         self.flow = flow
-        self._constant_indices = constant_indices
+        self._fixed_indices = fixed_indices
 
         # We also need the indices that we are not factoring out.
         # This is initialized lazily in self._pass() because we
@@ -68,15 +68,15 @@ class PartialFlow(torch.nn.Module):
 
     def _pass(self, x, inverse):
         # Check if we have already cached the propagated indices. The
-        # _constant_indices attribute is private so caching is "safe".
+        # _fixed_indices attribute is private so caching is "safe".
         if self._propagated_indices is None:
-            constant_indices_set = set(self._constant_indices)
+            fixed_indices_set = set(self._fixed_indices)
             self._propagated_indices =  list(i for i in range(x.size(1))
-                                             if i not in constant_indices_set)
+                                             if i not in fixed_indices_set)
 
         # This will be the returned tensors.
         y = torch.empty_like(x)
-        y[:, self._constant_indices] = x[:, self._constant_indices]
+        y[:, self._fixed_indices] = x[:, self._fixed_indices]
 
         # This tensor goes through the flow.
         x = x[:, self._propagated_indices]

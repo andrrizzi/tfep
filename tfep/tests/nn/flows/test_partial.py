@@ -36,14 +36,14 @@ def test_round_trip_PartialFlow(conditioning_indices, weight_norm):
     dimension = 7
     dimensions_hidden = 2
     batch_size = 2
-    constant_input_indices = [1, 4]
+    fixed_input_indices = [1, 4]
 
     # Add a stack of three MAF layers
     flows = []
     for degrees_in in ['input', 'reversed', 'input']:
         # We don't initialize as the identity function to make the test meaningful.
         flows.append(MAF(
-            dimension_in=dimension - len(constant_input_indices),
+            dimension_in=dimension - len(fixed_input_indices),
             dimensions_hidden=dimensions_hidden,
             conditioning_indices=conditioning_indices,
             degrees_in=degrees_in,
@@ -52,7 +52,7 @@ def test_round_trip_PartialFlow(conditioning_indices, weight_norm):
         ))
     flow = PartialFlow(
         SequentialFlow(*flows),
-        constant_indices=constant_input_indices,
+        fixed_indices=fixed_input_indices,
     )
 
     # Create random input.
@@ -64,26 +64,26 @@ def test_round_trip_PartialFlow(conditioning_indices, weight_norm):
     assert torch.allclose(log_det_J + log_det_J_inv, torch.zeros(batch_size), atol=1e-04)
 
 
-def test_constant_input_multiscale_architect():
-    """Test the constant_input_indices multiscale architecture."""
+def test_fixed_input_multiscale_architect():
+    """Perform a round-trip PartialFLow and verify it is the identity."""
     dimension = 10
     dimensions_hidden = 2
     batch_size = 5
-    constant_input_indices = [0, 1, 4, 7]
+    fixed_input_indices = [0, 1, 4, 7]
 
     # Create a three-layer MAF flow.
     flows = []
     for degrees_in in ['input', 'reversed', 'input']:
         # We don't initialize as the identity function to make the test meaningful.
         flows.append(MAF(
-            dimension_in=dimension - len(constant_input_indices),
+            dimension_in=dimension - len(fixed_input_indices),
             dimensions_hidden=dimensions_hidden,
             degrees_in=degrees_in,
             initialize_identity=False
         ))
     flow = PartialFlow(
         SequentialFlow(*flows),
-        constant_indices=constant_input_indices
+        fixed_indices=fixed_input_indices
     )
 
     # Create random input.
@@ -97,7 +97,7 @@ def test_constant_input_multiscale_architect():
     # The gradient of the constant input should always be 0.0.
     loss = torch.sum(y)
     loss.backward()
-    assert torch.all(x.grad[:, constant_input_indices] == 1.0)
+    assert torch.all(x.grad[:, fixed_input_indices] == 1.0)
 
     # Make sure the inverse also works.
     x_inv, log_det_J_inv = flow.inverse(y)
