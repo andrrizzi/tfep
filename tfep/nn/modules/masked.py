@@ -71,14 +71,14 @@ class MaskedLinear(torch.nn.Linear):
     Examples
     --------
 
-    >>> in_features, out_features = 8, 5
+    >>> in_features, out_features, batch_size = 8, 5, 20
     >>> # Lower triangular mask.
     >>> mask = torch.tril(torch.ones(out_features, in_features, dtype=torch.bool))
     >>> m = MaskedLinear(in_features, out_features, mask=mask)
-    >>> input = torch.randn(20, in_features)
+    >>> input = torch.randn(batch_size, in_features)
     >>> output = m(input)
     >>> print(output.size())
-    torch.Size([20, 8])
+    torch.Size([20, 5])
 
     """
 
