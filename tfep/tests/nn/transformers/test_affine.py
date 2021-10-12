@@ -34,7 +34,7 @@ from ..utils import create_random_input, reference_log_det_J
 @pytest.mark.parametrize('n_features', [2, 5, 8])
 def test_affine_transformer_round_trip(batch_size, n_features):
     """Make sure the forward + inverse conposition of affine transformers is equal to the identity."""
-    x, coefficients = create_random_input(batch_size, n_features,
+    x, coefficients = create_random_input(batch_size, n_features, dtype=torch.double,
                                           n_parameters=2, seed=0)
     shift, log_scale = coefficients[:, 0], coefficients[:, 1]
 
@@ -51,8 +51,8 @@ def test_affine_transformer_round_trip(batch_size, n_features):
 @pytest.mark.parametrize('func', [affine_transformer, affine_transformer_inverse])
 def test_affine_transformer_log_det_J(batch_size, n_features, func):
     """Check that the log_det_J of the affine transformer is correct."""
-    x, coefficients = create_random_input(batch_size, n_features,
-                                                n_parameters=2, seed=0)
+    x, coefficients = create_random_input(batch_size, n_features, dtype=torch.double,
+                                          n_parameters=2, seed=0)
     shift, log_scale = coefficients[:, 0], coefficients[:, 1]
 
     # Check the log(abs(det(J))).

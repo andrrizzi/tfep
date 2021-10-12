@@ -157,10 +157,6 @@ def test_unit_cube_to_inscribed_sphere(n_features, blocks):
         # those are always outside the sphere.
         if block_size > 1:
             assert (norms[0][:-2] > radius).any()
-
-        # TODO: REMOVE ME THIS IS JUST TO DEBUG ON GITHUB
-        from pprint import pprint
-        pprint(norms)
         assert (norms[1] <= radius).all()
 
         # The cube vertices should be mapped exactly on the sphere surface.
