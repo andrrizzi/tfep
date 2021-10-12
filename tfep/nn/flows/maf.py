@@ -156,15 +156,17 @@ class MAF(torch.nn.Module):
         # We cache the indices of the mapped degrees of
         # freedom which is necessary to forward() and inverse().
         if conditioning_indices is None or len(conditioning_indices) == 0:
+            n_conditioning_dofs = 0
             self._mapped_indices = None
         else:
+            n_conditioning_dofs = len(conditioning_indices)
             conditioning_indices_set = set(conditioning_indices)
             self._mapped_indices = [i for i in range(dimension_in) if i not in conditioning_indices_set]
 
         # Initialize the log_scale and shift nets to 0.0 so that at
         # the beginning the MAF layer performs the identity function.
         if initialize_identity:
-            dimension_out = dimension_in - len(conditioning_indices)
+            dimension_out = dimension_in - n_conditioning_dofs
 
             # Determine the conditioner that will make the transformer the identity function.
             identity_conditioner = self._transformer.get_identity_parameters(dimension_out)
