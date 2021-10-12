@@ -174,7 +174,7 @@ class TrajectoryDataset(torch.utils.data.Dataset):
             between ``0`` and ``len(TrajectoryDataset)``. Note that the
             dataset might contain a smaller of frames than the full trajectory
             if a subset of frames was selected (for example, with
-            :func:`~dataset.TrajectoryDataset.subsample`).
+            :func:`~tfep.io.dataset.TrajectoryDataset.subsample`).
 
         Returns
         -------
@@ -219,15 +219,15 @@ class TrajectoryDataset(torch.utils.data.Dataset):
             between ``0`` and ``len(TrajectoryDataset)``. Note that the
             dataset might contain a smaller of frames than the full trajectory
             if a subset of frames was selected (for example, with
-            :func:`~dataset.TrajectoryDataset.subsample`).
+            :func:`~tfep.io.dataset.TrajectoryDataset.subsample`).
 
         Returns
         -------
         ts : MDAnalysis.coordinates.base.Timestep
             The MDAnalysis ``Timestep`` object with coordinate information of
             the ``index``-th frame. If a subset of atoms was selected (for
-            example with :func:`~dataset.TrajectoryDataset.select_atoms`) only
-            the coordinates of those atoms are returned.
+            example with :func:`~tfep.io.dataset.TrajectoryDataset.select_atoms`)
+            only the coordinates of those atoms are returned.
 
         """
         # First check if index refers to a subset of selected trajectory frames

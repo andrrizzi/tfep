@@ -24,7 +24,7 @@ import pytest
 import torch
 import torch.utils.data
 
-from tfep.dataset import TrajectoryDataset, TrajectorySubset
+from tfep.io.dataset import TrajectoryDataset, TrajectorySubset
 
 
 # =============================================================================
