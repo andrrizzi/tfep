@@ -51,9 +51,12 @@ class TrajectoryDataset(torch.utils.data.Dataset):
 
     - ``"positions"``: The coordinates of the system in MDAnalysis units as a
           ``torch.Tensor`` of shape ``(batch_size, n_atoms * 3)``.
-    - ``"index"`` (optional): The index in the dataset if ``return_batch_index``
-          is ``True``. This is useful to match the frame index when the dataset
-          is shuffled.
+    - ``"dataset_sample_index"`` (optional): The index in the dataset if
+          ``return_dataset_sample_index`` is ``True``. This is useful to match
+          the frame index when the dataset is shuffled.
+    - ``"trajectory_sample_index"`` (optional): The index in the trajectory if
+          ``return_trajectory_sample_index`` is ``True``. This is useful to match
+          the data point to the trajectory frame index.
     - ``"aux1"`` (optional): The name of eventual auxiliary information found
           in the ``universe.trajectory.aux`` dictionary.
     - ``"aux2"`` ...
@@ -63,16 +66,23 @@ class TrajectoryDataset(torch.utils.data.Dataset):
     universe : MDAnalysis.Universe
         An MDAnalysis ``Universe`` object encapsulating both the topology and
         the trajectory.
-    return_batch_index : bool, optional
-        If ``True``, the keyword ``"index"`` is included in the batch sample
-        when iterating over the dataset.
+    return_dataset_sample_index : bool, optional
+        If ``True``, the keyword ``"dataset_sample_index"`` is included in the
+        batch sample when iterating over the dataset.
+    return_trajectory_sample_index : bool, optional
+        If ``True``, the keyword ``"trajectory_sample_index"`` is included in
+        the batch sample when iterating over the dataset.
 
     Attributes
     ----------
     universe : MDAnalysis.Universe
         The MDAnalysis ``Universe`` object encapsulated by the dataset.
-    return_batch_index : bool, optional
-        Whether to return the keyword ``"index"`` in the batch sample.
+    return_dataset_sample_index : bool, optional
+        Whether to return the keyword ``"dataset_sample_index"`` in the batch
+        sample.
+    return_trajectory_sample_index : bool, optional
+        Whether to return the keyword ``"trajectory_sample_index"`` in the batch
+        sample.
 
     Examples
     --------
@@ -137,15 +147,17 @@ class TrajectoryDataset(torch.utils.data.Dataset):
     def __init__(
             self,
             universe,
-            return_batch_index=False,
+            return_dataset_sample_index=False,
+            return_trajectory_sample_index=False,
     ):
         super().__init__()
 
         self.universe = universe
-        self.return_batch_index = return_batch_index
+        self.return_dataset_sample_index = return_dataset_sample_index
+        self.return_trajectory_sample_index = return_trajectory_sample_index
 
         # The indexes of the selected trajectory frames. None means all frames.
-        self._subsampled_frame_indices = None
+        self._subsampled_traj_sample_indices = None
 
         # The MDAnalysis.core.groups.AtomGroup object encapsulating the atom
         # selection. None means all atoms.
@@ -158,9 +170,24 @@ class TrajectoryDataset(torch.utils.data.Dataset):
             return self.universe.atoms.n_atoms
         return self._selected_atom_group.n_atoms
 
+    @property
+    def trajectory_sample_indices(self):
+        """Indices of the dataset semples in the trajectory (before subsampling).
+
+        ``trajectory_sample_indices[i]`` is the index of the ``i``-th sample in
+        ``self.dataset.trajectory``.
+        """
+        # We return a copy to avoid accidental modifications that would cause
+        # side effects.
+        return self._subsampled_traj_sample_indices.copy()
+
     def __copy__(self):
-        copied_dataset = self.__class__(self.universe.copy(), self.return_batch_index)
-        copied_dataset._subsampled_frame_indices = copy.copy(self._subsampled_frame_indices)
+        copied_dataset = self.__class__(
+            self.universe.copy(),
+            self.return_dataset_sample_index,
+            self.return_trajectory_sample_index,
+        )
+        copied_dataset._subsampled_traj_sample_indices = copy.copy(self._subsampled_traj_sample_indices)
         copied_dataset._selected_atom_group = copy.copy(self._selected_atom_group)
         return copied_dataset
 
@@ -198,16 +225,22 @@ class TrajectoryDataset(torch.utils.data.Dataset):
         for aux_name, aux_info in self.universe.trajectory.ts.aux.items():
             sample[aux_name] = torch.tensor(aux_info)
 
-        # Return the index itself if requested.
-        if self.return_batch_index:
-            sample['index'] = idx
+        # Return the requested indices.
+        if self.return_dataset_sample_index:
+            sample['dataset_sample_index'] = idx
+        if self.return_trajectory_sample_index:
+            if self._subsampled_traj_sample_indices is None:
+                # We have selected all frames. Trajectory and dataset indices are the same.
+                sample['trajectory_sample_index'] = idx
+            else:
+                sample['trajectory_sample_index'] = self._subsampled_traj_sample_indices[idx]
         return sample
 
     def __len__(self):
         """Number of samples in the dataset (i.e., selected trajectory frames)."""
-        if self._subsampled_frame_indices is None:
+        if self._subsampled_traj_sample_indices is None:
             return len(self.universe.trajectory)
-        return len(self._subsampled_frame_indices)
+        return len(self._subsampled_traj_sample_indices)
 
     def get_timestep(self, idx):
         """Return the MDAnalysis ``Timestep`` object for the given index.
@@ -232,10 +265,10 @@ class TrajectoryDataset(torch.utils.data.Dataset):
         """
         # First check if index refers to a subset of selected trajectory frames
         # or to the full trajectory.
-        if self._subsampled_frame_indices is None:
+        if self._subsampled_traj_sample_indices is None:
             ts = self.universe.trajectory[idx]
         else:
-            ts = self.universe.trajectory[self._subsampled_frame_indices[idx]]
+            ts = self.universe.trajectory[self._subsampled_traj_sample_indices[idx]]
 
         # If a subset of atoms was selected. Return the Timestep only for those.
         if self._selected_atom_group is None:
@@ -329,7 +362,7 @@ class TrajectoryDataset(torch.utils.data.Dataset):
 
         # All time quantities in MDAnalysis are in picoseconds.
         ps = ureg.picoseconds
-        self._subsampled_frame_indices = get_subsampled_indices(
+        self._subsampled_traj_sample_indices = get_subsampled_indices(
             dt=self.universe.trajectory.dt * ps,
             start=start, stop=stop, step=step, n_frames=n_frames,
             t0=self.universe.trajectory[0].time * ps)
@@ -440,23 +473,38 @@ class TrajectorySubset:
         return self.dataset.universe
 
     @property
-    def return_batch_index(self):
-        """Whether to return the keyword ``"index"`` in the batch sample."""
-        return self.dataset.return_batch_index
+    def return_dataset_sample_index(self):
+        """Whether to return the keyword ``"dataset_sample_index"`` in the batch sample."""
+        return self.dataset.return_dataset_sample_index
+
+    @property
+    def return_trajectory_sample_index(self):
+        """Whether to return the keyword ``"trajectory_sample_index"`` in the batch sample."""
+        return self.dataset.return_trajectory_sample_index
 
     @property
     def n_atoms(self):
         """Number of selected atoms in the dataset."""
         return self.dataset.n_atoms
 
+    @property
+    def trajectory_sample_indices(self):
+        """Indices of the dataset semples in the trajectory (before subsampling).
+
+        ``trajectory_sample_indices[i]`` is the index of the ``i``-th sample in
+        ``self.dataset.trajectory``.
+        """
+        trajectory_sample_indices = self.dataset.trajectory_sample_indices
+        return trajectory_sample_indices[self.indices]
+
     def __getitem__(self, idx):
         """Implement the ``__getitem__()`` method required for a PyTorch dataset."""
         sample = self.dataset[self.indices[idx]]
 
-        # Update the index if return_batch_index is True, which is
-        # otherwise set to the Trajectory subsample index.
-        if self.return_batch_index:
-            sample['index'] = idx
+        # Update the index if return_dataset_sample_index is True.
+        # The trajectory index should already be correct.
+        if self.return_dataset_sample_index:
+            sample['dataset_sample_index'] = idx
 
         return sample
 
