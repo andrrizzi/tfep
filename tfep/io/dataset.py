@@ -147,8 +147,8 @@ class TrajectoryDataset(torch.utils.data.Dataset):
     def __init__(
             self,
             universe,
-            return_dataset_sample_index=False,
-            return_trajectory_sample_index=False,
+            return_dataset_sample_index=True,
+            return_trajectory_sample_index=True,
     ):
         super().__init__()
 
@@ -341,22 +341,34 @@ class TrajectoryDataset(torch.utils.data.Dataset):
             ends at the last frame in the trajectory.
         step : int or pint.Quantity, optional
             The step used for subsampling specified either as a frame index or
-            or in simulation time. Strictly one between ``step`` and ``n_frames``
-            must be passed.
+            or in simulation time. Only one between ``step`` and ``n_frames``
+            may be passed.
         n_frames : int, optional
             The total number of frames to include in the dataset. If this is
             passed, the ``step`` will automatically be determined to satisfy this
             requirement. Note that in this case the obtained samples in the
             dataset might not be equally spaced if ``n_frames`` is not an exact
-            divisor of the number of frames. Strictly one between ``step`` and
-            ``n_frames`` must be passed.
+            divisor of the number of frames. Only one between ``step`` and
+            ``n_frames`` may be passed.
 
         """
+        # If all are None, there's no need to subsample.
+        if all([x is None for x in [start, stop, step, n_frames]]):
+            return
+
+        # Handle default arguments. step and n_frames are handled by get_subsampled_indices.
+        if start is None:
+            start = 0
+        if stop is None:
+            # Stop is the last index included in the subsampled trajectory.
+            stop = len(self.universe.trajectory)-1
+
         # Look for a compatible unit registry, if given.
         ureg = None
         for quantity in [start, stop, step]:
             if isinstance(quantity, pint.Quantity):
                 ureg = quantity._REGISTRY
+                break
         if ureg is None:
             ureg = pint.UnitRegistry()
 
@@ -364,7 +376,7 @@ class TrajectoryDataset(torch.utils.data.Dataset):
         ps = ureg.picoseconds
         self._subsampled_traj_sample_indices = get_subsampled_indices(
             dt=self.universe.trajectory.dt * ps,
-            start=start, stop=stop, step=step, n_frames=n_frames,
+            stop=stop, start=start, step=step, n_frames=n_frames,
             t0=self.universe.trajectory[0].time * ps)
 
 
@@ -541,8 +553,8 @@ class TrajectorySubset:
 
 def get_subsampled_indices(
         dt,
-        start,
         stop,
+        start=0,
         step=None,
         n_frames=None,
         t0=0.0,
@@ -567,19 +579,18 @@ def get_subsampled_indices(
         starts from the first frame in the trajectory.
     stop : int or pint.Quantity
         The last frame to include in the dataset specified either as a
-        frame index or in simulation time. If not provided, the subsampling
-        ends at the last frame in the trajectory.
+        frame index or in simulation time.
     step : int or pint.Quantity, optional
         The step used for subsampling specified either as a frame index or
-        or in simulation time. Strictly one between ``step`` and ``n_frames``
-        must be passed.
+        or in simulation time. Only one between ``step`` and ``n_frames`` may
+        be passed.
     n_frames : int, optional
         The total number of frames to include in the dataset. If this is
         passed, the ``step`` will automatically be determined to satisfy this
         requirement. Note that in this case the obtained samples in the
         dataset might not be equally spaced if ``n_frames`` is not an exact
-        divisor of the number of frames. Strictly one between ``step`` and
-        ``n_frames`` must be passed.
+        divisor of the number of frames. Only one between ``step`` and ``n_frames``
+        may be passed.
     t0 : pint.Quantity, optional
         The time of the first frame in the trajectory to subsamples. This might
         not be 0.0 if, for example, the simulation was resumed.
@@ -591,11 +602,12 @@ def get_subsampled_indices(
 
     """
     # Check that only one between step and n_frames is given.
-    if (step is None) == (n_frames is None):
-        raise ValueError("One and only one between 'step' and 'n_frames' must be passed.")
+    if (step is not None) and (n_frames is not None):
+        raise ValueError("Only one between 'step' and 'n_frames' may be passed.")
 
     # Make time quantities unitless.
-    unit = 'ps'
+    ureg = dt._REGISTRY
+    unit = ureg.picoseconds
     dt = dt.to(unit).magnitude
     if t0 is None:
         t0 = 0.0
@@ -606,10 +618,13 @@ def get_subsampled_indices(
     times = [start, stop, step]
     for i, (t, label) in enumerate(zip(times, ['start', 'stop', 'step'])):
         if isinstance(t, pint.Quantity):
-            t = (t.to(unit).magnitude - t0) / dt
-            if not np.isclose(t, np.round(t)):
-                raise ValueError(f'The time step {dt} is not compatible with {label} time {t}')
-            times[i] = int(round(t))
+            frame_idx = (t.to(unit).magnitude - t0) / dt
+            if not np.isclose(frame_idx, np.round(frame_idx)):
+                closest_times = dt * np.array([np.floor(frame_idx), np.ceil(frame_idx)]) * unit
+                raise ValueError(f'The time step {dt} is not compatible with {label} time {t}. '
+                                 f'The closest possible start times are {closest_times[0]} or '
+                                 f'{closest_times[1]}')
+            times[i] = int(round(frame_idx))
     start, stop, step = times
 
     # Check if the step must be instead determined by the number of frames.
@@ -624,5 +639,7 @@ def get_subsampled_indices(
         return np.linspace(start, stop, n_frames).astype(int)
 
     # Create the frames with a constant step. We include "stop" in the dataset.
+    if (step is None) and (n_frames is None):
+        step = 1
     return np.arange(start, stop+1, step, dtype=int)
 
