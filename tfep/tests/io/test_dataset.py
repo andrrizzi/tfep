@@ -97,8 +97,8 @@ def test_trajectory_dataset_dataloader_iteration(return_dataset_sample_index):
       batches.
     - Iterating over positions as ``Tensor``s returns the coordinates in flattened
       format.
-    - When ``return_dataset_sample_index`` is ``True``/``False``, the sample index
-      is also returned.
+    - When ``return_dataset_sample_index`` is ``True``/``False``, the dataset
+      sample index is also returned.
     - Auxiliary information is automatically discovered and returned as well.
 
     """
@@ -174,6 +174,12 @@ def test_trajectory_dataset_subsampling(
 
     # Check that subsampling selected the correct positions.
     _check_correct_subset_positions(trajectory_dataset, expected_frame_indices)
+
+    # Iteration over a data loader gives the correct trajectory indices.
+    data_loader = torch.utils.data.DataLoader(
+        trajectory_dataset, batch_size=len(trajectory_dataset))
+    for batch_data in data_loader:
+        assert np.allclose(batch_data['trajectory_sample_index'], expected_frame_indices)
 
 
 @pytest.mark.parametrize('selection,expected_atom_indices', [
