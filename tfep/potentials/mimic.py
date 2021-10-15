@@ -274,7 +274,7 @@ class PotentialMiMiC(torch.nn.Module):
         super().__init__()
 
         self.cpmd_cmd = cpmd_cmd
-        self.mdrun_cmd = mdrun_cmd,
+        self.mdrun_cmd = mdrun_cmd
         self.grompp_cmd = grompp_cmd
         self.launcher = launcher
         self.grompp_launcher = grompp_launcher
