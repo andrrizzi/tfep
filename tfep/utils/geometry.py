@@ -8,11 +8,11 @@
 
 
 # =============================================================================
-# CONVERT POSITIONS FROM FLATTENED TO STANDARD FORMAT AND VICEVERSA
+# CONVERT POSITIONS FROM FLATTENED TO STANDARD ATOM FORMAT AND VICEVERSA
 # =============================================================================
 
-def flattened_to_standard(positions):
-    """Compute a positions from flattened to standard format.
+def flattened_to_atom(positions):
+    """Compute a positions from flattened to standard atom format.
 
     The function takes a configuration (or a batch of configurations) with shape
     ``(n_atoms*3)`` and converts them into the standard shape ``(n_atoms, 3)``.
@@ -42,10 +42,10 @@ def flattened_to_standard(positions):
     return positions.reshape(standard_shape)
 
 
-def standard_to_flattened(positions):
-    """Compute a positions from standard to flattened format.
+def atom_to_flattened(positions):
+    """Compute a positions from standard atom to flattened format.
 
-    The inverse operation of :func:`.flattened_to_standard`.
+    The inverse operation of :func:`.flattened_to_atom`.
 
     Parameters
     ----------
@@ -61,7 +61,7 @@ def standard_to_flattened(positions):
 
     See Also
     --------
-    flattened_to_standard
+    flattened_to_atom
 
     """
     n_atoms = positions.shape[-2]

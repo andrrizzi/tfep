@@ -27,9 +27,12 @@ import pint
 import torch
 
 from tfep.utils.cli import Launcher, CLITool, KeyValueOption
-from tfep.utils.geometry import flattened_to_standard
+from tfep.utils.geometry import flattened_to_atom
 from tfep.utils.misc import temporary_cd, energies_array_to_tensor, forces_array_to_tensor
 from tfep.utils.parallel import SerialStrategy
+
+# TODO: CAPISCI COS'È KINETIC ENERGY IN WAVEFUNCTION OPTIMIZATION!
+# TODO: THE PV CONTRIBUTION IS NOT COMPUTED! THE RETURNED ENERGY IS NOT THE REDUCED POTENTIAL.
 
 
 # =============================================================================
@@ -614,7 +617,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
         if positions_unit is None:
             positions_unit = unit_registry.bohr
 
-        batch_positions_arr = flattened_to_standard(batch_positions.detach().numpy())
+        batch_positions_arr = flattened_to_atom(batch_positions.detach().numpy())
         batch_positions_arr *= positions_unit
 
         if batch_box_vectors is None:

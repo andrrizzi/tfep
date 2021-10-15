@@ -21,7 +21,7 @@ import numpy as np
 import pint
 import torch
 
-from tfep.utils.geometry import flattened_to_standard
+from tfep.utils.geometry import flattened_to_atom
 from tfep.utils.misc import energies_array_to_tensor, forces_array_to_tensor
 from tfep.utils.parallel import SerialStrategy
 
@@ -492,7 +492,7 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
             unit_registry = pint.UnitRegistry()
 
         # Convert tensor to numpy array with shape (batch_size, n_atoms, 3) with attached units.
-        batch_positions_arr = flattened_to_standard(batch_positions.detach().numpy())
+        batch_positions_arr = flattened_to_atom(batch_positions.detach().numpy())
         if positions_unit is None:
             batch_positions_arr *= unit_registry.bohr
         else:

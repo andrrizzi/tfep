@@ -17,7 +17,7 @@ import os
 import pint
 import torch
 
-from tfep.utils.geometry import standard_to_flattened
+from tfep.utils.geometry import atom_to_flattened
 
 
 # =============================================================================
@@ -88,7 +88,7 @@ def forces_array_to_tensor(forces, distance_unit=None, energy_unit=None, dtype=N
             forces = forces.to(force_unit)
 
     # The tensor must be unitless and with shape (batch_size, n_atoms*3).
-    forces = standard_to_flattened(forces)
+    forces = atom_to_flattened(forces)
     return torch.tensor(forces.magnitude, dtype=dtype)
 
 
