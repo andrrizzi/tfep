@@ -211,6 +211,7 @@ class SRunTool(CLITool):
     n_tasks = KeyValueOption('--ntasks')
     n_tasks_per_node = KeyValueOption('--ntasks-per-node')
     n_cpus_per_task = KeyValueOption('--cpus-per-task')
+    relative_node_idx = KeyValueOption('--relative')
     multiprog_config_file_path = KeyValueOption('--multi-prog')
 
     def to_subprocess(self):
@@ -257,6 +258,11 @@ class SRunLauncher(Launcher):
         The number of cpus per task to pass to ``srun``. If multiple commands
         are executed in parallel, it is possible to specify the number of cpus
         per task for each command as a list.
+    relative_node_idx : int or List[int], optional
+        Run a job step relative the ``relative_node_idx``-th node (starting from
+        node 0) of the current allocation. If multiple commands are executed in
+        parallel, it is possible to specify one relative node for each command
+        as a list.
     multiprog : bool, optional
         If ``True`` multiple commands are run in parallel using the ``--multi-prog``
         argument. In this case, ``srun`` is invoked only once, and thus ``n_nodes``
@@ -319,12 +325,13 @@ class SRunLauncher(Launcher):
     """
 
     def __init__(self, n_nodes=None, n_tasks=None, n_tasks_per_node=None, n_cpus_per_task=None,
-                 multiprog=False, multiprog_config_file_path='srun-job.conf'):
+                 relative_node_idx=None, multiprog=False, multiprog_config_file_path='srun-job.conf'):
         super().__init__()
         self.n_nodes = n_nodes
         self.n_tasks = n_tasks
         self.n_tasks_per_node = n_tasks_per_node
         self.n_cpus_per_task = n_cpus_per_task
+        self.relative_node_idx = relative_node_idx
         self.multiprog = multiprog
         self.multiprog_config_file_path = multiprog_config_file_path
 
@@ -362,15 +369,15 @@ class SRunLauncher(Launcher):
         # is ignored.
         run_with_multiprog = n_commands > 1 and self.multiprog
         if run_with_multiprog:
-            if isinstance(self.n_nodes, list) or isinstance(self.n_cpus_per_task, list):
-                raise ValueError('With multiprog execution, "n_nodes" and '
-                                 '"n_cpus_per_task" must be integers.')
+            for attr_name in ['n_nodes', 'n_cpus_per_task', 'relative_node_idx']:
+                if isinstance(getattr(self, attr_name), list):
+                    raise ValueError(f'With multiprog execution, "{attr_name}" must be an integer.')
 
         # List options (one value for each command) must have the right length.
-        for attr_name in ['n_nodes', 'n_tasks', 'n_tasks_per_node', 'n_cpus_per_task']:
+        for attr_name in ['n_nodes', 'n_tasks', 'n_tasks_per_node', 'n_cpus_per_task', 'relative_node_idx']:
             attr_val = getattr(self, attr_name)
             if isinstance(attr_val, list) and len(attr_val) != n_commands:
-                raise ValueError(f'Passed {n_commands} commands but only '
+                raise ValueError(f'Passed {n_commands} commands but '
                                  f'{len(attr_val)} {attr_name}: {attr_val}')
 
         # Prepend srun to all commands.
@@ -401,8 +408,10 @@ class SRunLauncher(Launcher):
         ``commands`` must already be a list of commands in list format (not CLITool).
         """
         # Convert arguments to list format.
-        n_nodes, n_tasks, n_tasks_per_node, n_cpus_per_task = _ensure_lists(
-            len(commands), [self.n_nodes, self.n_tasks, self.n_tasks_per_node, self.n_cpus_per_task])
+        n_nodes, n_tasks, n_tasks_per_node, n_cpus_per_task, relative_node_idx = _ensure_lists(
+            len(commands),
+            [self.n_nodes, self.n_tasks, self.n_tasks_per_node, self.n_cpus_per_task, self.relative_node_idx]
+        )
 
         # Prepend srun to all commands.
         srun_commands = []
@@ -412,7 +421,8 @@ class SRunLauncher(Launcher):
                 n_nodes=n_nodes[cmd_idx],
                 n_tasks=n_tasks[cmd_idx],
                 n_tasks_per_node=n_tasks_per_node[cmd_idx],
-                n_cpus_per_task=n_cpus_per_task[cmd_idx]
+                n_cpus_per_task=n_cpus_per_task[cmd_idx],
+                relative_node_idx=relative_node_idx[cmd_idx],
             )
 
             # Prepend the srun command.
@@ -432,7 +442,8 @@ class SRunLauncher(Launcher):
             n_nodes=self.n_nodes,
             n_tasks=sum(n_tasks),
             n_cpus_per_task=self.n_cpus_per_task,
-            multiprog_config_file_path=self.multiprog_config_file_path
+            relative_node_idx=self.relative_node_idx,
+            multiprog_config_file_path=self.multiprog_config_file_path,
         )
         return [srun.to_subprocess()]
 
