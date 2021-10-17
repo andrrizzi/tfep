@@ -816,9 +816,10 @@ def _run_mimic(
         ``(3,)`` defining the orthorhombic box side lengths (the only one currently
         supported in MiMiC). If ``None``, the box vectors in the input files are
         evaluated.
-    launcher : tfep.utils.cli.Launcher, optional
+    launcher : tfep.utils.cli.Launcher or List[tfep.utils.cli.Launcher], optional
         The ``Launcher`` to use to run the ``cpmd_cmd`` and ``mdrun_cmd``. If
-        not passed, a new :class:`tfep.utils.cli.Launcher` is created.
+        a ``list``, it must have one launcher for each batch. If not passed, a
+        new instance of :class:`tfep.utils.cli.Launcher` is used.
     grompp_launcher : tfep.utils.cli.Launcher, optional
         The ``Launcher`` to use to run the ``grompp_cmd`` command. If not passed,
         a new :class:`tfep.utils.cli.Launcher` is created.
@@ -889,20 +890,24 @@ def _run_mimic(
         # batch_box_vectors still needs to be in batch format.
         batch_box_vectors = [batch_box_vectors] * batch_positions.shape[0]
 
-    # Make sure working_dir_path is in batch format.
+    # Make sure working_dir_path and launcher are in batch format.
     n_configurations = len(batch_positions)
     if working_dir_path is None or isinstance(working_dir_path, str):
         working_dir_path = [working_dir_path] * n_configurations
     else:
         working_dir_path = [os.path.realpath(p) for p in working_dir_path]
+    try:
+        iter(launcher)
+    except TypeError:
+        launcher = [launcher] * n_configurations
 
     # Run the command.
     task = functools.partial(
-        _run_mimic_task, cpmd_cmd, mdrun_cmd, grompp_cmd, launcher, grompp_launcher,
+        _run_mimic_task, cpmd_cmd, mdrun_cmd, grompp_cmd, grompp_launcher,
         return_energy, return_force, cleanup_working_dir, launcher_kwargs,
         grompp_launcher_kwargs
     )
-    distributed_args = zip(batch_positions, batch_box_vectors, working_dir_path)
+    distributed_args = zip(batch_positions, batch_box_vectors, launcher, working_dir_path)
     returned_values = parallelization_strategy.run(task, distributed_args)
 
     # Convert from a list of shape (batch_size, 2) to (2, batch_size).
@@ -927,7 +932,6 @@ def _run_mimic_task(
         cpmd_cmd,
         mdrun_cmd,
         grompp_cmd,
-        launcher,
         grompp_launcher,
         return_energy,
         return_force,
@@ -936,6 +940,7 @@ def _run_mimic_task(
         grompp_launcher_kwargs,
         positions,
         box_vectors,
+        launcher,
         working_dir_path,
 ):
     """This is the task passed to the ``ParallelizationStrategy`` to run MiMiC.
