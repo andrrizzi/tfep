@@ -18,11 +18,12 @@ import torch
 # CONVERT POSITIONS FROM FLATTENED TO STANDARD ATOM FORMAT AND VICEVERSA
 # =============================================================================
 
-def flattened_to_atom(positions):
+def flattened_to_atom(positions, space_dimension=3):
     """Compute a positions from flattened to standard atom format.
 
     The function takes a configuration (or a batch of configurations) with shape
-    ``(n_atoms*3)`` and converts them into the standard shape ``(n_atoms, 3)``.
+    ``(n_atoms*space_dimension)`` and converts them into the standard shape
+    ``(n_atoms, space_dimension)``.
 
     It converts both ``torch.Tensors`` and ``numpy.ndarray``, with and without
     ``pint`` units.
@@ -30,8 +31,10 @@ def flattened_to_atom(positions):
     Parameters
     ----------
     positions : torch.Tensor, numpy.ndarray, or pint.Quantity
-        The input can have the following shapes: ``(batch_size, n_atoms*3)`` or
-        ``(n_atoms * 3,)``.
+        The input can have the following shapes: ``(batch_size, n_atoms*space_dimension)``
+        or ``(n_atoms * space_dimension,)``.
+    space_dimension : int, optional
+        The dimensionality of the phase space.
 
     Returns
     -------
@@ -40,12 +43,12 @@ def flattened_to_atom(positions):
         or ``(n_atoms, 3)``.
 
     """
-    n_atoms = positions.shape[-1] // 3
+    n_atoms = positions.shape[-1] // space_dimension
     if len(positions.shape) > 1:
         batch_size = positions.shape[0]
-        standard_shape = (batch_size, n_atoms, 3)
+        standard_shape = (batch_size, n_atoms, space_dimension)
     else:
-        standard_shape = (n_atoms, 3)
+        standard_shape = (n_atoms, space_dimension)
     return positions.reshape(standard_shape)
 
 
@@ -57,14 +60,14 @@ def atom_to_flattened(positions):
     Parameters
     ----------
     positions : torch.Tensor, numpy.ndarray, or pint.Quantity
-        The input can have the following shapes: ``(batch_size, n_atoms, 3)`` or
-        ``(n_atoms, 3)``.
+        The input can have the following shapes: ``(batch_size, n_atoms, N)`` or
+        ``(n_atoms, N)``, where ``N`` is the dimensionality of the phase space.
 
     Returns
     -------
     reshaped_positions : torch.Tensor, numpy.ndarray, or pint.Quantity
-        A view of the original tensor or array with shape ``(batch_size, n_atoms*3)``
-        or ``(n_atoms*3)``.
+        A view of the original tensor or array with shape ``(batch_size, n_atoms*N)``
+        or ``(n_atoms*N)``.
 
     See Also
     --------
@@ -72,11 +75,12 @@ def atom_to_flattened(positions):
 
     """
     n_atoms = positions.shape[-2]
+    space_dimension = positions.shape[-1]
     if len(positions.shape) > 2:
         batch_size = positions.shape[0]
-        flattened_shape = (batch_size, n_atoms*3)
+        flattened_shape = (batch_size, n_atoms*space_dimension)
     else:
-        flattened_shape = (n_atoms*3,)
+        flattened_shape = (n_atoms*space_dimension,)
     return positions.reshape(flattened_shape)
 
 
