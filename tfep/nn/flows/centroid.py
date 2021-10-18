@@ -206,8 +206,6 @@ class CenteredCentroidFlow(PartialFlow):
 
         return y, log_det_J
 
-    # TODO: IMPLEMENT inverse()
-
     def _compute_centroid(self, x_atom_shape, exclude_fixed_point=False):
         """Return the centroid given the coordinates in standard atom shape.
 
