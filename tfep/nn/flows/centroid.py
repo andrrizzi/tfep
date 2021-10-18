@@ -18,7 +18,7 @@ import torch
 
 from tfep.utils.geometry import (
     flattened_to_atom, atom_to_flattened, atom_to_flattened_indices)
-from tfep.nn.flows import PartialFlow
+from tfep.nn.flows.partial import PartialFlow
 
 
 # =============================================================================
@@ -52,7 +52,7 @@ class CenteredCentroidFlow(PartialFlow):
     space_dimension : int
         The dimensionality of a single point in space (e.g., ``3`` if the input
         features represent points in a 3D space).
-    subset_point_indices : Tensor of int, optional
+    subset_point_indices : array-like of int, optional
         A tensor of shape ``(n_points,)``. If passed, the centroid is computed
         over a subset of ``n_points`` points. If not passed, the centroid is
         computed using all the input features.
