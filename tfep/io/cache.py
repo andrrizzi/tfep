@@ -85,6 +85,7 @@ class TFEPCache:
     VERSION = '0.1'
     METADATA_FILE_NAME = 'metadata.json'
     INDEX_NAMES = ['trajectory_sample_index', 'dataset_sample_index']
+    MASK_NAME = '__mask'
 
     def __init__(
             self,
@@ -101,8 +102,7 @@ class TFEPCache:
         self._loaded_train_idx = None
         self._loaded_train_data = None  # Dict[name, Tensor].
         self._loaded_eval_idx = None
-        self._loaded_eval_data = None
-        self._loaded_eval_sample_indices_set = None
+        self._loaded_eval_data = None  # Dict[name, Tensor].
 
         # Determine whether this is a new cache or we are resuming. The
         # metadata file is the last file that is created in __init__().
@@ -197,7 +197,7 @@ class TFEPCache:
             step_idx, epoch_idx, batch_idx, need_batch=True)
 
         # Load in memory the data of this NN.
-        self._load_eval_data(step_idx)
+        self._load_data(step_idx, type='eval')
 
         # Sort the data if requested.
         if sort_by is not None:
@@ -211,7 +211,7 @@ class TFEPCache:
         if as_numpy:
             data = self._loaded_eval_data
         else:
-            data = {k: torch.Tensor(v) for k, v in self._loaded_eval_data.items()}
+            data = {k: torch.tensor(v) for k, v in self._loaded_eval_data.items()}
 
         return data
 
@@ -226,6 +226,10 @@ class TFEPCache:
         """Read the tensors saved during the given training epoch/batch/step.
 
         At least one between ``step_idx`` and ``epoch_idx`` must be passed.
+        Note that only the data for the batches that have been saved are returned.
+        As a consequence, the returned tensors might be smaller than the
+        number of samples per epoch if the training was interrupted before the
+        end of the epoch.
 
         Parameters
         ----------
@@ -264,19 +268,24 @@ class TFEPCache:
 
         # Return data.
         tensors = {}
+        mask = self._loaded_train_data[self.MASK_NAME]
         for name in names:
+            # Do not return the mask used to store which batches have been saved.
+            if name == self.MASK_NAME:
+                continue
+
             if batch_idx is None:
                 # Collect data for entire epoch.
-                tensors[name] = self._loaded_train_data[name]
+                tensors[name] = self._loaded_train_data[name][mask]
             else:
                 # Collect data for a single batch.
                 first = self.batch_size * batch_idx
                 last = first + self.batch_size
-                tensors[name] = self._loaded_train_data[name][first:last]
+                tensors[name] = self._loaded_train_data[name][first:last][mask[first:last]]
 
             # Convert from numpy to Tensors.
             if not as_numpy:
-                tensors[name] = torch.Tensor(tensors[name])
+                tensors[name] = torch.tensor(tensors[name])
 
         return tensors
 
@@ -332,7 +341,7 @@ class TFEPCache:
             step_idx, epoch_idx, batch_idx, need_batch=True)
 
         # Load in memory the data of this NN.
-        self._load_eval_data(step_idx)
+        self._load_data(step_idx, type='eval')
 
         # Make sure all known tensors are updated.
         if len(self._loaded_eval_data) == 0:
@@ -425,6 +434,7 @@ class TFEPCache:
             first = self.batch_size*batch_idx
 
         # Update all tensors.
+        mask = self._loaded_train_data[self.MASK_NAME]
         for name, value in tensors.items():
             # Convert from tensor to array.
             value = value.detach().numpy()
@@ -432,14 +442,16 @@ class TFEPCache:
             if batch_idx is None:
                 # Assume data is for the entire epoch.
                 self._loaded_train_data[name] = value
+                mask[:] = True
             else:
                 # Initialize the tensor if this is the first time we see it.
                 try:
                     saved_array = self._loaded_train_data[name]
                 except KeyError:
-                    saved_array = np.full(self.n_samples_per_epoch, fill_value=np.nan)
+                    saved_array = np.empty(self.n_samples_per_epoch, dtype=value.dtype)
                     self._loaded_train_data[name] = saved_array
                 saved_array[first:first+len(value)] = value
+                mask[first:first+len(value)] = True
 
         # Update cached file on disk.
         self._dump_data(type='train')
@@ -501,29 +513,11 @@ class TFEPCache:
             setattr(self, data_attr, {k: v for k, v in npz_file.items()})
         else:
             # Initialize the data for this epoch.
-            setattr(self, data_attr, {})
-
-    def _load_eval_data(self, step_idx):
-        """Load/initialize the evaluation data for the given NN model.
-
-        On top of loading the npz archive, we cache a set of the indices already
-        loaded that we can check on save.
-        """
-        self._load_data(step_idx, type='eval')
-
-        # Build a set of sample indices (trajectory has priority over dataset).
-        indices = None
-        for index_name in self.INDEX_NAMES:
-            try:
-                indices = self._loaded_eval_data[index_name]
-            except:
-                pass
-
-        # If there are no indices we have already raised a warning in save_eval_tensors.
-        if indices is not None:
-            self._loaded_eval_sample_indices_set = set(indices)
-        else:
-            self._loaded_eval_sample_indices_set = set()
+            if type == 'train':
+                data = {self.MASK_NAME: np.full(self.n_samples_per_epoch, fill_value=False)}
+            else:
+                data = {}
+            setattr(self, data_attr, data)
 
     def _metadata_from_data(self, data_loader):
         """Load metadata from the DataLoader."""

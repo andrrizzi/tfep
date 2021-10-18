@@ -19,10 +19,8 @@ import tempfile
 import numpy as np
 import pytest
 import torch
-import warnings
 
 from tfep.io.cache import TFEPCache
-from tfep.io.dataset import TrajectorySubset
 
 
 # =============================================================================
@@ -176,11 +174,12 @@ def test_tfep_cache_save_read_train_tensors(n_frames, batch_size, drop_last, res
                     cache = TFEPCache(save_dir_path=tmp_dir_path)
 
                 # Store data using step.
+                saved_tensors = {
+                    'dataset_sample_index': batch_data['dataset_sample_index'],
+                    'mean': batch_means
+                }
                 cache.save_train_tensors(
-                    tensors={
-                        'dataset_sample_index': batch_data['dataset_sample_index'],
-                        'mean': batch_means
-                    },
+                    tensors=saved_tensors,
                     step_idx=epoch_idx*len(data_loader) + batch_idx
                 )
 
@@ -219,11 +218,44 @@ def test_tfep_cache_save_read_train_tensors(n_frames, batch_size, drop_last, res
             for name, ref_tensor in ref_data.items():
                 assert np.allclose(read_data[name], ref_tensor)
 
-# TODO: Test adding eval redundant data overwrites rather than appending.
-# @pytest.mark.parametrize('n_frames,batch_size', [(9, 3), (9, 2)])
-# @pytest.mark.parametrize('resume_eval', [False, True])
-@pytest.mark.parametrize('n_frames,batch_size', [(9, 3)])
-@pytest.mark.parametrize('resume_eval', [False])
+        # The returned type must be the same as those saved.
+        cache = TFEPCache(tmp_dir_path)
+        for epoch_idx in range(n_epochs):
+            read_data = cache.read_train_tensors(epoch_idx=0)
+            for name in read_data:
+                assert read_data[name].dtype == saved_tensors[name].dtype
+
+
+def test_tfep_cache_mask():
+    """When not all batch have been saved, reading the TFEPCache returns only the defined values."""
+    dataset = DummyTrajectoryDataset(n_frames=6)
+    data_loader = torch.utils.data.DataLoader(
+        dataset, batch_size=2, drop_last=False, shuffle=True)
+
+    with tempfile.TemporaryDirectory() as tmp_dir_path:
+        cache = TFEPCache(save_dir_path=tmp_dir_path, data_loader=data_loader)
+
+        # Save some data for the last batch.
+        cache.save_train_tensors({'dataset_sample_index': torch.tensor([4, 5])},
+                                 epoch_idx=1, batch_idx=2)
+        read = cache.read_train_tensors(epoch_idx=1)
+        assert torch.all(read['dataset_sample_index'] == torch.tensor([4, 5]))
+
+        # Save also the first batch.
+        cache.save_train_tensors({'dataset_sample_index': torch.tensor([0, 1])},
+                                 epoch_idx=1, batch_idx=0)
+        read = TFEPCache(tmp_dir_path).read_train_tensors(epoch_idx=1)
+        assert torch.all(read['dataset_sample_index'] == torch.tensor([0, 1, 4, 5]))
+
+        # Finally the second batch.
+        cache.save_train_tensors({'dataset_sample_index': torch.tensor([2, 3])},
+                                 epoch_idx=1, batch_idx=1)
+        read = cache.read_train_tensors(epoch_idx=1)
+        assert torch.all(read['dataset_sample_index'] == torch.tensor([0, 1, 2, 3, 4, 5]))
+
+
+@pytest.mark.parametrize('n_frames,batch_size', [(9, 3), (9, 2)])
+@pytest.mark.parametrize('resume_eval', [False, True])
 def test_tfep_cache_save_read_eval_tensors(n_frames, batch_size, resume_eval):
     """Simulate evaluating a model, save and read everything.
 
@@ -259,11 +291,12 @@ def test_tfep_cache_save_read_eval_tensors(n_frames, batch_size, resume_eval):
                 cache = TFEPCache(save_dir_path=tmp_dir_path)
 
             # Generate some fake data to store.
+            saved_tensors = {
+                'dataset_sample_index': batch_data['dataset_sample_index'],
+                'mean': torch.mean(batch_data['positions'], dim=1)
+            }
             cache.save_eval_tensors(
-                tensors={
-                    'dataset_sample_index': batch_data['dataset_sample_index'],
-                    'mean': torch.mean(batch_data['positions'], dim=1)
-                },
+                tensors=saved_tensors,
                 step_idx=step_idx
             )
 
@@ -277,6 +310,8 @@ def test_tfep_cache_save_read_eval_tensors(n_frames, batch_size, resume_eval):
                 named_data = cache.read_eval_tensors(step_idx=step_idx)
                 assert np.allclose(read_data[name], named_data[name])
                 assert np.allclose(read_data[name], ref_data[name])
+                # The returned type must be the same as those saved.
+                assert read_data[name].dtype == saved_tensors[name].dtype
 
         # Now writing data with the same indices overwrite previous values.
         changed_indices = torch.Tensor(np.array([0, 3, 4]))
