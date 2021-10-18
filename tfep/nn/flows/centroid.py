@@ -153,6 +153,23 @@ class CenteredCentroidFlow(PartialFlow):
 
     def forward(self, x):
         """Transform the input configuration."""
+        return self._transform(x)
+
+    def inverse(self, y):
+        """Invert the forward transformation.
+
+        This works only if the forward transformation was performed with
+        ``translate_back`` set to ``True``.
+
+        """
+        if not self.translate_back:
+            raise ValueError("The inverse of CenteredCentroidFlow can be computed"
+                             " only if 'translate_back' is set to True during both"
+                             " the forward and inverse transformations.")
+        return self._transform(y, inverse=True)
+
+    def _transform(self, x, inverse=False):
+        """Apply the forward/inverse transformation."""
         # Reshape the coordinates to standard atom shape.
         x_atom_shape = flattened_to_atom(x, self.space_dimension)
 
@@ -169,7 +186,10 @@ class CenteredCentroidFlow(PartialFlow):
         x_translated = atom_to_flattened(x_atom_shape)
 
         # Apply the transformation through the PartialFlow.
-        y, log_det_J = super().forward(x_translated)
+        if inverse:
+            y, log_det_J = super().inverse(x_translated)
+        else:
+            y, log_det_J = super().forward(x_translated)
 
         # Modify the fixed degrees of freedom so that the centroid remains in the origin.
         y_atom_shape = flattened_to_atom(y, self.space_dimension)

@@ -166,14 +166,14 @@ def test_centered_centroid_flow(
 
     # Run flow.
     x = torch.tensor(atom_to_flattened(x))
-    y, _ = flow(x)
+    y, log_det_J = flow(x)
 
     # Compute the new centroid position.
-    y = flattened_to_atom(y.detach().numpy(), space_dimension)
+    y_atom_shape = flattened_to_atom(y.detach().numpy(), space_dimension)
     if subset_point_indices is None:
-        new_centroid = np.average(y, axis=1, weights=weights)
+        new_centroid = np.average(y_atom_shape, axis=1, weights=weights)
     else:
-        new_centroid = np.average(y[:, subset_point_indices], axis=1, weights=weights)
+        new_centroid = np.average(y_atom_shape[:, subset_point_indices], axis=1, weights=weights)
 
     # Check that centroid is correct.
     if translate_back:
@@ -182,3 +182,9 @@ def test_centered_centroid_flow(
         if origin is None:
             origin = np.zeros(space_dimension)
         assert np.allclose(new_centroid, origin)
+
+    # When translate_back is True, we can also compute the inverse.
+    if translate_back:
+        x_inv, log_det_J_inv = flow.inverse(y)
+        assert np.allclose(x, x_inv)
+        assert np.allclose(log_det_J + log_det_J_inv, torch.zeros_like(log_det_J))
