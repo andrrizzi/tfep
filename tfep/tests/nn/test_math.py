@@ -6,7 +6,7 @@
 # =============================================================================
 
 """
-Test objects and function in functions.math.
+Test objects and function in tfep.nn.math.
 """
 
 
