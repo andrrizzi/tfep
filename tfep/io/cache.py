@@ -122,9 +122,6 @@ class TFEPCache:
         for dir_path in [self._train_dir_path, self._eval_dir_path]:
             os.makedirs(dir_path, exist_ok=True)
 
-        # Save sample to trajectory indices map and metadata.
-        # TODO: Save trajectory indices.
-
         # Save metadata. This must be the very last thing to do in __init__ for
         # resuming to work. No need to write on disk if file is already there.
         if not resume:
@@ -156,6 +153,7 @@ class TFEPCache:
             step_idx=None,
             epoch_idx=None,
             batch_idx=None,
+            remove_nans=False,
             sort_by=None,
             as_numpy=False,
     ):
@@ -177,6 +175,10 @@ class TFEPCache:
         batch_idx : int, optional
             If given together with ``epoch_idx``, the tensors for this epoch/batch
             are returned. If ``step_idx`` is passed, this is ignored.
+        remove_nans : bool or str, optional
+            If ``True`` only the indices corresponding to non NaN entries are
+            returned. If a string, only the indices corresponding to NaN values
+            of ``tensors[remove_nans]`` are returned.
         sort_by : str, optional
             If given, all the returned tensors will be sorted based on the tensor
             with this name (useful if ``sort_by`` is ``'trajectory_sample_index'``).
@@ -197,7 +199,7 @@ class TFEPCache:
             step_idx, epoch_idx, batch_idx, need_batch=True)
 
         # Load in memory the data of this NN.
-        self._load_data(step_idx, type='eval')
+        self._load_data(step_idx, data_type='eval')
 
         # Sort the data if requested.
         if sort_by is not None:
@@ -205,13 +207,22 @@ class TFEPCache:
             self._loaded_eval_data = {k: v[sort_indices] for k, v in self._loaded_eval_data.items()}
 
             # Update the data on disk.
-            self._dump_data(type='eval')
+            self._dump_data(data_type='eval')
 
-        # Convert to tensors.
-        if as_numpy:
+        # Remove undesired names.
+        if names is None:
             data = self._loaded_eval_data
         else:
-            data = {k: torch.tensor(v) for k, v in self._loaded_eval_data.items()}
+            data = {name: self._loaded_eval_data[name] for name in names}
+
+        # Build NaN mask.
+        mask = self._build_mask(remove_nans, data_type='eval')
+        if mask is not None:
+            data = {k: v[mask] for k, v in data.items()}
+
+        # Convert to tensors.
+        if not as_numpy:
+            data = {k: torch.tensor(v) for k, v in data.items()}
 
         return data
 
@@ -221,6 +232,7 @@ class TFEPCache:
             step_idx=None,
             epoch_idx=None,
             batch_idx=None,
+            remove_nans=False,
             as_numpy=False
     ):
         """Read the tensors saved during the given training epoch/batch/step.
@@ -245,6 +257,10 @@ class TFEPCache:
         batch_idx : int, optional
             If given together with ``epoch_idx``, the tensors for this epoch/batch
             are returned. If ``step_idx`` is passed, this is ignored.
+        remove_nans : bool or str, optional
+            If ``True`` only the indices corresponding to non NaN entries are
+            returned. If a string, only the indices corresponding to NaN values
+            of ``tensors[remove_nans]`` are returned.
         as_numpy : bool, optional
             If ``True``, the tensors are returned as a numpy array rather than
             PyTorch ``Tensors``.
@@ -260,20 +276,18 @@ class TFEPCache:
             step_idx, epoch_idx, batch_idx, need_batch=False)
 
         # Load in memory the data of this epoch.
-        self._load_data(epoch_idx, type='train')
+        self._load_data(epoch_idx, data_type='train')
 
-        # Determine which names to load.
+        # Determine which names have to be returned.
         if names is None:
-            names = self._loaded_train_data.keys()
+            names = [k for k in self._loaded_train_data.keys() if k != self.MASK_NAME]
 
-        # Return data.
+        # Build mask.
+        mask = self._build_mask(remove_nans, data_type='train')
+
+        # Read data for the specific epoch/batch.
         tensors = {}
-        mask = self._loaded_train_data[self.MASK_NAME]
         for name in names:
-            # Do not return the mask used to store which batches have been saved.
-            if name == self.MASK_NAME:
-                continue
-
             if batch_idx is None:
                 # Collect data for entire epoch.
                 tensors[name] = self._loaded_train_data[name][mask]
@@ -283,9 +297,9 @@ class TFEPCache:
                 last = first + self.batch_size
                 tensors[name] = self._loaded_train_data[name][first:last][mask[first:last]]
 
-            # Convert from numpy to Tensors.
-            if not as_numpy:
-                tensors[name] = torch.tensor(tensors[name])
+        # Convert from numpy to Tensors.
+        if not as_numpy:
+            tensors = {k: torch.tensor(v) for k, v in tensors.items()}
 
         return tensors
 
@@ -341,7 +355,7 @@ class TFEPCache:
             step_idx, epoch_idx, batch_idx, need_batch=True)
 
         # Load in memory the data of this NN.
-        self._load_data(step_idx, type='eval')
+        self._load_data(step_idx, data_type='eval')
 
         # Make sure all known tensors are updated.
         if len(self._loaded_eval_data) == 0:
@@ -397,7 +411,7 @@ class TFEPCache:
                 self._loaded_eval_data[name] = np.concatenate((current_arr, value))
 
         # Update cached file on disk.
-        self._dump_data(type='eval')
+        self._dump_data(data_type='eval')
 
 
     def save_train_tensors(self, tensors, step_idx=None, epoch_idx=None, batch_idx=None):
@@ -427,7 +441,7 @@ class TFEPCache:
             step_idx, epoch_idx, batch_idx, need_batch=False)
 
         # Load in memory the data of this epoch.
-        self._load_data(epoch_idx, type='train')
+        self._load_data(epoch_idx, data_type='train')
 
         # This is the first index pointing to the start of the batch.
         if batch_idx is not None:
@@ -454,7 +468,7 @@ class TFEPCache:
                 mask[first:first+len(value)] = True
 
         # Update cached file on disk.
-        self._dump_data(type='train')
+        self._dump_data(data_type='train')
 
     # --------------------- #
     # Private class members #
@@ -471,12 +485,56 @@ class TFEPCache:
                        "difficult to match training and evaluation configurations "
                        "to their reference potential.").format(cls.INDEX_NAMES))
 
-    def _get_data_file_path(self, type):
+    def _build_mask(self, remove_nans, data_type):
+        """Return a boolean mask to select the data elements to mask.
+
+        If no mask must be used, returns None.
+
+        data_type can be 'train' or 'eval'.
+        """
+        # No need to use a mask for eval data if remove_nans is False.
+        if remove_nans is False:
+            if data_type == 'eval':
+                return None
+            else:
+                return self._loaded_train_data[self.MASK_NAME]
+
+        # Load the data to build the NaN mask.
+        data_attr = '_loaded_' + data_type + '_data'  # e.g., _loaded_train_data
+        loaded_data = getattr(self, data_attr)
+
+        # Build the NaN mask.
+        if remove_nans is True:
+            mask = None
+            for name, value in loaded_data.items():
+                if name != self.MASK_NAME:
+                    if mask is None:
+                        mask = ~np.isnan(value)
+                    else:
+                        mask &= ~np.isnan(value)
+        else:
+            # Then assume it is a key.
+            mask = ~np.isnan(loaded_data[remove_nans])
+
+        # Add the invalid training data mask.
+        if data_type != 'eval':
+            print(remove_nans, data_type, loaded_data, mask)
+            mask &= self._loaded_train_data[self.MASK_NAME]
+
+        return mask
+
+    def _dump_data(self, data_type):
+        """Dump on disk the currently loaded training data."""
+        data_attr = '_loaded_' + data_type + '_data'  # e.g., _loaded_train_data
+        file_path = self._get_data_file_path(data_type=data_type)
+        np.savez_compressed(file_path, **getattr(self, data_attr))
+
+    def _get_data_file_path(self, data_type):
         """The file path where the currently loaded training/evaluation data is stored.
 
-        type can be 'train' or 'eval'
+        data_type can be 'train' or 'eval'.
         """
-        if type == 'train':
+        if data_type == 'train':
             file_name = 'epoch-' + str(self._loaded_train_idx)
             dir_path = self._train_dir_path
         else:
@@ -484,19 +542,13 @@ class TFEPCache:
             dir_path = self._eval_dir_path
         return os.path.join(dir_path, file_name + '.npz')
 
-    def _dump_data(self, type):
-        """Dump on disk the currently loaded training data."""
-        data_attr = '_loaded_' + type + '_data'  # e.g., _loaded_train_data
-        file_path = self._get_data_file_path(type=type)
-        np.savez_compressed(file_path, **getattr(self, data_attr))
-
-    def _load_data(self, idx, type):
+    def _load_data(self, idx, data_type):
         """Load/initialize the training/evaluation data in memory.
 
-        type can be 'train' or 'eval'.
+        data_type can be 'train' or 'eval'.
         """
         # Check if we have already loaded the data.
-        idx_attr = '_loaded_' + type + '_idx'  # e.g., _loaded_train_idx
+        idx_attr = '_loaded_' + data_type + '_idx'  # e.g., _loaded_train_idx
         if getattr(self, idx_attr) == idx:
             return
 
@@ -504,8 +556,8 @@ class TFEPCache:
         setattr(self, idx_attr, idx)
 
         # Check if there is data on disk.
-        data_attr = '_loaded_' + type + '_data'  # e.g., _loaded_train_data
-        file_path = self._get_data_file_path(type)
+        data_attr = '_loaded_' + data_type + '_data'  # e.g., _loaded_train_data
+        file_path = self._get_data_file_path(data_type)
         if os.path.isfile(file_path):
             # NpzFile offers lazy loading, but we load everything into memory
             # for now to avoid having to deal with correctly closing the file.
@@ -513,7 +565,7 @@ class TFEPCache:
             setattr(self, data_attr, {k: v for k, v in npz_file.items()})
         else:
             # Initialize the data for this epoch.
-            if type == 'train':
+            if data_type == 'train':
                 data = {self.MASK_NAME: np.full(self.n_samples_per_epoch, fill_value=False)}
             else:
                 data = {}

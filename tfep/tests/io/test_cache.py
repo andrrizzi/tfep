@@ -254,6 +254,65 @@ def test_tfep_cache_mask():
         assert torch.all(read['dataset_sample_index'] == torch.tensor([0, 1, 2, 3, 4, 5]))
 
 
+@pytest.mark.parametrize('func_type', ['train', 'eval'])
+def test_tfep_nans(func_type):
+    """TFEPCache can ignore NaNs of arbitrary quantities."""
+    dataset = DummyTrajectoryDataset(n_frames=6)
+    data_loader = torch.utils.data.DataLoader(
+        dataset, batch_size=3, drop_last=False, shuffle=True)
+
+    # Data to store in the cache.
+    saved_tensors = {
+        'dataset_sample_index': torch.tensor([4, 5, 8]),
+        'quantity1': torch.tensor([1.0, float('nan'), 3.0]),
+        'quantity2': torch.tensor([float('nan'), 4.0, 5.0]),
+    }
+
+    with tempfile.TemporaryDirectory() as tmp_dir_path:
+        # Save some data for the last batch.
+        cache = TFEPCache(save_dir_path=tmp_dir_path, data_loader=data_loader)
+        getattr(cache, 'save_'+func_type+'_tensors')(saved_tensors, step_idx=0)
+
+        # Now read the data with the current and a new cache.
+        for c in [cache, TFEPCache(tmp_dir_path)]:
+            read_func = 'read_'+func_type+'_tensors'
+
+            # Without remove_nans, they are still there.
+            data = getattr(c, read_func)(step_idx=0)
+            assert torch.all(data['dataset_sample_index'] == saved_tensors['dataset_sample_index'])
+            assert torch.isnan(data['quantity1'][1])
+            assert torch.isnan(data['quantity2'][0])
+
+            # With remove_nans based on quantity1 or quantity2, different frames are selected.
+            data = getattr(c, read_func)(step_idx=0, remove_nans='quantity1')
+            assert torch.all(data['dataset_sample_index'] == torch.tensor([4, 8]))
+            assert len(data['quantity1']) == 2
+            assert len(data['quantity2']) == 2
+            assert not any(torch.isnan(data['quantity1']))
+            assert torch.isnan(data['quantity2'][0])
+
+            data = getattr(c, read_func)(step_idx=0, remove_nans='quantity2')
+            assert torch.all(data['dataset_sample_index'] == torch.tensor([5, 8]))
+            assert torch.isnan(data['quantity1'][0])
+            assert not any(torch.isnan(data['quantity2']))
+
+            # With remove_nans=True, no NaNs should be present anywhere.
+            data = getattr(c, read_func)(step_idx=0, remove_nans=True)
+            assert torch.all(data['dataset_sample_index'] == torch.tensor([8]))
+            assert len(data['quantity1']) == 1
+            assert len(data['quantity2']) == 1
+            assert not any(torch.isnan(data['quantity1']))
+            assert not any(torch.isnan(data['quantity2']))
+
+            # The same works if only a specific key != remove_nans is returned.
+            data = getattr(c, read_func)(step_idx=0, names=['dataset_sample_index'], remove_nans='quantity1')
+            assert len(data) == 1
+            assert torch.all(data['dataset_sample_index'] == torch.tensor([4, 8]))
+            data = getattr(c, read_func)(step_idx=0, names=['dataset_sample_index'], remove_nans=True)
+            assert len(data) == 1
+            assert torch.all(data['dataset_sample_index'] == torch.tensor([8]))
+
+
 @pytest.mark.parametrize('n_frames,batch_size', [(9, 3), (9, 2)])
 @pytest.mark.parametrize('resume_eval', [False, True])
 def test_tfep_cache_save_read_eval_tensors(n_frames, batch_size, resume_eval):
