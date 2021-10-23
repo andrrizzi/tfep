@@ -390,7 +390,7 @@ class SRunLauncher(Launcher):
             with temporary_cd(kwargs.get('cwd', None)):
                 self._create_multiprog_config_file(commands)
 
-        super().run(*srun_commands, **kwargs)
+        return super().run(*srun_commands, **kwargs)
 
     def _create_srun_commands(self, commands):
         """Return the commands in list format with 'srun [options]' prepended."""
