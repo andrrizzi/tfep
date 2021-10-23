@@ -518,7 +518,6 @@ class TFEPCache:
 
         # Add the invalid training data mask.
         if data_type != 'eval':
-            print(remove_nans, data_type, loaded_data, mask)
             mask &= self._loaded_train_data[self.MASK_NAME]
 
         return mask
