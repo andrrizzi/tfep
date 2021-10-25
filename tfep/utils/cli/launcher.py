@@ -177,15 +177,7 @@ class Launcher:
             # Now wait for the end and collect all outputs.
             results = []
             for process in processes:
-                try:
-                    stdout, stderr = process.communicate(timeout=timeout)
-                except subprocess.TimeoutExpired as exception:
-                    self._on_timeout_expired(process, exception, cwd)
-                except:
-                    process.kill()
-                    process.wait()
-                    raise
-                retcode = process.poll()
+                stdout, stderr, retcode = self._handle_process(process, timeout, cwd)
                 if check and retcode:
                     raise subprocess.CalledProcessError(
                         retcode, process.args, output=stdout, stderr=stderr)
