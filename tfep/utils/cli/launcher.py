@@ -176,8 +176,8 @@ class Launcher:
 
             # Now wait for the end and collect all outputs.
             results = []
-            for process in processes:
-                stdout, stderr, retcode = self._handle_process(process, timeout, cwd)
+            for process_idx, process in enumerate(processes):
+                stdout, stderr, retcode = self._handle_process(process, timeout, cwd[process_idx])
                 if check and retcode:
                     raise subprocess.CalledProcessError(
                         retcode, process.args, output=stdout, stderr=stderr)
