@@ -179,11 +179,8 @@ class Launcher:
             for process in processes:
                 try:
                     stdout, stderr = process.communicate(timeout=timeout)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    stdout, stderr = process.communicate()
-                    raise subprocess.TimeoutExpired(
-                        process.args, timeout, output=stdout, stderr=stderr)
+                except subprocess.TimeoutExpired as exception:
+                    self._on_timeout_expired(process, exception, cwd)
                 except:
                     process.kill()
                     process.wait()
@@ -198,6 +195,26 @@ class Launcher:
         if len(commands) == 1:
             return results[0]
         return results
+
+    def _handle_process(self, process, timeout, cwd):
+        """Handle the process and returns stdout, stderr and return code."""
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exception:
+            self._on_timeout_expired(process, exception)
+        except:
+            process.kill()
+            process.wait()
+            raise
+        retcode = process.poll()
+        return stdout, stderr, retcode
+
+    def _on_timeout_expired(self, process, exception):
+        """Terminate the process and raises a TimeoutExpired error."""
+        process.kill()
+        stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(
+            process.args, exception.timeout, output=stdout, stderr=stderr)
 
 
 # =============================================================================
