@@ -204,9 +204,8 @@ class Launcher:
     def _on_timeout_expired(self, process, exception):
         """Terminate the process and raises a TimeoutExpired error."""
         process.kill()
-        stdout, stderr = process.communicate()
-        raise subprocess.TimeoutExpired(
-            process.args, exception.timeout, output=stdout, stderr=stderr)
+        exception.stdout, exception.stderr = process.communicate()
+        raise exception
 
 
 # =============================================================================
@@ -216,6 +215,7 @@ class Launcher:
 class SRunTool(CLITool):
     """SLURM srun command line utility."""
     EXECUTABLE_PATH = 'srun'
+    time = KeyValueOption('--time')
     n_nodes = KeyValueOption('--nodes')
     n_tasks = KeyValueOption('--ntasks')
     n_tasks_per_node = KeyValueOption('--ntasks-per-node')
@@ -250,6 +250,9 @@ class SRunLauncher(Launcher):
 
     Parameters
     ----------
+    time : str or None
+        The maximum time before the job step is terminated as a string in the same
+        format used by SLURM (e.g., ``'1-00:06:00'``).
     n_nodes : int or List[int], optional
         The number of nodes to pass to ``srun``. If multiple commands are executed
         in parallel, it is possible to specify the number of nodes for each command
@@ -282,6 +285,8 @@ class SRunLauncher(Launcher):
 
     Attributes
     ----------
+    time : str or None
+        The maximum time before the job step is terminated.
     n_nodes : int or List[int] or None
         The number of nodes to pass to ``srun`` for each command.
     n_tasks : int or List[int] or None
@@ -333,9 +338,10 @@ class SRunLauncher(Launcher):
 
     """
 
-    def __init__(self, n_nodes=None, n_tasks=None, n_tasks_per_node=None, n_cpus_per_task=None,
+    def __init__(self, time=None, n_nodes=None, n_tasks=None, n_tasks_per_node=None, n_cpus_per_task=None,
                  relative_node_idx=None, multiprog=False, multiprog_config_file_path='srun-job.conf'):
         super().__init__()
+        self.time = time
         self.n_nodes = n_nodes
         self.n_tasks = n_tasks
         self.n_tasks_per_node = n_tasks_per_node
@@ -427,6 +433,7 @@ class SRunLauncher(Launcher):
         for cmd_idx, cmd in enumerate(commands):
             # Create srun execution
             srun = SRunTool(
+                time=self.time,
                 n_nodes=n_nodes[cmd_idx],
                 n_tasks=n_tasks[cmd_idx],
                 n_tasks_per_node=n_tasks_per_node[cmd_idx],
@@ -448,6 +455,7 @@ class SRunLauncher(Launcher):
         # the sum of the number of tasks assigned to each command.
         # We also ignore n_tasks_per_node since it's overwritten by n_tasks.
         srun = SRunTool(
+            time=self.time,
             n_nodes=self.n_nodes,
             n_tasks=sum(n_tasks),
             n_cpus_per_task=self.n_cpus_per_task,
