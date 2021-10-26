@@ -19,7 +19,7 @@ import pytest
 import torch
 
 from tfep.nn.flows.centroid import CenteredCentroidFlow
-from tfep.utils.geometry import atom_to_flattened, flattened_to_atom, atom_to_flattened_indices
+from tfep.utils.geometry import atom_to_flattened, flattened_to_atom
 
 # =============================================================================
 # GLOBAL VARIABLES
