@@ -402,6 +402,7 @@ def test_run_mimic(config):
                 return_energy=True, return_force=True,
                 working_dir_path=working_dir_path, cleanup_working_dir=True,
                 parallelization_strategy=parallelization_strategy,
+                on_unconverged='success',
             )
         finally:
             if pool is not None:
@@ -482,6 +483,7 @@ def test_potential_energy_mimic_gradcheck():
                 return_energy=False, return_force=False,
                 working_dir_path=restart_dir_paths, cleanup_working_dir=False,
                 parallelization_strategy=parallelization_strategy,
+                on_unconverged='success',
             )
 
             # Create a template CPMD input file with the RESTART directive.
@@ -529,6 +531,9 @@ def test_potential_energy_mimic_gradcheck():
                         parallelization_strategy,
                         None,  # launcher_kwargs
                         None,  # grompp_launcher_kwargs
+                        1,  # n_attempts
+                        'success',  # on_unconverged
+                        'raise',  # on_local_error
                         ],
                 atol=0.5
             )
