@@ -27,7 +27,7 @@ def batchwise_dot(x1, x2, keepdim=False):
     Parameters
     ----------
     x1 : torch.Tensor
-        A tensor of shape ``(batch_size, N)``.
+        A tensor of shape ``(batch_size, N)`` or ``(N,)``.
     x2 : torch.Tensor
         A tensor of shape ``(batch_size, N)`` or ``(N,)``.
     keepdim : bool, optional
@@ -46,10 +46,21 @@ def batchwise_dot(x1, x2, keepdim=False):
 def batchwise_outer(x1, x2):
     """Batchwise outer product between two 2D tensors.
 
-    Takes two tensors of shape ``(batch_size, N)`` and returns the outer
-    product of shape ``(batch_size, N, N)``.
+    Parameters
+    ----------
+    x1 : torch.Tensor
+        A tensor of shape ``(batch_size, N)``.
+    x2 : torch.Tensor
+        A tensor of shape ``(batch_size, N)``.
+
+    Returns
+    -------
+    result : torch.Tensor
+        A tensor shape ``(batch_size, N, N)``, where ``result[b][i][j]`` is the
+        outer product between ``x1[b][i]`` and ``x2[b][j]``.
 
     """
+    # return torch.einsum('bi,bj->bij', x1, x2)
     return torch.matmul(x1[:, :, None], x2[:, None, :])
 
 
@@ -111,12 +122,12 @@ def cov(x, ddof=1, dim_n=1, inplace=False):
 # =============================================================================
 
 def angle(x1, x2):
-    """Return the angle in radians between the a batch of vectors and another vector.
+    """Return the angle in radians between a batch of vectors and another vector.
 
     Parameters
     ----------
     x1 : torch.Tensor
-        A tensor of shape ``(batch_size, N)``.
+        A tensor of shape ``(batch_size, N)`` or ``(N,)``.
     x2 : torch.Tensor
         A tensor of shape ``(N,)``.
 
@@ -133,3 +144,72 @@ def angle(x1, x2):
     # Catch round-offs.
     cos_theta = torch.clamp(cos_theta, min=-1, max=1)
     return torch.acos(cos_theta)
+
+
+def normalize_vectors(v):
+    """Return the normalized vector.
+
+    Parameters
+    ----------
+    v : torch.Tensor
+        Tensor of shape ``(batch_size, N)`` or ``(N,)``.
+
+    Returns
+    -------
+    norm_v : torch.Tensor
+        Normalized tensor of same shape as ``v``.
+
+    """
+    return v / torch.linalg.vector_norm(v, dim=-1, keepdim=True)
+
+
+def rotation_matrix_3d(angles, directions):
+    """Return the matrix rotating vectors for the given angle about a direction.
+
+    The rotation matrix is built using Rodrigues' rotation formula.
+
+    Parameters
+    ----------
+    angles : torch.Tensor
+        A tensor of shape ``(batch_size,)``.
+    directions : torch.Tensor
+        A tensor of shape ``(batch_size, 3)``.
+
+    Returns
+    -------
+    R : torch.Tensor
+        ``R[i]`` is the 3 by 3 matrix rotating by the angle ``angles[i]`` about
+        the vector ``directions[i]``.
+
+    """
+    batch_size = len(angles)
+    sina = torch.sin(angles)
+    cosa = torch.cos(angles)
+
+    # unit rotation vectors (batch_size, 3).
+    k = normalize_vectors(directions)
+
+    # Reshape cosa to have (batch_size, 1, 1) dimension.
+    cosa = cosa.unsqueeze(-1).unsqueeze(-1)
+
+    # R[i] is cosa[i] * torch.eye(3).
+    R = cosa * torch.eye(3).expand(batch_size, 3, 3)
+
+    # New term of R[i] is outer(k[i], k[i]) * (1 - cosa[i]).
+    R = R + (1 - cosa) * batchwise_outer(k, k)
+
+    # Last term of R[i] is cross_product_matrix(k[i]) * sina[i]
+    sina_k = sina.unsqueeze(-1) * k
+
+    # cross_matrix has shape (3, 3, batch_size)
+    zeros = torch.zeros_like(angles)
+    cross_matrix = torch.stack([
+        torch.stack([zeros, -sina_k[:,2], sina_k[:,1]]),
+        torch.stack([sina_k[:,2], zeros, -sina_k[:,0]]),
+        torch.stack([-sina_k[:,1], sina_k[:,0], zeros]),
+    ])
+
+    # Put batch_size back at the beginning to sum correctly.
+    R = R + cross_matrix.permute(2, 0, 1)
+
+    return R
