@@ -6,7 +6,7 @@
 # =============================================================================
 
 """
-Test objects and function in tfep.nn.math.
+Test objects and function in tfep.utils.math.
 """
 
 
@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 import torch
 
-from tfep.nn.math import cov
+from tfep.utils.math import cov
 
 
 # =============================================================================
