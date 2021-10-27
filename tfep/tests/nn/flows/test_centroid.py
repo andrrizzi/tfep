@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 import torch
 
+import tfep.nn.flows
 from tfep.nn.flows.centroid import CenteredCentroidFlow
 from tfep.utils.misc import atom_to_flattened, flattened_to_atom
 
@@ -31,10 +32,29 @@ GENERATOR.manual_seed(0)
 
 
 # =============================================================================
+# TEST MODULE CONFIGURATION
+# =============================================================================
+
+_old_default_dtype = None
+
+def setup_module(module):
+    global _old_default_dtype
+    _old_default_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.double)
+
+
+def teardown_module(module):
+    torch.set_default_dtype(_old_default_dtype)
+
+
+# =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
 
 class IdentityFlow:
+
+    def __init__(self, _):
+        pass
 
     def __call__(self, x):
         return x, torch.zeros(len(x))
@@ -45,6 +65,9 @@ class IdentityFlow:
 
 class TranslateFlow:
 
+    def __init__(self, _):
+        pass
+
     def __call__(self, x, sign=1):
         n_dofs = x.shape[-1]
         translate = torch.arange(n_dofs, dtype=x.dtype)
@@ -52,6 +75,18 @@ class TranslateFlow:
 
     def inverse(self, y):
         return self(y, sign=-1)
+
+
+class MyMAF:
+
+    def __init__(self, dimension_in):
+        self.maf = tfep.nn.flows.MAF(dimension_in, initialize_identity=False)
+
+    def __call__(self, x):
+        return self.maf(x)
+
+    def inverse(self, y):
+        return self.maf.inverse(y)
 
 
 # =============================================================================
@@ -115,7 +150,7 @@ def test_compute_centroid(exclude_fixed_point, subset_point_indices, weights, fi
     assert np.allclose(centroid, expected_centroid)
 
 
-@pytest.mark.parametrize('flow', [IdentityFlow, TranslateFlow])
+@pytest.mark.parametrize('flow', [IdentityFlow, TranslateFlow, MyMAF])
 @pytest.mark.parametrize('space_dimension', [1, 2, 3])
 @pytest.mark.parametrize('subset_point_indices,weights', [
     (None, None),
@@ -156,7 +191,7 @@ def test_centered_centroid_flow(
 
     # Build flow.
     flow = CenteredCentroidFlow(
-        flow(),
+        flow((n_points-1) * space_dimension),
         space_dimension,
         subset_point_indices=subset_point_indices,
         weights=weights,
@@ -186,5 +221,5 @@ def test_centered_centroid_flow(
     # When translate_back is True, we can also compute the inverse.
     if translate_back:
         x_inv, log_det_J_inv = flow.inverse(y)
-        assert np.allclose(x, x_inv)
-        assert np.allclose(log_det_J + log_det_J_inv, torch.zeros_like(log_det_J))
+        assert torch.allclose(x, x_inv)
+        assert torch.allclose(log_det_J + log_det_J_inv, torch.zeros_like(log_det_J))
