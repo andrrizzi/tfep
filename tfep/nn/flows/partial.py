@@ -36,7 +36,7 @@ class PartialFlow(torch.nn.Module):
     ----------
     flow : torch.nn.Module
         The wrapped normalizing flows mapping the non-constant degrees of freedom.
-    fixed_indices : List[int], optional
+    fixed_indices : array-like of int, optional
         The indices of the degrees of freedom that must be kept constant.
 
     """
@@ -44,7 +44,14 @@ class PartialFlow(torch.nn.Module):
     def __init__(self, flow, fixed_indices):
         super().__init__()
         self.flow = flow
-        self._fixed_indices = fixed_indices
+
+        # Make sure we store the fixed_indices as a list as we'll later transform
+        # it into a set and we need to make sure it's a set of integers rather
+        # than a set of tensors.
+        try:
+            self._fixed_indices = fixed_indices.tolist()
+        except AttributeError:
+            self._fixed_indices = fixed_indices
 
         # We also need the indices that we are not factoring out.
         # This is initialized lazily in self._pass() because we
