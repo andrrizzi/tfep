@@ -191,12 +191,15 @@ class CenteredCentroidFlow(PartialFlow):
         else:
             y, log_det_J = super().forward(x_translated)
 
-        # Modify the fixed degrees of freedom so that the centroid remains in the origin.
-        y_atom_shape = flattened_to_atom(y, self.space_dimension)
-        y_centroid, fixed_weight = self._compute_centroid(y_atom_shape, exclude_fixed_point=True)
-
-        # Translate the constrained point to force the centroid in the origin.
-        y[:, self._fixed_indices] = (self.origin - y_centroid) / fixed_weight
+        # Modify the fixed degrees of freedom so that the centroid remains in the
+        # origin. If the centroid is computed only using the fixed_atom_idx, we
+        # don't neet to do this as this was held fixed by PartialFlow.
+        if self._subset_point_indices is None or len(self._subset_point_indices) > 1:
+            y_atom_shape = flattened_to_atom(y, self.space_dimension)
+            y_centroid, fixed_weight = self._compute_centroid(y_atom_shape, exclude_fixed_point=True)
+    
+            # Translate the constrained point to force the centroid in the origin.
+            y[:, self._fixed_indices] = (self.origin - y_centroid) / fixed_weight
 
         # If we need to translate back, the new centroid must equal the original.
         if self.translate_back:
