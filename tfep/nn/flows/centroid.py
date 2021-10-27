@@ -197,7 +197,7 @@ class CenteredCentroidFlow(PartialFlow):
         if self._subset_point_indices is None or len(self._subset_point_indices) > 1:
             y_atom_shape = flattened_to_atom(y, self.space_dimension)
             y_centroid, fixed_weight = self._compute_centroid(y_atom_shape, exclude_fixed_point=True)
-    
+
             # Translate the constrained point to force the centroid in the origin.
             y[:, self._fixed_indices] = (self.origin - y_centroid) / fixed_weight
 
