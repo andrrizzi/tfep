@@ -6,7 +6,7 @@
 # =============================================================================
 
 """
-Utility functions for algebra in PyTorch.
+Math and geometry utility functions to manipulate coordinates.
 """
 
 
@@ -18,17 +18,29 @@ import torch
 
 
 # =============================================================================
-# FUNCTIONS
+# MATH
 # =============================================================================
 
-def batchwise_dot(x1, x2):
-    """Batchwise dot product between two 2D tensors.
+def batchwise_dot(x1, x2, keepdim=False):
+    """Batchwise dot product between two batches of tensors.
 
-    Takes two tensors of shape ``(batch_size, N)`` and returns the batchwise
-    dot product of shape ``(batch_size, 1)``.
+    Parameters
+    ----------
+    x1 : torch.Tensor
+        A tensor of shape ``(batch_size, N)``.
+    x2 : torch.Tensor
+        A tensor of shape ``(batch_size, N)`` or ``(N,)``.
+    keepdim : bool, optional
+        If ``True``, the return value has shape ``(batch_size, 1)``.
+        Otherwise ``(batch_size,)``.
+
+    Returns
+    -------
+    result : torch.Tensor
+        ``result[i]`` is the dot product between ``x1[i]`` and ``x2[i]``
 
     """
-    return (x1 * x2).sum(dim=-1, keepdim=True)
+    return (x1 * x2).sum(dim=-1, keepdim=keepdim)
 
 
 def batchwise_outer(x1, x2):
@@ -92,3 +104,32 @@ def cov(x, ddof=1, dim_n=1, inplace=False):
         c = x.matmul(x.t()) / n
 
     return c
+
+
+# =============================================================================
+# GEOMETRY
+# =============================================================================
+
+def angle(x1, x2):
+    """Return the angle in radians between the a batch of vectors and another vector.
+
+    Parameters
+    ----------
+    x1 : torch.Tensor
+        A tensor of shape ``(batch_size, N)``.
+    x2 : torch.Tensor
+        A tensor of shape ``(N,)``.
+
+    Returns
+    -------
+    angle : torch.Tensor
+        A tensor of shape ``(batch_size,)`` where ``angle[i]`` is the angle
+        between vectors ``x1[i]`` and ``x2``.
+
+    """
+    x1_norm = torch.linalg.vector_norm(x1, dim=-1)
+    x2_norm = torch.linalg.vector_norm(x2, dim=-1)
+    cos_theta = batchwise_dot(x1, x2) / (x1_norm * x2_norm)
+    # Catch round-offs.
+    cos_theta = torch.clamp(cos_theta, min=-1, max=1)
+    return torch.acos(cos_theta)
