@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 import torch
 
-from tfep.utils.math import cov, angle, rotation_matrix_3d
+from tfep.utils.math import cov, vector_vector_angle, vector_plane_angle, rotation_matrix_3d
 
 
 # =============================================================================
@@ -35,10 +35,24 @@ _GENERATOR.manual_seed(0)
 # REFERENCE FUNCTIONS FOR TESTING
 # =============================================================================
 
-def reference_angle(v1, v2):
+def reference_vector_vector_angle(v1, v2):
     v1_np, v2_np = v1.detach().numpy(), v2.detach().numpy()
     angles = [MDAnalysis.lib.mdamath.angle(v, v2_np) for v in v1_np]
     return torch.tensor(angles, dtype=v1.dtype)
+
+
+def reference_vector_plane_angle(vectors, plane):
+    vectors_np, plane_np = vectors.detach().numpy(), plane.detach().numpy()
+    angles = []
+    for v in vectors_np:
+        x = np.dot(v, plane) / (np.linalg.norm(v) * np.linalg.norm(plane))
+        # Catch roundoffs that lead to nan otherwise.
+        if x > 1.0:
+            return np.pi/2
+        elif x < -1.0:
+            return -np.pi/2
+        angles.append(np.arcsin(x))
+    return torch.tensor(angles, dtype=plane.dtype)
 
 
 def reference_rotation_matrix_3d(angles, directions):
@@ -70,28 +84,54 @@ def test_cov(ddof, dim_n):
     assert np.allclose(cov_np, cov_torch)
 
 
-def test_angle_axes():
-    """Test the angle() function to measure angles between axes."""
+def test_vector_vector_angle_axes():
+    """Test the vector_vector_angle() function to measure angles between axes."""
     v1 = torch.eye(3)
-    angles = angle(v1, v1[0])
+    angles = vector_vector_angle(v1, v1[0])
     assert torch.allclose(angles, torch.tensor([0.0, np.pi/2, np.pi/2]))
-    angles = angle(v1, v1[1])
+    angles = vector_vector_angle(v1, v1[1])
     assert torch.allclose(angles, torch.tensor([np.pi/2, 0.0, np.pi/2]))
-    angles = angle(v1, v1[2])
+    angles = vector_vector_angle(v1, v1[2])
     assert torch.allclose(angles, torch.tensor([np.pi/2, np.pi/2, 0.0]))
 
 
 @pytest.mark.parametrize('batch_size', [1, 3])
 @pytest.mark.parametrize('dimension', [2, 3, 4])
-def test_angle_against_reference(batch_size, dimension):
-    """Test the angle() function on random tensors against a reference implementation."""
+def test_vector_vector_angle_against_reference(batch_size, dimension):
+    """Test the vector_vector_angle() function on random tensors against a reference implementation."""
     # Build a random input.
     v1 = torch.randn((batch_size, dimension), generator=_GENERATOR)
     v2 = torch.randn(dimension, generator=_GENERATOR)
 
     # Compare reference and PyTorch implementation.
-    angles = angle(v1, v2)
-    ref_angles = reference_angle(v1, v2)
+    angles = vector_vector_angle(v1, v2)
+    ref_angles = reference_vector_vector_angle(v1, v2)
+    assert torch.allclose(angles, ref_angles)
+
+
+def test_vector_plane_angle_axes():
+    """Test the vector_plane_angle() function to measure angles between axes planes."""
+    vectors = torch.eye(3)
+    planes = torch.eye(3)
+    angles = vector_plane_angle(vectors, planes[0])
+    assert torch.allclose(angles, torch.tensor([np.pi/2, 0.0, 0.0]))
+    angles = vector_plane_angle(vectors, planes[1])
+    assert torch.allclose(angles, torch.tensor([0.0, np.pi/2, 0.0]))
+    angles = vector_plane_angle(vectors, planes[2])
+    assert torch.allclose(angles, torch.tensor([0.0, 0.0, np.pi/2]))
+
+
+@pytest.mark.parametrize('batch_size', [1, 3])
+@pytest.mark.parametrize('dimension', [2, 3, 4])
+def test_vector_plane_angle_against_reference(batch_size, dimension):
+    """Test the vector_plane_angle() function on random tensors against a reference implementation."""
+    # Build a random input.
+    vectors = torch.randn((batch_size, dimension), generator=_GENERATOR)
+    plane = torch.randn(dimension, generator=_GENERATOR)
+
+    # Compare reference and PyTorch implementation.
+    angles = vector_plane_angle(vectors, plane)
+    ref_angles = reference_vector_plane_angle(vectors, plane)
     assert torch.allclose(angles, ref_angles)
 
 

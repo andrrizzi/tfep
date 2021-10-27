@@ -121,7 +121,7 @@ def cov(x, ddof=1, dim_n=1, inplace=False):
 # GEOMETRY
 # =============================================================================
 
-def angle(x1, x2):
+def vector_vector_angle(x1, x2):
     """Return the angle in radians between a batch of vectors and another vector.
 
     Parameters
@@ -144,6 +144,31 @@ def angle(x1, x2):
     # Catch round-offs.
     cos_theta = torch.clamp(cos_theta, min=-1, max=1)
     return torch.acos(cos_theta)
+
+
+def vector_plane_angle(x, plane):
+    """Return the angle in radians between a batch of vectors and another vector.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        A tensor of shape ``(batch_size, N)`` or ``(N,)``.
+    plane : torch.Tensor
+        A tensor of shape ``(N,)`` that represent a normal vector to the plane.
+
+    Returns
+    -------
+    angle : torch.Tensor
+        A tensor of shape ``(batch_size,)`` where ``angle[i]`` is the angle
+        between vector ``x[i]`` and plane ``plane``.
+
+    """
+    x_norm = torch.linalg.vector_norm(x, dim=-1)
+    plane_norm = torch.linalg.vector_norm(plane, dim=-1)
+    cos_theta = batchwise_dot(x, plane) / (x_norm * plane_norm)
+    # Catch round-offs.
+    cos_theta = torch.clamp(cos_theta, min=-1, max=1)
+    return torch.asin(cos_theta)  # asin(x) = pi/2 - acos(x).
 
 
 def normalize_vectors(v):
