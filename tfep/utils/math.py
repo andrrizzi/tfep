@@ -121,6 +121,23 @@ def cov(x, ddof=1, dim_n=1, inplace=False):
 # GEOMETRY
 # =============================================================================
 
+def normalize_vectors(x):
+    """Return the normalized vector.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Tensor of shape ``(batch_size, N)`` or ``(N,)``.
+
+    Returns
+    -------
+    norm_x : torch.Tensor
+        Normalized tensor of same shape as ``v``.
+
+    """
+    return x / torch.linalg.vector_norm(x, dim=-1, keepdim=True)
+
+
 def vector_vector_angle(x1, x2):
     """Return the angle in radians between a batch of vectors and another vector.
 
@@ -169,23 +186,6 @@ def vector_plane_angle(x, plane):
     # Catch round-offs.
     cos_theta = torch.clamp(cos_theta, min=-1, max=1)
     return torch.asin(cos_theta)  # asin(x) = pi/2 - acos(x).
-
-
-def normalize_vectors(v):
-    """Return the normalized vector.
-
-    Parameters
-    ----------
-    v : torch.Tensor
-        Tensor of shape ``(batch_size, N)`` or ``(N,)``.
-
-    Returns
-    -------
-    norm_v : torch.Tensor
-        Normalized tensor of same shape as ``v``.
-
-    """
-    return v / torch.linalg.vector_norm(v, dim=-1, keepdim=True)
 
 
 def rotation_matrix_3d(angles, directions):
@@ -238,3 +238,24 @@ def rotation_matrix_3d(angles, directions):
     R = R + cross_matrix.permute(2, 0, 1)
 
     return R
+
+
+def batchwise_rotate(x, rotation_matrices):
+    """Rotate a batch of configurations with their respective rotation matrix.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        A tensor of shape ``(batch_size, n_vectors, 3)``.
+    rotation_matrices : torch.Tensor
+        A tensor of shape ``(batch_size, 3, 3)``.
+
+    Returns
+    -------
+    y : torch.Tensor
+        A tensor of shape ``(batch_size, n_vectors, 3))`` where ``y[b][i]`` is
+        the result of rotating vector ``x[b][i]`` with the rotation matrix
+        ``rotation_matrices[b]``.
+
+    """
+    return torch.bmm(x, rotation_matrices.permute(0, 2, 1))

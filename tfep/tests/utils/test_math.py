@@ -19,7 +19,10 @@ import numpy as np
 import pytest
 import torch
 
-from tfep.utils.math import cov, vector_vector_angle, vector_plane_angle, rotation_matrix_3d
+from tfep.utils.math import (
+    cov, vector_vector_angle, vector_plane_angle,
+    rotation_matrix_3d, batchwise_rotate
+)
 
 
 # =============================================================================
@@ -61,6 +64,15 @@ def reference_rotation_matrix_3d(angles, directions):
     rotation_matrices = [MDAnalysis.lib.transformations.rotation_matrix(a, d)[:3,:3]
                          for a, d in zip(angles_np, directions_np)]
     return torch.tensor(rotation_matrices, dtype=angles.dtype)
+
+
+def reference_batchwise_rotate(x, rotation_matrices):
+    x_np = x.detach().numpy()
+    rotation_matrices_np = rotation_matrices.detach().numpy()
+    y = np.empty_like(x_np)
+    for i in range(len(x_np)):
+        y[i] = x_np[i] @ rotation_matrices_np[i].T
+    return torch.tensor(y, dtype=x.dtype)
 
 
 # =============================================================================
@@ -173,3 +185,35 @@ def test_rotation_matrix_against_reference(batch_size):
     rotation_matrices = rotation_matrix_3d(angles, directions)
     ref_rotation_matrices = reference_rotation_matrix_3d(angles, directions)
     assert torch.allclose(rotation_matrices, ref_rotation_matrices)
+
+
+def test_batchwise_rotate_axes():
+    """Test that batchwise_rotate transforms one axis into another."""
+    axes = torch.eye(3, dtype=torch.double)
+    x = torch.stack([axes, axes])
+
+    # Two rotations by 90 degrees about the x and z axis respectively.
+    rot = rotation_matrix_3d(
+        angles=torch.tensor([np.pi/2, np.pi/2], dtype=torch.double),
+        directions=torch.stack([axes[0], axes[2]])
+    )
+
+    y = batchwise_rotate(x, rot)
+    expected = x.detach().clone()
+    expected[0, 1], expected[0, 2] = expected[0, 2], -expected[0, 1]
+    expected[1, 0], expected[1, 1] = expected[1, 1], -expected[1, 0]
+    assert torch.allclose(y, expected)
+
+
+@pytest.mark.parametrize('batch_size', [1, 10])
+@pytest.mark.parametrize('n_vectors', [1, 5])
+def test_batchwise_rotate_against_reference(batch_size, n_vectors):
+    """Test the batchwise_rotate() function on random tensors against a reference implementation."""
+    angles = -4*np.pi * torch.rand(batch_size, generator=_GENERATOR, dtype=torch.float) + 2*np.pi
+    directions = torch.randn(batch_size, 3, generator=_GENERATOR, dtype=torch.float)
+    rotation_matrices = rotation_matrix_3d(angles, directions)
+    x = torch.randn(batch_size, n_vectors, 3)
+
+    y = batchwise_rotate(x, rotation_matrices)
+    ref_y = reference_batchwise_rotate(x, rotation_matrices)
+    assert torch.allclose(y, ref_y)
