@@ -121,7 +121,7 @@ def cov(x, ddof=1, dim_n=1, inplace=False):
 # GEOMETRY
 # =============================================================================
 
-def normalize_vectors(x):
+def normalize_vector(x):
     """Return the normalized vector.
 
     Parameters
@@ -198,7 +198,7 @@ def rotation_matrix_3d(angles, directions):
     angles : torch.Tensor
         A tensor of shape ``(batch_size,)``.
     directions : torch.Tensor
-        A tensor of shape ``(batch_size, 3)``.
+        A tensor of shape ``(batch_size, 3)`` or ``(3,)``.
 
     Returns
     -------
@@ -212,7 +212,9 @@ def rotation_matrix_3d(angles, directions):
     cosa = torch.cos(angles)
 
     # unit rotation vectors (batch_size, 3).
-    k = normalize_vectors(directions)
+    k = normalize_vector(directions)
+    if len(k.shape) < 2:
+        k = k.unsqueeze(0)
 
     # Reshape cosa to have (batch_size, 1, 1) dimension.
     cosa = cosa.unsqueeze(-1).unsqueeze(-1)
@@ -240,7 +242,7 @@ def rotation_matrix_3d(angles, directions):
     return R
 
 
-def batchwise_rotate(x, rotation_matrices):
+def batchwise_rotate(x, rotation_matrices, inverse=False):
     """Rotate a batch of configurations with their respective rotation matrix.
 
     Parameters
@@ -249,6 +251,8 @@ def batchwise_rotate(x, rotation_matrices):
         A tensor of shape ``(batch_size, n_vectors, 3)``.
     rotation_matrices : torch.Tensor
         A tensor of shape ``(batch_size, 3, 3)``.
+    inverse : bool, optional
+        If ``True`` the inverse rotation is performed.
 
     Returns
     -------
@@ -258,4 +262,7 @@ def batchwise_rotate(x, rotation_matrices):
         ``rotation_matrices[b]``.
 
     """
-    return torch.bmm(x, rotation_matrices.permute(0, 2, 1))
+    if inverse:
+        return torch.bmm(x, rotation_matrices)
+    else:
+        return torch.bmm(x, rotation_matrices.permute(0, 2, 1))
