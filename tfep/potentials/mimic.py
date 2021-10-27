@@ -30,8 +30,8 @@ import pint
 import torch
 
 from tfep.utils.cli import Launcher, CLITool, KeyValueOption
-from tfep.utils.geometry import flattened_to_atom
-from tfep.utils.misc import temporary_cd, energies_array_to_tensor, forces_array_to_tensor
+from tfep.utils.misc import (
+    flattened_to_atom, energies_array_to_tensor, forces_array_to_tensor, temporary_cd)
 from tfep.utils.parallel import SerialStrategy
 
 # TODO: CAPISCI COS'È KINETIC ENERGY IN WAVEFUNCTION OPTIMIZATION!

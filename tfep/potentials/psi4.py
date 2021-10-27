@@ -21,8 +21,7 @@ import numpy as np
 import pint
 import torch
 
-from tfep.utils.geometry import flattened_to_atom
-from tfep.utils.misc import energies_array_to_tensor, forces_array_to_tensor
+from tfep.utils.misc import flattened_to_atom, energies_array_to_tensor, forces_array_to_tensor
 from tfep.utils.parallel import SerialStrategy
 
 

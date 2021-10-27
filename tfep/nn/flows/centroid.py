@@ -16,7 +16,7 @@ Transformation that constrains the (weighted) centroid of the DOFs.
 
 import torch
 
-from tfep.utils.geometry import (
+from tfep.utils.misc import (
     flattened_to_atom, atom_to_flattened, atom_to_flattened_indices)
 from tfep.nn.flows.partial import PartialFlow
 
