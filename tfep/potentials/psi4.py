@@ -57,6 +57,7 @@ def create_psi4_molecule(positions, fix_com=True, fix_orientation=True, **kwargs
     **kwargs
         Other keyword arguments to pass to ``psi4.core.Molecule.from_arrays``
         except for ``geom`` and ``units`` which are handled by this method.
+        Note that one between ``elem``, ``elez``, or ``elbl`` is mandatory.
 
     Returns
     -------
@@ -98,12 +99,12 @@ def configure_psi4(
         memory consuption is slightly higher.
     n_threads : int, optional
         Number of MP threads available to psi4.
+    psi4_output_file_path : str, optional
+        Redirect stdout to this file. If the string "quiet" is passed, the output
+        is suppressed.
     psi4_scratch_dir_path : str, optional
         Path to the scratch directory. It is recommended that this directory
         allows fast reading/writing operations.
-    output_file_path : str, optional
-        Redirect stdout to this file. If the string "quiet" is passed, the output
-        is suppressed.
     active_molecule : psi4.core.Molecule, optional
         If given, the active molecule is set to this.
     global_options : dict
