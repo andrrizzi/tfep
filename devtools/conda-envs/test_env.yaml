@@ -18,9 +18,11 @@ dependencies:
   - mdanalysis
   - numpy
   - pint
-  - pytorch
+  - pytorch >=1.9.0
 
-    # Optional dependencies (here for completeness to test locally)
+    # Optional dependencies (here for completeness to test locally).
+    # As of Nov 24, 2021, a package conflict might require you to include
+    # the pytorch channel (-c pytorch) when installing psi4 through conda.
     # - psi4 (this can be found on the psi4 conda channel)
 
     # Pip-only installs
