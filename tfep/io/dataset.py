@@ -212,17 +212,18 @@ class TrajectoryDataset(torch.utils.data.Dataset):
 
         """
         ts = self.get_timestep(idx)
+        sample = {}
 
         # MDAnalysis loads coordinates with np.float32 dtype. We convert
         # it to the default torch dtype and return them in flattened shape.
-        positions =  torch.tensor(np.ravel(ts.positions),
-                                  dtype=torch.get_default_dtype())
-        dimensions = torch.tensor(ts.dimensions, dtype=torch.get_default_dtype())
+        sample['positions'] =  torch.tensor(np.ravel(ts.positions),
+                                            dtype=torch.get_default_dtype())
+        if ts.dimensions is not None:
+            sample['dimensions'] = torch.tensor(ts.dimensions, dtype=torch.get_default_dtype())
 
         # Return the configurations and the auxiliary information. If an
         # atom group is selected, this may have lost the auxiliary information
         # so we go back to reading the main Trajectory Timestep for this.
-        sample = {'positions': positions, 'dimensions': dimensions}
         for aux_name, aux_info in self.universe.trajectory.ts.aux.items():
             sample[aux_name] = torch.tensor(aux_info)
 
