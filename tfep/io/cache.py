@@ -89,7 +89,7 @@ class TFEPCache:
 
     def __init__(
             self,
-            save_dir_path='tfep_data',
+            save_dir_path='tfep_cache',
             data_loader=None,
             train_subdir_name='train',
             eval_subdir_name='eval',
@@ -146,6 +146,11 @@ class TFEPCache:
     def n_batches_per_epoch(self):
         """the number of batches per training epoch."""
         return int(np.ceil(self.n_samples_per_epoch / self.batch_size))
+
+    @property
+    def save_dir_path(self):
+        """The path to the main directory where the data is stored."""
+        return self._save_dir_path
 
     def read_eval_tensors(
             self,
