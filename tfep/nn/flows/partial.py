@@ -24,10 +24,10 @@ import torch
 class PartialFlow(torch.nn.Module):
     """A normalizing flows mapping only a subset of the degrees of freedom.
 
-    The layer wraps a sequence of normalizing flows and passes to them only a
-    subset of the degrees of freedom (DOF) while maintaining the other constants.
-    Note that the constant DOFs are not even seen by the wrapped flow and so they
-    cannot condition the output.
+    The layer wraps a normalizing flows and passes to it only a subset of the
+    degrees of freedom (DOF) while maintaining the other constants. Note that the
+    constant DOFs are not even seen by the wrapped flow and so they cannot
+    condition the output.
 
     The wrapped flow must be configured correctly to take as input the subset
     of the DOFs that are not constant.
