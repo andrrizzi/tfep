@@ -22,7 +22,7 @@ import torch
 # =============================================================================
 
 class PartialFlow(torch.nn.Module):
-    """A sequence of normalizing flows.
+    """A normalizing flows mapping only a subset of the degrees of freedom.
 
     The layer wraps a sequence of normalizing flows and passes to them only a
     subset of the degrees of freedom (DOF) while maintaining the other constants.
