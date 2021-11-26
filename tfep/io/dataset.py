@@ -620,7 +620,12 @@ def get_subsampled_indices(
     times = [start, stop, step]
     for i, (t, label) in enumerate(zip(times, ['start', 'stop', 'step'])):
         if isinstance(t, pint.Quantity):
-            frame_idx = (t.to(unit).magnitude - t0) / dt
+            if label == 'step':
+                # No need to subtract t0.
+                frame_idx = t.to(unit).magnitude / dt
+            else:
+                frame_idx = (t.to(unit).magnitude - t0) / dt
+
             if not np.isclose(frame_idx, np.round(frame_idx)):
                 closest_times = dt * np.array([np.floor(frame_idx), np.ceil(frame_idx)]) * unit
                 raise ValueError(f'The time step {dt} is not compatible with {label} time {t}. '
