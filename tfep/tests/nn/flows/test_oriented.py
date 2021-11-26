@@ -14,7 +14,6 @@ Test objects and function in the module tfep.nn.flow.centroid.
 # GLOBAL IMPORTS
 # =============================================================================
 
-import numpy as np
 import pytest
 import torch
 
