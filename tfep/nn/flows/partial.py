@@ -60,12 +60,7 @@ class PartialFlow(torch.nn.Module):
 
     def n_parameters(self):
         """int: The total number of parameters that can be optimized."""
-        try:
-            return self.flow.n_parameters()
-        except AttributeError:
-            # Handle the case in which the flows have been encapsulated
-            # in a Sequential module.
-            return sum(f.n_parameters() for f in self.flow)
+        return self.flow.n_parameters()
 
     def forward(self, x):
         return self._pass(x, inverse=False)
