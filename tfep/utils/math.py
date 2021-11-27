@@ -64,56 +64,73 @@ def batchwise_outer(x1, x2):
     return torch.matmul(x1[:, :, None], x2[:, None, :])
 
 
-def cov(x, ddof=1, dim_n=1, inplace=False):
+def cov(x, ddof=1, dim_sample=0, inplace=False, return_mean=False):
     """Return the covariance matrix of the data.
+
+    .. note::
+
+        Since PyTorch 1.10, there is also a ``torch.cov`` function. Compare to
+        that function, this function currently does not offer weighting but
+        allows selecting the sample dimension and returning also the mean.
+        Nevertheless, we may drop or change name to this function when we stop
+        supporting PyTorch 1.9.
 
     Parameters
     ----------
     x : torch.Tensor
-        A tensor of shape ``(m, n)``, where ``n`` is the number of samples
+        A tensor of shape ``(n, m)``, where ``n`` is the number of samples
         used to estimate the covariance, and ``m`` is the dimension of
-        the multivariate variable. If ``dim_n`` is 0, then the expected
-        shape is ``(n, m)``.
+        the multivariate variable. If ``dim_sample`` is 1, then the expected
+        shape is ``(m, n)``.
     ddof : int, optional
         The number of dependent degrees of freedom. The covariance will
         be estimated dividing by ``n - ddof``. Default is 1.
-    dim_n : int, optional
-        The dimension used to collect the samples. Default is 1.
+    dim_sample : int, optional
+        The dimension of the features. Default is 0, which means each row of
+        ``x`` is a sample and each column a different degree of freedom.
     inplace : bool, optional
         If ``True``, the input argument ``x`` is modified to be centered
         on its mean. Default is ``False``.
+    return_mean : bool, optional
+        If ``True``, the mean of degrees of freedom is also returned. This
+        can save an operation if the mean is also required after computing
+        the covariance matrix.
 
     Returns
     -------
     cov : torch.Tensor
         A tensor of shape ``(m, m)``.
+    mean : torch.Tensor, optional
+        A tensor of shape ``(m,)``.
 
     """
     if len(x.shape) != 2:
         raise ValueError('The function supports only 2D matrices')
-    if dim_n not in {0, 1}:
-        raise ValueError('dim_n must be either 0 or 1')
+    if dim_sample not in {0, 1}:
+        raise ValueError('dim_sample must be either 0 or 1')
 
     # Center the data on the mean.
-    if dim_n == 1:
-        keepdim = True
-    else:
+    if dim_sample == 0:
         keepdim = False
-    mean = torch.mean(x, dim_n, keepdim=keepdim)
+    else:
+        keepdim = True
+    mean = torch.mean(x, dim_sample, keepdim=keepdim)
     if inplace:
         x -= mean
     else:
         x = x - mean
 
     # Average normalization factor.
-    n = x.shape[dim_n] - ddof
+    n = x.shape[dim_sample] - ddof
 
     # Compute the covariance matrix
-    if dim_n == 0:
-        c = x.t().matmul(x) / n
+    if dim_sample == 0:
+        c = torch.matmul(x.t(), x) / n
     else:
-        c = x.matmul(x.t()) / n
+        c = torch.matmul(x, x.t()) / n
 
+    if return_mean:
+        return c, mean
     return c
 
 
