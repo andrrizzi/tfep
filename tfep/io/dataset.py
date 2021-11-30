@@ -157,7 +157,7 @@ class TrajectoryDataset(torch.utils.data.Dataset):
         self.return_trajectory_sample_index = return_trajectory_sample_index
 
         # The indexes of the selected trajectory frames. None means all frames.
-        self._subsampled_traj_sample_indices = None
+        self.trajectory_sample_indices = None
 
         # The MDAnalysis.core.groups.AtomGroup object encapsulating the atom
         # selection. None means all atoms.
@@ -170,24 +170,13 @@ class TrajectoryDataset(torch.utils.data.Dataset):
             return self.universe.atoms.n_atoms
         return self._selected_atom_group.n_atoms
 
-    @property
-    def trajectory_sample_indices(self):
-        """Indices of the dataset semples in the trajectory (before subsampling).
-
-        ``trajectory_sample_indices[i]`` is the index of the ``i``-th sample in
-        ``self.dataset.trajectory``.
-        """
-        # We return a copy to avoid accidental modifications that would cause
-        # side effects.
-        return self._subsampled_traj_sample_indices.copy()
-
     def __copy__(self):
         copied_dataset = self.__class__(
             self.universe.copy(),
             self.return_dataset_sample_index,
             self.return_trajectory_sample_index,
         )
-        copied_dataset._subsampled_traj_sample_indices = copy.copy(self._subsampled_traj_sample_indices)
+        copied_dataset.trajectory_sample_indices = copy.copy(self.trajectory_sample_indices)
         copied_dataset._selected_atom_group = copy.copy(self._selected_atom_group)
         return copied_dataset
 
@@ -231,18 +220,18 @@ class TrajectoryDataset(torch.utils.data.Dataset):
         if self.return_dataset_sample_index:
             sample['dataset_sample_index'] = idx
         if self.return_trajectory_sample_index:
-            if self._subsampled_traj_sample_indices is None:
+            if self.trajectory_sample_indices is None:
                 # We have selected all frames. Trajectory and dataset indices are the same.
                 sample['trajectory_sample_index'] = idx
             else:
-                sample['trajectory_sample_index'] = self._subsampled_traj_sample_indices[idx]
+                sample['trajectory_sample_index'] = self.trajectory_sample_indices[idx]
         return sample
 
     def __len__(self):
         """Number of samples in the dataset (i.e., selected trajectory frames)."""
-        if self._subsampled_traj_sample_indices is None:
+        if self.trajectory_sample_indices is None:
             return len(self.universe.trajectory)
-        return len(self._subsampled_traj_sample_indices)
+        return len(self.trajectory_sample_indices)
 
     def get_timestep(self, idx):
         """Return the MDAnalysis ``Timestep`` object for the given index.
@@ -267,10 +256,10 @@ class TrajectoryDataset(torch.utils.data.Dataset):
         """
         # First check if index refers to a subset of selected trajectory frames
         # or to the full trajectory.
-        if self._subsampled_traj_sample_indices is None:
+        if self.trajectory_sample_indices is None:
             ts = self.universe.trajectory[idx]
         else:
-            ts = self.universe.trajectory[self._subsampled_traj_sample_indices[idx]]
+            ts = self.universe.trajectory[self.trajectory_sample_indices[idx]]
 
         # If a subset of atoms was selected. Return the Timestep only for those.
         if self._selected_atom_group is None:
@@ -376,7 +365,7 @@ class TrajectoryDataset(torch.utils.data.Dataset):
 
         # All time quantities in MDAnalysis are in picoseconds.
         ps = ureg.picoseconds
-        self._subsampled_traj_sample_indices = get_subsampled_indices(
+        self.trajectory_sample_indices = get_subsampled_indices(
             dt=self.universe.trajectory.dt * ps,
             stop=stop, start=start, step=step, n_frames=n_frames,
             t0=self.universe.trajectory[0].time * ps)
