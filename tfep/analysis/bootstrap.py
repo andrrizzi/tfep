@@ -101,7 +101,10 @@ def _bootstrap_statistics(
         generator,
         bootstrap_statistics
 ):
-    """Generate a bootstrap distribution of the statistic."""
+    """Generate a bootstrap distribution of the statistic.
+
+    This modify bootstrap_statistics in place.
+    """
     n_samples = data_expanded.shape[1]
 
     # Divide the bootstrap in batches to limit memory usage.
