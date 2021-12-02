@@ -30,16 +30,73 @@ def bootstrap(
         method='percentile',
         generator=None
 ):
-    r"""Compute the parameters (e.g., two-sided confidence interval) of the bootstrap distribution of a statistic.
+    r"""Compute the parameters of the bootstrap distribution of a statistic.
 
-    The function API is inspired by ``scipy.stats.bootstrap``. Currently it only
-    supports vectorized statistics.
+    The function API is inspired by ``scipy.stats.bootstrap``. Currently it
+    computes confidence intervals, standard deviation, mean, and median of the
+    bootstrap distribution of the statistic.
+
+    It is also possible to compute the bootstrap statistics for multiple sample
+    sizes that are randomly sampled from the data. For example, if ``data`` has
+    1000 samples, sampling ``bootstrap_sample_size`` to 100 will randomly select
+    only 100 samples out of the 1000 for each resampling.
+
+    Currently only ``'percentile'`` and ``'basic'`` confidence interval methods
+    are supported (i.e., no ``'bca'`` like in scipy). Moreover, only 1D data
+    is supported.
+
+    Parameters
+    ----------
+    data : torch.Tensor
+        A 1D tensor of shape ``(n_samples,)``.
+    statistic : Callable
+        A function taking a 2D tensor of shape ``(batch_size, n_samples)`` and
+        returning the value of the statistic for each batch as a tensor of shape
+        ``(batch_size,)``.
+    confidence_level : float, optional
+        The confidence level of the confidence interval.
+    n_resamples : int, optional
+        The number of resamples performed to generate the bootstrap distribution
+        of the statistic.
+    bootstrap_sample_size : {int, List[int]}, optional
+        If given, in each resample only ``bootstrap_sample_size`` will be drawn
+        from the data (rather than the default ``n_samples``). If a ``list``, the
+        function will perform multiple bootstrap analyses for each of the
+        ``bootstrap_sample_size`` provided.
+    batch : int, optional
+        If given, the ``n_resamples`` resamples are performed into batches of
+        size ``batch`` so that the memory consumption becomes ``batch * n_samples``.
+    method : {'percentile', 'basic'}, optional
+        Whether to return the percentile or reverse bootstrap confidence interval.
+    generator : {int, `torch.Generator`}, optional
+        If ``generator`` is an int, a new ``torch.Generator`` instance is used
+        and seeded with ``generator``. If ``generator`` is already a ``torch.Generator``
+        then that instance is used to generate random resamples.
+
+    Returns
+    -------
+    result : {dict, List[dict]}
+        If ``bootstrap_sample_size`` is given, then this is a ``list`` of ``dict``,
+        and ``result[i]`` contains the result of the bootstrap analysis for
+        ``bootstrap_sample_size[i]``. Otherwise, this is a single ``dict``. All
+        ``dict`` have the following keys
+
+        - ``'confidence_interval'``: Another ``dict`` including two keys ``'low'``
+                                     and ``'high'`` having the lower and upper limits
+                                     of the confidence interval respectively.
+        - ``'standard_deviation'``: The standard deviation of the statistic bootstrap
+                                    distribution.
+        - ``'mean'``: The mean of the bootstrap distribution of the statistic.
+        - ``'median'``: The median of the bootstrap distribution of the statistic.
+
+    See Also
+    --------
+    ``scipy.stats.bootstrap``
 
     References
     ----------
     .. [1] Bootstrapping (statistics), Wikipedia,
        https://en.wikipedia.org/wiki/Bootstrapping_%28statistics%29
-
 
     """
     if len(data.shape) > 1:
@@ -84,7 +141,8 @@ def bootstrap(
         results.append(dict(
             confidence_interval=dict(low=ci_l, high=ci_u),
             standard_deviation=torch.std(bootstrap_statistics),
-            mean=torch.mean(bootstrap_statistics)
+            mean=torch.mean(bootstrap_statistics),
+            median=torch.median(bootstrap_statistics),
         ))
 
     if len(bootstrap_sample_size) == 1:
