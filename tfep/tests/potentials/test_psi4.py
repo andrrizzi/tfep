@@ -292,6 +292,78 @@ def test_run_psi4_force(batch_size, name):
 
 
 @pytest.mark.skipif(not PSI4_INSTALLED, reason='requires a Python installation of Psi4')
+@pytest.mark.parametrize('on_unconverged', ['raise', 'nan'])
+@pytest.mark.parametrize('return_force', [False, True])
+@pytest.mark.parametrize('return_wfn', [False, True])
+def test_run_psi4_on_unconverged(on_unconverged, return_force, return_wfn):
+    """Test whether the on_unconverged option of _run_psi4 behaves as expected.
+
+    Thus, that on_unconverged =
+    - 'raise' raises an exception;
+    - 'nan' returns NaN energy and zero gradients;
+
+    """
+    from psi4.driver.p4util import OptionsState
+
+    molecule, _ = create_water_molecule()
+
+    # Kwargs for the _run_psi4 call.
+    run_psi4_kwargs = dict(
+        name='scf',
+        return_energy=True,
+        return_force=return_force,
+        return_wfn=return_wfn,
+        on_unconverged=on_unconverged,
+    )
+
+    # Global psi4 options. We restor maxiter at the end of the test.
+    option_stash = OptionsState(['MAXITER'])
+    psi4_global_options = dict(basis='sto-3g', reference='RHF', maxiter=1)
+
+    with tempfile.TemporaryDirectory() as tmp_dir_path:
+        # Set global options.
+        configure_psi4(
+            psi4_output_file_path='quiet',
+            psi4_scratch_dir_path=tmp_dir_path,
+            active_molecule=molecule,
+            global_options=psi4_global_options,
+        )
+
+        # Run psi4.
+        if on_unconverged == 'raise':
+            with pytest.raises(psi4.ConvergenceError):
+                _run_psi4(**run_psi4_kwargs)
+        else:
+            result = _run_psi4(**run_psi4_kwargs)
+
+            # Read the result.
+            if not (return_force or return_wfn):
+                energy = result
+            elif return_force and return_wfn:
+                energy, force, wfn = result
+            elif return_force:
+                energy, force = result
+            else:
+                energy, wfn = result
+
+            # In all cases, wfn must be a valid wavefunction.
+            if return_wfn:
+                assert isinstance(wfn, psi4.core.Wavefunction)
+
+            if on_unconverged == 'nan':
+                assert np.isnan(energy)
+                if return_force:
+                    assert np.allclose(force, np.zeros_like(force))
+            else:
+                assert not np.isnan(energy)
+                if return_force:
+                    assert not np.allclose(force, np.zeros_like(force))
+
+    # Restore MAXITER.
+    option_stash.restore()
+
+
+@pytest.mark.skipif(not PSI4_INSTALLED, reason='requires a Python installation of Psi4')
 @pytest.mark.parametrize('name', ['scf', 'mp2'])
 def test_potential_energy_psi4_gradcheck(name):
     """Test that potential_energy_psi4 implements the correct gradient."""

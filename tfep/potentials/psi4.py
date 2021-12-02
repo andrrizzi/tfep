@@ -178,7 +178,14 @@ class PotentialPsi4(torch.nn.Module):
         The parallelization strategy used to distribute batches of energy and
         gradient calculations. By default, these are executed serially using
         the thread-based parallelization native in psi4.
-    kwargs : dict, optional
+    on_unconverged : str, optional
+        Specifies how to handle the case in which the calculation did not converge.
+        It can have the following values:
+        - ``'raise'``: Raise the Psi4 exception.
+        - ``'nan'``: Return ``float('nan')`` energy and zero forces.
+        To treat the calculation as converged and return the latest energy, force,
+        and/or wavefunction, simply set the psi4 global option ``'fail_on_maxiter'``.
+    **kwargs
         Other keyword arguments to pass to :class:``.PotentialEnergyPsi4Func``,
         ``psi4.energy``, and ``psi4.gradient``.
 
@@ -200,6 +207,7 @@ class PotentialPsi4(torch.nn.Module):
             energy_unit=None,
             precompute_gradient=True,
             parallelization_strategy=None,
+            on_unconverged='raise',
             **kwargs
     ):
         super().__init__()
@@ -214,6 +222,7 @@ class PotentialPsi4(torch.nn.Module):
         self.energy_unit = energy_unit
         self.precompute_gradient = precompute_gradient
         self.parallelization_strategy = parallelization_strategy
+        self.on_unconverged = on_unconverged
         self.kwargs = kwargs
 
     def forward(self, batch_positions):
@@ -242,6 +251,7 @@ class PotentialPsi4(torch.nn.Module):
             energy_unit=self.energy_unit,
             precompute_gradient=self.precompute_gradient,
             parallelization_strategy=self.parallelization_strategy,
+            on_unconverged=self.on_unconverged,
             **self.kwargs
         )
 
@@ -272,6 +282,7 @@ class PotentialPsi4(torch.nn.Module):
             molecule=self.molecule,
             return_energy=True,
             parallelization_strategy=self.parallelization_strategy,
+            on_unconverged=self.on_unconverged,
             **self.kwargs
         )
 
@@ -301,6 +312,7 @@ class PotentialPsi4(torch.nn.Module):
             molecule=self.molecule,
             return_force=True,
             parallelization_strategy=self.parallelization_strategy,
+            on_unconverged=self.on_unconverged,
             **self.kwargs
         )
 
@@ -394,6 +406,13 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
         The parallelization strategy used to distribute batches of energy and
         gradient calculations. By default, these are executed serially using
         the thread-based parallelization native in psi4.
+    on_unconverged : str, optional
+        Specifies how to handle the case in which the calculation did not converge.
+        It can have the following values:
+        - ``'raise'``: Raise the Psi4 exception.
+        - ``'nan'``: Return ``float('nan')`` energy and zero forces.
+        To treat the calculation as converged and return the latest energy, force,
+        and/or wavefunction, simply set the psi4 global option ``'fail_on_maxiter'``.
     kwargs : dict, optional
         Other keyword arguments to pass to ``psi4.energy`` and ``psi4.gradient``.
 
@@ -474,6 +493,7 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
             restart_file=None,
             precompute_gradient=True,
             parallelization_strategy=None,
+            on_unconverged='raise',
             kwargs=None
     ):
         """Compute the potential energy of the molecule with Psi4."""
@@ -508,6 +528,7 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
             restart_file=restart_file,
             unit_registry=unit_registry,
             parallelization_strategy=parallelization_strategy,
+            on_unconverged=on_unconverged,
             **kwargs
         )
 
@@ -539,6 +560,7 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
             ctx.write_orbitals = write_orbitals
             ctx.restart_file = restart_file
             ctx.parallelization_strategy = parallelization_strategy
+            ctx.on_unconverged = on_unconverged
             ctx.kwargs = kwargs
 
         # Convert to unitless tensor.
@@ -550,7 +572,7 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
         """Compute the gradient of the potential energy."""
         # We still need to return a None gradient for each
         # input of forward() beside batch_positions.
-        n_input_args = 10
+        n_input_args = 11
         grad_input = [None for _ in range(n_input_args)]
 
         # Compute gradient w.r.t. batch_positions.
@@ -568,6 +590,7 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
                     write_orbitals=ctx.write_orbitals,
                     restart_file=ctx.restart_file,
                     parallelization_strategy=ctx.parallelization_strategy,
+                    on_unconverged=ctx.on_unconverged,
                     **ctx.kwargs,
                 )
                 forces = forces_array_to_tensor(
@@ -589,6 +612,7 @@ def potential_energy_psi4(
         restart_file=None,
         precompute_gradient=True,
         parallelization_strategy=None,
+        on_unconverged='raise',
         **kwargs
 ):
     """PyTorch-differentiable potential energy of a Psi4 molecule.
@@ -614,6 +638,7 @@ def potential_energy_psi4(
         restart_file,
         precompute_gradient,
         parallelization_strategy,
+        on_unconverged,
         kwargs
     )
 
@@ -633,6 +658,7 @@ def _run_psi4(
         restart_file=None,
         unit_registry=None,
         parallelization_strategy=None,
+        on_unconverged='raise',
         **kwargs
 ):
     """Compute the potential energy and gradient of a Psi4 ``Molecule``.
@@ -731,6 +757,14 @@ def _run_psi4(
         The parallelization strategy used to distribute batches of energy and
         gradient calculations. By default, these are executed serially using
         the thread-based parallelization native in psi4.
+    on_unconverged : str, optional
+        Specifies how to handle the case in which the calculation did not converge.
+        It can have the following values:
+        - ``'raise'``: Raise the Psi4 exception.
+        - ``'nan'``: Return ``float('nan')`` energy, zero forces, and the latest
+                     wavefunction.
+        To treat the calculation as converged and return the latest energy, force,
+        and/or wavefunction, simply set the psi4 global option ``'fail_on_maxiter'``.
     **kwargs
         Other keyword arguments to forward to ``psi4.energy`` or ``psi4.gradient``.
 
@@ -756,6 +790,10 @@ def _run_psi4(
 
     """
     import psi4
+
+    # Check input arguments.
+    if on_unconverged not in {'raise', 'nan'}:
+        raise ValueError('on_unconverged must be one of "raise" or "nan".')
 
     # Determine which psi4 function to call.
     if return_force:
@@ -817,7 +855,8 @@ def _run_psi4(
 
     # Run all batches with the provided parallelization strategy.
     # We use functools.partial to encode the arguments that are common to all tasks.
-    task = functools.partial(_run_psi4_task, func, molecule, name, return_energy, return_force, return_wfn, kwargs)
+    task = functools.partial(
+        _run_psi4_task, func, molecule, name, return_energy, return_force, return_wfn, on_unconverged, kwargs)
     distributed_args = zip(batch_positions_bohr, ref_wfn, write_orbitals, restart_file)
     batch_results = parallelization_strategy.run(task, distributed_args)
 
@@ -852,7 +891,7 @@ def _run_psi4(
     return returned_values
 
 
-def _run_psi4_task(func, molecule, name, return_energy, return_force, return_wfn, kwargs,
+def _run_psi4_task(func, molecule, name, return_energy, return_force, return_wfn, on_unconverged, kwargs,
                    positions_bohr, ref_wfn, write_orbitals, restart_file):
     """This is the task that is parallelized with ``ParallelizationStrategy``."""
     import psi4
@@ -876,8 +915,23 @@ def _run_psi4_task(func, molecule, name, return_energy, return_force, return_wfn
 
     # Run the function.
     needs_wfn = True if return_force and return_energy else return_wfn
-    result = func(name=name, return_wfn=needs_wfn, ref_wfn=ref_wfn,
-                  write_orbitals=write_orbitals, **kwargs, **more_kwargs)
+
+    # Handle unconverged calculations.
+    try:
+        result = func(name=name, return_wfn=needs_wfn, ref_wfn=ref_wfn,
+                      write_orbitals=write_orbitals, **kwargs, **more_kwargs)
+    except psi4.ConvergenceError as e:
+        result = []
+        if on_unconverged == 'raise':
+            raise
+        else:  # on_unconverged == 'nan':
+            if return_energy:
+                result.append(float('nan'))
+            if return_force:
+                result.append(np.zeros_like(e.wfn.molecule().geometry().to_array()))
+            if return_wfn:
+                result.append(e.wfn)
+            return result
 
     # Because pickle cannot send Psi4 Matrix and Wavefunction objects, we convert
     # them in the subprocess before sending them back.
