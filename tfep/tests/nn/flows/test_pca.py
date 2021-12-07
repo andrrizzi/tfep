@@ -20,7 +20,6 @@ import torch
 
 from tfep.nn.flows.pca import PCAWhitenedFlow
 import tfep.utils.math
-from tfep.utils.misc import atom_to_flattened, flattened_to_atom
 
 # =============================================================================
 # GLOBAL VARIABLES
@@ -97,8 +96,8 @@ def test_pca_whitened_flow(flow, n_features, blacken):
     x = torch.from_numpy(x)
 
     # Build flow and run flow.
-    flow = PCAWhitenedFlow(flow=flow(n_features), x=x, blacken=blacken)
-    y, log_det_J = flow(x)
+    pca_flow = PCAWhitenedFlow(flow=flow(n_features), x=x, blacken=blacken)
+    y, log_det_J = pca_flow(x)
 
     # If PCAWhitenedFlow wraps the identity flow, we can directly check the output.
     if flow is IdentityFlow:
@@ -114,6 +113,6 @@ def test_pca_whitened_flow(flow, n_features, blacken):
             assert not torch.allclose(log_det_J, torch.zeros(batch_size))
 
     # Check the inverse.
-    x_inv, log_det_J_inv = flow.inverse(y)
+    x_inv, log_det_J_inv = pca_flow.inverse(y)
     assert torch.allclose(x, x_inv)
     assert torch.allclose(log_det_J + log_det_J_inv, torch.zeros_like(log_det_J))

@@ -47,7 +47,7 @@ class PCAWhitenedFlow(torch.nn.Module):
     def __init__(self, flow, x, blacken=True):
         super().__init__()
         self.flow = flow
-        self.blacken = True
+        self.blacken = blacken
 
         # We don't need to keep track of the graph for backpropagation here.
         x = x.detach()
@@ -118,8 +118,8 @@ class PCAWhitenedFlow(torch.nn.Module):
         # the two jacobians don't cancel each other out.
         if not (whiten and blacken):
             if whiten:
-                log_det_J = log_det_J + self.log_det_J
+                log_det_J = log_det_J + self.whitening_log_det_J
             else:
-                log_det_J = log_det_J - self.log_det_J
+                log_det_J = log_det_J - self.whitening_log_det_J
 
         return y, log_det_J
