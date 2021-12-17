@@ -97,7 +97,10 @@ def reference_behler_parrinello_expansion(distances, means, stds, r_cutoff):
     for b in range(len(distances)):
         for i in range(len(distances[b])):
             for j in range(len(distances[b, i])):
-                switching = 0.5 * np.cos(torch.pi / r_cutoff * distances[b, i, j]) + 0.5
+                if distances[b, i, j] > r_cutoff:
+                    switching = 0.0
+                else:
+                    switching = 0.5 * np.cos(torch.pi / r_cutoff * distances[b, i, j]) + 0.5
                 encoding[b, i, j] *= switching
 
     return encoding
@@ -170,13 +173,18 @@ def test_behler_parrinello_expansion_cutoff(batch_size, n_gaussians, min_mean):
             min_mean=min_mean,
         )
 
-    distances = torch.full((batch_size, 2, 2), fill_value=r_cutoff, requires_grad=True)
+    def check_distances(dist):
+        # Compute the value of the expansion at the cutoff.
+        distances = torch.full((batch_size, 2, 2), fill_value=dist, requires_grad=True)
+        expansion = expansion_layer(distances)
+        assert torch.allclose(expansion, torch.zeros_like(expansion))
 
-    # Compute the value of the expansion at the cutoff.
-    expansion = expansion_layer(distances)
-    assert torch.allclose(expansion, torch.zeros_like(expansion))
+        # Compute the gradient, which should also be zero.
+        loss = torch.sum(expansion)
+        loss.backward()
+        assert torch.allclose(distances.grad, torch.zeros_like(distances))
 
-    # Compute the gradient, which should also be zero.
-    loss = torch.sum(expansion)
-    loss.backward()
-    assert torch.allclose(distances.grad, torch.zeros_like(distances))
+
+    # Check the value and the gradient at and after the cutoff.
+    check_distances(r_cutoff)
+    check_distances(r_cutoff+1)

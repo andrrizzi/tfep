@@ -143,7 +143,7 @@ class GaussianRadialBasisExpansion(torch.nn.Module):
 # GAUSSIAN RADIAL BASIS EXPANSION
 # =============================================================================
 
-def behler_parrinello_cosine_switching_function(r_cutoff, r):
+def behler_parrinello_cosine_switching_function(r_cutoff, r, force_zero_after_cutoff=True):
     """Compute the value of the Behler-Parrinello switching function.
 
     Parameters
@@ -154,6 +154,11 @@ def behler_parrinello_cosine_switching_function(r_cutoff, r):
     r : torch.Tensor
         A tensor of shape ``(batch_size, n_atoms, n_atoms)`` where ``r[b, i, j]``
         is the distance between atoms ``i`` and ``j`` for the ``b``-th batch.
+    force_zero_after_cutoff : bool, optional
+        If ``False``, the function assumes that values after the cutoff are not
+        provided and thus no element of the switching function needs to be
+        explicitly set to 0.0. This can save a calculation if you have already
+        removed distances greater than ``r_cutoff`` from ``r``.
 
     Returns
     -------
@@ -163,7 +168,10 @@ def behler_parrinello_cosine_switching_function(r_cutoff, r):
         the ``b``-th batch.
 
     """
-    return 0.5 * torch.cos(torch.pi / r_cutoff * r) + 0.5
+    switching_value = 0.5 * torch.cos(torch.pi / r_cutoff * r) + 0.5
+    if force_zero_after_cutoff:
+        switching_value[r > r_cutoff] = 0.0
+    return switching_value
 
 
 class BehlerParrinelloRadialExpansion(GaussianRadialBasisExpansion):
@@ -195,6 +203,11 @@ class BehlerParrinelloRadialExpansion(GaussianRadialBasisExpansion):
     trainable_stds : bool, optional
         If ``True``, the standard deviations are defined as parameters of the
         neural network and optimized during training.
+    force_zero_after_cutoff : bool, optional
+        If ``False``, the function assumes that values after the cutoff are not
+        provided and thus no element of the switching function needs to be
+        explicitly set to 0.0. This can save a calculation if you have already
+        removed distances greater than ``r_cutoff`` from the input.
 
     References
     ----------
@@ -203,13 +216,15 @@ class BehlerParrinelloRadialExpansion(GaussianRadialBasisExpansion):
         2007 Apr 2;98(14):146401.
 
     """
-    def __init__(self, r_cutoff, means, stds, trainable_means=False, trainable_stds=False):
+    def __init__(self, r_cutoff, means, stds, trainable_means=False,
+                 trainable_stds=False, force_zero_after_cutoff=True):
         super().__init__(means, stds, trainable_means, trainable_stds)
         self.r_cutoff = r_cutoff
+        self.force_zero_after_cutoff = force_zero_after_cutoff
 
     @classmethod
     def from_range(cls, r_cutoff, n_gaussians, max_mean, min_mean=0.0, relative_std=3.0,
-                   trainable_means=False, trainable_stds=False):
+                   trainable_means=False, trainable_stds=False, force_zero_after_cutoff=True):
         """Create a basis of equidistant Gaussians in a given range.
 
         By default, standard deviations are set equal to three times the
@@ -238,6 +253,11 @@ class BehlerParrinelloRadialExpansion(GaussianRadialBasisExpansion):
         trainable_stds : bool, optional
             If ``True``, the standard deviations are defined as parameters of the
             neural network and optimized during training.
+        force_zero_after_cutoff : bool, optional
+            If ``False``, the function assumes that values after the cutoff are not
+            provided and thus no element of the switching function needs to be
+            explicitly set to 0.0. This can save a calculation if you have already
+            removed distances greater than ``r_cutoff`` from the input.
 
         """
         means, stds = cls._get_equidistant_means_and_stds(
@@ -265,5 +285,6 @@ class BehlerParrinelloRadialExpansion(GaussianRadialBasisExpansion):
 
         """
         encoding = super().forward(distances)
-        switching = behler_parrinello_cosine_switching_function(self.r_cutoff, distances)
+        switching = behler_parrinello_cosine_switching_function(
+            self.r_cutoff, distances, self.force_zero_after_cutoff)
         return encoding * switching.unsqueeze(-1)
