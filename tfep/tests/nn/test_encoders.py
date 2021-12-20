@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 import torch
 
-from tfep.nn.encoders import GaussianRadialBasisExpansion, BehlerParrinelloRadialExpansion
+from tfep.nn.encoders import GaussianBasisExpansion, BehlerParrinelloRadialExpansion
 
 
 # =============================================================================
@@ -42,22 +42,15 @@ def teardown_module(module):
 # =============================================================================
 
 def check_reference_expansion(
-        torch_impl, reference_impl, batch_size=1, n_atoms=2, n_features=1, seed=0, **kwargs):
+        torch_impl, reference_impl, data, n_features=1, generator=None, **kwargs):
     """Compare the PyTorch vs the reference implementation of the expansion."""
-    generator = torch.Generator()
-    generator.manual_seed(seed)
-
-    # Create random input and measure distances.
-    x = torch.randn((batch_size, n_atoms, 3), generator=generator)
-    distances = torch.cdist(x, x)
-
     # Create random means and stds.
     means = torch.rand(n_features, generator=generator)
     stds = torch.rand(n_features, generator=generator) + 0.2
 
     # Compute torch and reference encoding.
-    encoding_pt = torch_impl(means=means, stds=stds, **kwargs)(distances)
-    encoding_np = reference_impl(distances=distances, means=means, stds=stds, **kwargs)
+    encoding_pt = torch_impl(means=means, stds=stds, **kwargs)(data)
+    encoding_np = reference_impl(data=data, means=means, stds=stds, **kwargs)
 
     assert np.allclose(encoding_pt.detach().numpy(), encoding_np)
 
@@ -66,41 +59,39 @@ def check_reference_expansion(
 # REFERENCE IMPLEMENTATIONS
 # =============================================================================
 
-def reference_gaussian_basis_expansion(distances, means, stds):
-    """Reference implementation of GaussianRadialBasisExpansion for testing."""
-    distances = distances.detach().numpy()
+def reference_gaussian_basis_expansion(data, means, stds):
+    """Reference implementation of GaussianBasisExpansion for testing."""
+    data = data.detach().numpy()
     means = means.detach().numpy()
     vars = stds.detach().numpy()**2
 
-    batch_size, n_atoms, _ = distances.shape
     n_gaussians = len(means)
 
     # Returned value.
-    encoding = np.empty((batch_size, n_atoms, n_atoms, n_gaussians), dtype=distances.dtype)
+    shape = list(data.shape) + [n_gaussians]
+    encoding = np.empty(shape, dtype=data.dtype)
 
-    # Compute distances.
-    for b in range(len(distances)):
-        for i in range(len(distances[b])):
-            for j in range(len(distances[b, i])):
-                encoding[b, i, j] = np.exp(-(distances[b, i, j] - means)**2/vars)
+    # Compute data.
+    for indices, val in np.ndenumerate(data):
+        encoding[indices] = np.exp(-(val - means)**2/vars)
 
     return  encoding
 
 
-def reference_behler_parrinello_expansion(distances, means, stds, r_cutoff):
+def reference_behler_parrinello_expansion(data, means, stds, r_cutoff):
     """Reference implementation of BehlerParrinelloRadialExpansion for testing."""
-    encoding = reference_gaussian_basis_expansion(distances, means, stds)
+    encoding = reference_gaussian_basis_expansion(data, means, stds)
 
-    distances = distances.detach().numpy()
+    data = data.detach().numpy()
 
     # Apply switching function.
-    for b in range(len(distances)):
-        for i in range(len(distances[b])):
-            for j in range(len(distances[b, i])):
-                if distances[b, i, j] > r_cutoff:
+    for b in range(len(data)):
+        for i in range(len(data[b])):
+            for j in range(len(data[b, i])):
+                if data[b, i, j] > r_cutoff:
                     switching = 0.0
                 else:
-                    switching = 0.5 * np.cos(torch.pi / r_cutoff * distances[b, i, j]) + 0.5
+                    switching = 0.5 * np.cos(torch.pi / r_cutoff * data[b, i, j]) + 0.5
                 encoding[b, i, j] *= switching
 
     return encoding
@@ -113,21 +104,33 @@ def reference_behler_parrinello_expansion(distances, means, stds, r_cutoff):
 @pytest.mark.parametrize('batch_size', [1, 3])
 @pytest.mark.parametrize('n_features', [1, 8])
 @pytest.mark.parametrize('seed', list(range(3)))
-def test_gaussian_basis_expansion_reference(batch_size, n_features, seed):
+@pytest.mark.parametrize('input_type', ['distance', 'time'])
+def test_gaussian_basis_expansion_reference(batch_size, n_features, seed, input_type):
     """Compare PyTorch and reference implementation of the gaussian basis expansion."""
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+
+    # Create random input and measure distances.
+    if input_type == 'distance':
+        n_atoms = 5
+        x = torch.randn((batch_size, n_atoms, 3), generator=generator)
+        x = torch.cdist(x, x)
+    else:
+        x = torch.rand(batch_size)
+
+    # Check against reference.
     check_reference_expansion(
-        torch_impl=GaussianRadialBasisExpansion,
+        torch_impl=GaussianBasisExpansion,
         reference_impl=reference_gaussian_basis_expansion,
-        batch_size=batch_size,
-        n_atoms=5,
+        data=x,
         n_features=n_features,
-        seed=seed,
+        generator=generator,
     )
 
 
 def test_gaussian_basis_expansion_equidistant():
     """Test that initializing an expansion of equidistant gaussian generates the correct means and stds."""
-    expansion = GaussianRadialBasisExpansion.from_range(n_gaussians=3, max_mean=3, min_mean=1)
+    expansion = GaussianBasisExpansion.from_range(n_gaussians=3, max_mean=3, min_mean=1)
     assert torch.allclose(expansion._means, torch.tensor([1.0, 2.0, 3.0]))
     assert torch.allclose(expansion._log_gammas, torch.log(1./torch.full((3,), fill_value=9.0)))
 
@@ -141,13 +144,20 @@ def test_gaussian_basis_expansion_equidistant():
 @pytest.mark.parametrize('seed', list(range(3)))
 def test_behler_parrinello_expansion_reference(batch_size, n_features, seed):
     """Compare PyTorch and reference implementation of the Behler-Parrinello radial expansion."""
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+
+    # Create random input and measure distances.
+    n_atoms = 5
+    x = torch.randn((batch_size, n_atoms, 3), generator=generator)
+    distances = torch.cdist(x, x)
+
     check_reference_expansion(
         torch_impl=BehlerParrinelloRadialExpansion,
         reference_impl=reference_behler_parrinello_expansion,
-        batch_size=batch_size,
-        n_atoms=5,
+        data=distances,
         n_features=n_features,
-        seed=seed,
+        generator=generator,
         r_cutoff=2.0,
     )
 

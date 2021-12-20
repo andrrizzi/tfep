@@ -18,16 +18,16 @@ import torch
 
 
 # =============================================================================
-# GAUSSIAN RADIAL BASIS EXPANSION
+# GAUSSIAN BASIS EXPANSION
 # =============================================================================
 
-class GaussianRadialBasisExpansion(torch.nn.Module):
+class GaussianBasisExpansion(torch.nn.Module):
     """
-    Expands distance into a soft one-hot encoded vector using a Gaussian basis.
+    Expands a float into a soft one-hot encoded vector using a Gaussian basis.
 
-    This is a simple Gaussian radial basis expansion similar to that used in
-    Schnet [1]. Note that this does not use an enveloping function that smoothly
-    let this decay to 0 at a fixed cutoff.
+    This is a simple Gaussian basis expansion similar to that used in Schnet [1]
+    for the radial expansion. Note that this does not use an enveloping function
+    that smoothly let this decay to 0 at a fixed cutoff.
 
     The means and bandwidths of the Gaussians can be specified as trainable
     parameters.
@@ -105,13 +105,14 @@ class GaussianRadialBasisExpansion(torch.nn.Module):
         return cls(means, stds, trainable_means=trainable_means,
                    trainable_stds=trainable_stds)
 
-    def forward(self, distances):
-        """Expand a matrix of distances into a soft one-hot representation.
+    def forward(self, data):
+        """Expand float data into a soft one-hot representation.
 
         Parameters
         ----------
-        distances : torch.Tensor
-            Distance matrix of shape ``[batch_size, n_atoms, n_atoms]`` or
+        data : torch.Tensor
+            Data tensor with shape ``(batch_size, *)``. Typically, this is a
+            distance matrix of shape ``[batch_size, n_atoms, n_atoms]`` or
             ``[batch_size, n_atoms, n_atoms, 1]`` where ``distances[b, i, j]``
             represent the distance between atoms ``i`` and ``j`` for the ``b``-th
             batch.
@@ -124,9 +125,9 @@ class GaussianRadialBasisExpansion(torch.nn.Module):
             to expand the distance.
 
         """
-        if len(distances.shape) < 4:
-            distances = distances.unsqueeze(-1)
-        disp = (distances - self._means).pow(2)
+        if data.shape[-1] != 1:
+            data = data.unsqueeze(-1)
+        disp = (data - self._means).pow(2)
         gammas = self._log_gammas.exp()
         encoding = torch.exp(- gammas * disp)
         return encoding
@@ -174,7 +175,7 @@ def behler_parrinello_cosine_switching_function(r_cutoff, r, force_zero_after_cu
     return switching_value
 
 
-class BehlerParrinelloRadialExpansion(GaussianRadialBasisExpansion):
+class BehlerParrinelloRadialExpansion(GaussianBasisExpansion):
     """
     Expands distance into a soft one-hot encoded vector using a Gaussian basis with a cosine switching function.
 
