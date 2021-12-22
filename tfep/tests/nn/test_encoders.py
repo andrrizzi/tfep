@@ -104,7 +104,7 @@ def reference_behler_parrinello_expansion(data, means, stds, r_cutoff):
 @pytest.mark.parametrize('batch_size', [1, 3])
 @pytest.mark.parametrize('n_features', [1, 8])
 @pytest.mark.parametrize('seed', list(range(3)))
-@pytest.mark.parametrize('input_type', ['distance', 'time'])
+@pytest.mark.parametrize('input_type', ['distance', 'scalar'])
 def test_gaussian_basis_expansion_reference(batch_size, n_features, seed, input_type):
     """Compare PyTorch and reference implementation of the gaussian basis expansion."""
     generator = torch.Generator()
