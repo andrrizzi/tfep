@@ -77,7 +77,7 @@ class DynamicsMLP(torch.nn.Module):
             torch.nn.SiLU(),
             torch.nn.Linear(n_features, n_features),
             torch.nn.SiLU(),
-            torch.nn.Linear(n_features, n_features),
+            torch.nn.Linear(n_features, n_features, bias=False),
             torch.nn.Tanh(),
         )
 
@@ -196,6 +196,27 @@ def test_frobenious_norm_hutchinson(batch_size, seed):
 
     assert torch.allclose(reg, ref_reg, atol=1e-2)
     assert torch.allclose(reg_with_trace, ref_reg, atol=1e-2)
+
+
+def test_identity_flow():
+    """Check that the continuous flow behaves well with an identity dynamics."""
+    _, x, dynamics, generator = create_input_and_dynamics(batch_size=5, n_atoms=3, seed=0)
+
+    # Fix the weights of the last layer so that the flow is the identity.
+    dynamics.mlp[-2].weight.data.fill_(0.0)
+
+    # Create normalizing flow.
+    flow = ContinuousFlow(dynamics=dynamics, trace_estimator='exact')
+
+    # Check that the output is not transformed.
+    y, trace, reg = flow(x)
+    assert torch.allclose(x, y)
+    assert torch.allclose(trace, torch.zeros_like(trace))
+
+    # Verify that backpropagation is stable.
+    loss = torch.sum(y)
+    loss.backward()
+    assert torch.allclose(x.grad, torch.ones_like(x.grad))
 
 
 @pytest.mark.parametrize('batch_size', [1, 10])

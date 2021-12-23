@@ -171,7 +171,13 @@ class _ODEFunc(torch.nn.Module):
 
         with torch.enable_grad():
             t.requires_grad = True
-            x.requires_grad = True
+            # During the backwards pass, we might try to set this on a non-leaf
+            # variable, which is forbidden, but x might already be set correctly.
+            try:
+                x.requires_grad = True
+            except RuntimeError:
+                if x.requires_grad is not True:
+                    raise
 
             # Compute the velocity.
             vel = self.dynamics(t, x)
