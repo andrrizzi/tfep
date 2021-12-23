@@ -19,6 +19,7 @@ import itertools
 import torch
 
 from tfep.nn.encoders import GaussianBasisExpansion, BehlerParrinelloRadialExpansion
+from tfep.utils.misc import flattened_to_atom, atom_to_flattened
 
 
 # =============================================================================
@@ -184,6 +185,12 @@ class EGNNDynamics(torch.nn.Module):
         # To obtain a translational invariant velocity, we subtract the initial
         # positions.
         vel = vel - x
+
+        # Remove the mean of the velocity so that the center of geometry is
+        # preserved and the transformation is regularized.
+        vel_atom_fmt = flattened_to_atom(vel)
+        vel_mean = torch.mean(vel_atom_fmt, dim=1, keepdim=True)
+        vel = atom_to_flattened(vel_atom_fmt - vel_mean)
         return vel
 
     def _create_node_embedding(self, t, batch_size):
