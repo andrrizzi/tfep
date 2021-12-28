@@ -69,6 +69,9 @@ class EGNNDynamics(torch.nn.Module):
         The number of Gaussians used for expanding the distance input.
     n_layers : int, optional
         The number of message passing layers.
+    speed_factor : float, optional
+        The output of the dynamics is such that each neighbor contributes to the
+        particle velocity with an additive vector with magnitude in ``[-speed_factor,speed_factor]``.
     initialize_identity : bool, optional
         If ``True`` (default), the layers are initialized so that the dynamics
         performs the identity function, which in this context means that outputs
@@ -99,6 +102,7 @@ class EGNNDynamics(torch.nn.Module):
         node_feat_dim=64,
         distance_feat_dim=64,
         n_layers=4,
+        speed_factor=1.0,
         initialize_identity=True,
     ):
         super().__init__()
@@ -124,6 +128,7 @@ class EGNNDynamics(torch.nn.Module):
                 r_cutoff=r_cutoff,
                 node_feat_dim=node_feat_dim,
                 distance_feat_dim=distance_feat_dim,
+                speed_factor=speed_factor
             )
 
             # Force the identity function if requested.
@@ -258,8 +263,10 @@ class EGNNDynamics(torch.nn.Module):
 class _EGLayer(torch.nn.Module):
     """Equivariant graph neural network layer."""
 
-    def __init__(self, r_cutoff, node_feat_dim, distance_feat_dim):
+    def __init__(self, r_cutoff, node_feat_dim, distance_feat_dim, speed_factor):
         super().__init__()
+
+        self.speed_factor = speed_factor
 
         # Embedding layer used to expand distances in vector features.
         self.distance_embedding = BehlerParrinelloRadialExpansion.from_range(
@@ -422,7 +429,7 @@ class _EGLayer(torch.nn.Module):
         # In this application, the perturbation is very small so [0,1) should suffice.
 
         # Compute displacements. directions has shape (n_edges, 3).
-        disp = directions * disp_magnitude
+        disp = self.speed_factor * directions * disp_magnitude
 
         # Aggregate displacement. aggregate_disp has shape (batch_size*n_particles, 3).
         dest, src = edges

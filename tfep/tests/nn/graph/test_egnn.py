@@ -235,6 +235,7 @@ def test_eg_layer_compute_distances():
         r_cutoff=2.0,
         node_feat_dim=4,
         distance_feat_dim=4,
+        speed_factor=1.,
     )
 
     # Compute the distances and direction with our implementation.
@@ -288,6 +289,7 @@ def test_eg_layer_prune_edges():
         r_cutoff=r_cutoff,
         node_feat_dim=4,
         distance_feat_dim=4,
+        speed_factor=1.,
     )
     distances, directions = eg_layer._compute_distances(x, edges)
     p_distances, p_directions, p_edges = eg_layer._prune_edges(distances, directions, edges)
