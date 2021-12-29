@@ -27,17 +27,18 @@ def batchwise_dot(x1, x2, keepdim=False):
     Parameters
     ----------
     x1 : torch.Tensor
-        A tensor of shape ``(batch_size, N)`` or ``(N,)``.
+        A tensor of shape ``(*, N)``.
     x2 : torch.Tensor
-        A tensor of shape ``(batch_size, N)`` or ``(N,)``.
+        A tensor of shape ``(*, N)``.
     keepdim : bool, optional
-        If ``True``, the return value has shape ``(batch_size, 1)``.
-        Otherwise ``(batch_size,)``.
+        If ``True``, the return value has shape ``(*, 1)``.
+        Otherwise ``(*,)``.
 
     Returns
     -------
     result : torch.Tensor
-        ``result[i]`` is the dot product between ``x1[i]`` and ``x2[i]``
+        ``result[i,j,...,k]`` is the dot product between ``x1[i,j,...,k]`` and
+        ``x2[i,j,...,k]``
 
     """
     return (x1 * x2).sum(dim=-1, keepdim=keepdim)
