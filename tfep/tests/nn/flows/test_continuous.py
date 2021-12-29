@@ -21,8 +21,6 @@ from tfep.nn.flows.continuous import (
     ContinuousFlow,
     _trace_exact,
     _trace_hutchinson,
-    _frobenious_squared_norm_exact,
-    _frobenious_squared_norm_hutchinson,
     _trace_and_frobenious_squared_norm_hutchinson,
     _trace_and_frobenious_squared_norm_exact,
 )
@@ -33,15 +31,22 @@ from tfep.nn.flows.continuous import (
 # =============================================================================
 
 _old_default_dtype = None
+_old_torch_seed = None
 
 def setup_module(module):
-    global _old_default_dtype
+    global _old_default_dtype, _old_torch_seed
     _old_default_dtype = torch.get_default_dtype()
+    _old_torch_seed = torch.initial_seed()
     torch.set_default_dtype(torch.double)
+
+    # Setting the seed is necessary to make the neural network parameters reproducible.
+    torch.manual_seed(2)
 
 
 def teardown_module(module):
+    global _old_default_dtype, _old_torch_seed
     torch.set_default_dtype(_old_default_dtype)
+    torch.manual_seed(_old_torch_seed)
 
 
 # =============================================================================
@@ -106,99 +111,83 @@ def create_input_and_dynamics(batch_size, n_atoms, seed):
 # TESTS
 # =============================================================================
 
+# TODO: test both vmap=True and False when pytorch 1.11 is released.
+
 @pytest.mark.parametrize('batch_size', [1, 10])
+@pytest.mark.parametrize('create_graph', [True, False])
 @pytest.mark.parametrize('seed', [0, 3, 6])
-def test_exact_trace_estimator(batch_size, seed):
-    """Test the exact trace estimator."""
+def test_exact_trace_estimator(batch_size, create_graph, seed):
+    """Test the exact estimator of the trace and Frobenious norm of the Jacobian."""
+    vmap = False
     t, x, dynamics, _ = create_input_and_dynamics(batch_size, n_atoms=3, seed=seed)
 
-    # Compute the reference trace.
+    # Compute the reference trace and regularization terms.
     ref_trace = torch_jacobian_trace(dynamics, t, x)
+    ref_reg = torch_jacobian_frobenious_squared_norm(dynamics, t, x)
+
+    # Grad outputs.
+    grads_out = torch.eye(x.shape[1])
 
     # Compute the estimated trace.
     vel = dynamics(t, x)
-    trace = _trace_exact(vel, x)
-    trace_with_frobenious = _trace_and_frobenious_squared_norm_exact(vel, x)[0]
+    trace = _trace_exact(vel, x, grads_out, vmap=vmap, create_graph=create_graph)
+    trace_with_frobenious, reg = _trace_and_frobenious_squared_norm_exact(
+        vel, x, grads_out, vmap=vmap, create_graph=create_graph)
 
     assert torch.allclose(trace, ref_trace)
     assert torch.allclose(trace_with_frobenious, ref_trace)
+    assert torch.allclose(reg, ref_reg)
 
 
 @pytest.mark.parametrize('batch_size', [1, 10])
+@pytest.mark.parametrize('create_graph', [True, False])
 @pytest.mark.parametrize('seed', [0, 3, 6])
-def test_hutchinson_trace_estimator(batch_size, seed):
+def test_hutchinson_trace_estimator(batch_size, create_graph, seed):
     """Test the implementation of Hutchinson's trace estimator."""
+    tol = 1e-2
+    vmap = False
     t, x, dynamics, generator = create_input_and_dynamics(batch_size, n_atoms=3, seed=seed)
 
-    # Compute the reference trace.
+    # Compute the reference trace and regularization terms.
     ref_trace = torch_jacobian_trace(dynamics, t, x)
+    ref_reg = torch_jacobian_frobenious_squared_norm(dynamics, t, x)
 
     # Compute the estimated trace with many samples.
     vel = dynamics(t, x)
-    n_samples = 2000
+    n_samples = 2500
 
+    # First compute the traces using n_sample repetitions of the function.
     traces = torch.empty(n_samples, batch_size)
     traces_with_frobenious = torch.empty(n_samples, batch_size)
-
-    for i in range(n_samples):
-        eps = torch.randn(x.shape, generator=generator)
-        traces[i] = _trace_hutchinson(vel, x, eps)
-        traces_with_frobenious[i] = _trace_and_frobenious_squared_norm_hutchinson(vel, x, eps)[0]
-
-    trace = torch.mean(traces, dim=0)
-    trace_with_frobenious = torch.mean(traces_with_frobenious, dim=0)
-
-    assert torch.allclose(trace, ref_trace, atol=1e-2)
-    assert torch.allclose(trace_with_frobenious, ref_trace, atol=1e-2)
-
-
-@pytest.mark.parametrize('batch_size', [1, 10])
-@pytest.mark.parametrize('seed', [0, 3, 6])
-def test_frobenious_norm_exact(batch_size, seed):
-    """Test the Hutchinson's estimation of the Jacobian Frobenious norm."""
-    t, x, dynamics, generator = create_input_and_dynamics(batch_size, n_atoms=3, seed=seed)
-
-    # Compute the reference regularization term.
-    ref_reg = torch_jacobian_frobenious_squared_norm(dynamics, t, x)
-
-    # Compute the estimated Frobenious norm.
-    vel = dynamics(t, x)
-    reg = _frobenious_squared_norm_exact(vel, x)
-    reg_with_trace = _trace_and_frobenious_squared_norm_exact(vel, x)[1]
-
-    assert torch.allclose(reg, ref_reg)
-    assert torch.allclose(reg_with_trace, ref_reg)
-
-
-@pytest.mark.parametrize('batch_size', [1, 10])
-@pytest.mark.parametrize('seed', [0, 3, 6])
-def test_frobenious_norm_hutchinson(batch_size, seed):
-    """Test the Hutchinson's estimation of the Jacobian Frobenious norm."""
-    t, x, dynamics, generator = create_input_and_dynamics(batch_size, n_atoms=3, seed=seed)
-
-    # Compute the reference regularization term.
-    ref_reg = torch_jacobian_frobenious_squared_norm(dynamics, t, x)
-
-    # Compute the estimated Frobenious norm.
-    vel = dynamics(t, x)
-    n_samples = 2000
-
     regs = torch.empty(n_samples, batch_size)
-    regs_with_trace = torch.empty(n_samples, batch_size)
 
     for i in range(n_samples):
-        eps = torch.randn(x.shape, generator=generator)
-        regs[i] = _frobenious_squared_norm_hutchinson(vel, x, eps)
-        regs_with_trace[i] = _trace_and_frobenious_squared_norm_hutchinson(vel, x, eps)[1]
+        eps = torch.randn(1, *x.shape, generator=generator)
+        traces[i] = _trace_hutchinson(vel, x, eps, vmap=vmap, create_graph=create_graph)
+        traces_with_frobenious[i], regs[i] = _trace_and_frobenious_squared_norm_hutchinson(
+            vel, x, eps, vmap=vmap, create_graph=create_graph)
 
-    reg = torch.mean(regs, dim=0)
-    reg_with_trace = torch.mean(regs_with_trace, dim=0)
+    trace = traces.mean(dim=0)
+    trace_with_frobenious = traces_with_frobenious.mean(dim=0)
+    reg = regs.mean(dim=0)
 
-    assert torch.allclose(reg, ref_reg, atol=1e-2)
-    assert torch.allclose(reg_with_trace, ref_reg, atol=1e-2)
+    assert torch.allclose(trace, ref_trace, atol=tol)
+    assert torch.allclose(trace_with_frobenious, ref_trace, atol=tol)
+    assert torch.allclose(reg, ref_reg, atol=tol)
+
+    # Now compute it in a single pass.
+    eps = torch.randn(n_samples, *x.shape, generator=generator)
+    trace = _trace_hutchinson(vel, x, eps, vmap=vmap, create_graph=create_graph)
+    trace_with_frobenious, reg = _trace_and_frobenious_squared_norm_hutchinson(
+        vel, x, eps, vmap=vmap, create_graph=create_graph)
+
+    assert torch.allclose(trace, ref_trace, atol=tol)
+    assert torch.allclose(trace_with_frobenious, ref_trace, atol=tol)
+    assert torch.allclose(reg, ref_reg, atol=tol)
 
 
-def test_identity_flow():
+@pytest.mark.parametrize('vmap', [True, False])
+def test_identity_flow(vmap):
     """Check that the continuous flow behaves well with an identity dynamics."""
     _, x, dynamics, generator = create_input_and_dynamics(batch_size=5, n_atoms=3, seed=0)
 
@@ -206,7 +195,7 @@ def test_identity_flow():
     dynamics.mlp[-2].weight.data.fill_(0.0)
 
     # Create normalizing flow.
-    flow = ContinuousFlow(dynamics=dynamics, trace_estimator='exact')
+    flow = ContinuousFlow(dynamics=dynamics, trace_estimator='exact', vmap=vmap, requires_backward=True)
 
     # Check that the output is not transformed.
     y, trace, reg = flow(x)
@@ -220,13 +209,15 @@ def test_identity_flow():
 
 
 @pytest.mark.parametrize('batch_size', [1, 10])
+@pytest.mark.parametrize('vmap', [True, False])
+@pytest.mark.parametrize('create_graph', [True, False])
 @pytest.mark.parametrize('seed', [1, 4, 8])
-def test_continuous_flow_round_trip(batch_size, seed):
+def test_continuous_flow_round_trip(batch_size, vmap, create_graph, seed):
     """Test that the ContinuousFlow.inverse(ContinuousFlow.forward(x)) equals the identity."""
     _, x, dynamics, generator = create_input_and_dynamics(batch_size, n_atoms=3, seed=seed)
 
     # Create normalizing flow.
-    flow = ContinuousFlow(dynamics=dynamics, trace_estimator='exact')
+    flow = ContinuousFlow(dynamics=dynamics, trace_estimator='exact', vmap=vmap, requires_backward=create_graph)
 
     # Round trip.
     y, trace, reg = flow(x)
