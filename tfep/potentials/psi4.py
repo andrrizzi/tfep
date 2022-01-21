@@ -16,6 +16,7 @@ Modules and functions to compute QM energies and gradients with Psi4.
 # DO NOT IMPORT PSI4 HERE! Psi4 is an optional dependency of tfep.
 import collections
 import functools
+import warnings
 
 import numpy as np
 import pint
@@ -357,6 +358,9 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
     requires another self-consistent calculation. If backpropagation is not
     necessary, set ``precompute_gradient`` to ``False``.
 
+    Double backpropagation (sometimes necessary, for example, to train on forces)
+    is supported by estimating the vector-Hessian product with finite-differences [1].
+
     By default, the perform the batch of energy/gradient calculations serially,
     using the native thread parallelization implemented in Psi4. This scheme is,
     however, not embarassingly parallel. Thus, the module supports batch
@@ -479,6 +483,12 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
            strategy = ProcessPoolStrategy(p)
            energy = potential_energy_psi4(batch_positions, name='scf', positions_unit=ureg.angstrom)
 
+    References
+    ----------
+    [1] Putrino A, Sebastiani D, Parrinello M. Generalized variational density
+        functional perturbation theory. The Journal of Chemical Physics. 2000
+        Nov 1;113(17):7102-9.
+
     """
 
     @staticmethod
@@ -494,7 +504,7 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
             precompute_gradient=True,
             parallelization_strategy=None,
             on_unconverged='raise',
-            kwargs=None
+            kwargs=None,
     ):
         """Compute the potential energy of the molecule with Psi4."""
         # Handle mutable default arguments.
@@ -538,10 +548,18 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
             # MP2 wavefunction convergence twice.
             energies, forces = _run_psi4(return_force=True, **run_psi4_kwargs)
 
-            # Save the variables used to compute the gradient in backpropagation.
+            # Save the pre-computed forces used for backpropagation.
             forces = forces_array_to_tensor(forces, positions_unit, energy_unit,
                                             dtype=batch_positions.dtype)
-            ctx.save_for_backward(forces)
+
+            # In this case we won't need the SCF wavefunctions.
+            ctx.wavefunctions = None
+
+            # The original input vector is required in case of double backprop
+            # to tell PyTorch that _PotentialEnergyPsi4FuncBackward enters the
+            # computational graph correctly. It won't be actually used since we
+            # are also passing batch_positions_arr.
+            ctx.save_for_backward(batch_positions, forces)
         else:
             # Compute the potential energies. Save the wavefunction so that
             # the gradient computation will avoid re-doing the SCF later.
@@ -551,17 +569,20 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
             if name != 'scf':
                 wavefunctions = [w.reference_wavefunction() for w in wavefunctions]
 
-            # Save the variables used to compute the gradient in backpropagation.
-            ctx.name = name
-            ctx.batch_positions_arr = batch_positions_arr
             ctx.wavefunctions = wavefunctions
-            ctx.energy_unit = energy_unit
-            ctx.positions_unit = positions_unit
-            ctx.write_orbitals = write_orbitals
-            ctx.restart_file = restart_file
-            ctx.parallelization_strategy = parallelization_strategy
-            ctx.on_unconverged = on_unconverged
-            ctx.kwargs = kwargs
+            ctx.save_for_backward(batch_positions)
+
+        # Save other variables used for backprop and/or double backprop.
+        ctx.name = name
+        ctx.batch_positions_arr = batch_positions_arr
+        ctx.molecule = molecule
+        ctx.energy_unit = energy_unit
+        ctx.positions_unit = positions_unit
+        ctx.write_orbitals = write_orbitals
+        ctx.restart_file = restart_file
+        ctx.parallelization_strategy = parallelization_strategy
+        ctx.on_unconverged = on_unconverged
+        ctx.kwargs = kwargs
 
         # Convert to unitless tensor.
         energies = energies_array_to_tensor(energies, energy_unit, batch_positions.dtype)
@@ -575,31 +596,170 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
         n_input_args = 11
         grad_input = [None for _ in range(n_input_args)]
 
+        # Check if we need a double backward (i.e. create_graph == True).
+        if torch.is_grad_enabled() and (isinstance(ctx.write_orbitals, bool) or ctx.restart_file is None):
+            warnings.warn('PotentialEnergyPsi4Func.backward() was requested to '
+                          'create the computational graph to perform double '
+                          'backprop, but write_orbitals or restart_file were not '
+                          'given. These should point to the same path or the '
+                          'performance will be degraded.')
+
         # Compute gradient w.r.t. batch_positions.
         if ctx.needs_input_grad[0]:
             # Check if we have already computed the forces.
-            if len(ctx.saved_tensors) == 1:
+            if len(ctx.saved_tensors) == 2:
                 # Retrieve pre-computed forces.
-                forces, = ctx.saved_tensors
+                batch_positions, precomputed_forces = ctx.saved_tensors
             else:
-                forces = _run_psi4(
-                    name=ctx.name,
-                    batch_positions=ctx.batch_positions_arr,
-                    molecule=ctx.wavefunctions,
-                    return_force=True,
-                    write_orbitals=ctx.write_orbitals,
-                    restart_file=ctx.restart_file,
-                    parallelization_strategy=ctx.parallelization_strategy,
-                    on_unconverged=ctx.on_unconverged,
-                    **ctx.kwargs,
-                )
-                forces = forces_array_to_tensor(
-                    forces, ctx.positions_unit, ctx.energy_unit, dtype=grad_output.dtype)
+                batch_positions, = ctx.saved_tensors
+                precomputed_forces = None
 
-            # Accumulate gradient.
-            grad_input[0] = forces * grad_output[:, None]
+            # We don't really need write_orbitals=True since we have already
+            # saved the SCF orbitals during the energy/gradient calculation.
+            # If the paths in write_orbitals coincide with restart_file, then
+            # they will be read.
+            grad_input[0] = _PotentialEnergyPsi4FuncBackward.apply(
+                batch_positions,
+                grad_output,
+                precomputed_forces,
+                ctx.name,
+                ctx.batch_positions_arr,
+                ctx.molecule,
+                ctx.wavefunctions,
+                ctx.positions_unit,
+                ctx.energy_unit,
+                ctx.restart_file,
+                ctx.parallelization_strategy,
+                ctx.on_unconverged,
+                ctx.kwargs,
+            )
 
         return tuple(grad_input)
+
+
+class _PotentialEnergyPsi4FuncBackward(torch.autograd.Function):
+    @staticmethod
+    def forward(
+            ctx,
+            batch_positions,
+            back_grad_output,
+            precomputed_forces,
+            name,
+            batch_positions_arr,
+            molecule,
+            wavefunctions,
+            positions_unit,
+            energy_unit,
+            restart_file,
+            parallelization_strategy,
+            on_unconverged,
+            kwargs,
+    ):
+        # Compute the forces if they weren't computed in forward().
+        if precomputed_forces is None:
+            precomputed_forces = _run_psi4(
+                name=name,
+                batch_positions=batch_positions_arr,
+                molecule=wavefunctions,
+                return_force=True,
+                write_orbitals=False,
+                restart_file=restart_file,
+                parallelization_strategy=parallelization_strategy,
+                on_unconverged=on_unconverged,
+                **kwargs,
+            )
+
+            # From Quantity[numpy] to Tensor and fix units.
+            precomputed_forces = forces_array_to_tensor(
+                precomputed_forces, positions_unit, energy_unit,
+                dtype=back_grad_output.dtype)
+
+        # We shouldn't pass an SCF wavefunction here since we need the wave
+        # function for a perturbed configuration.
+        ctx.save_for_backward(batch_positions, back_grad_output, precomputed_forces)
+
+        ctx.name = name
+        ctx.batch_positions_arr = batch_positions_arr
+        ctx.molecule = molecule
+        ctx.energy_unit = energy_unit
+        ctx.positions_unit = positions_unit
+        ctx.restart_file = restart_file
+        ctx.parallelization_strategy = parallelization_strategy
+        ctx.on_unconverged = on_unconverged
+        ctx.kwargs = kwargs
+
+        # Compute the backward gradient.
+        grad_input = precomputed_forces * back_grad_output[:, None]
+        return grad_input
+
+    @staticmethod
+    def backward(ctx, back_back_grad_output):
+        n_input_args = 13
+        grad_back = [None for _ in range(n_input_args)]
+
+        batch_positions, back_grad_output, forces = ctx.saved_tensors
+
+        if ctx.needs_input_grad[0]:
+            # Perturbation vector for finite-differences estimation of the
+            # Hessian-vector product v^T \dot H .
+            # v has shape (batch_size, n_atoms*3).
+            v = back_back_grad_output * back_grad_output[:, None]
+
+            # Determine epsilon so that the maximum displacement used to perturb
+            # the positions is 1e-3 Bohr. max_disp is the maximum displacement
+            # in the same units of batch_positions.
+            # TODO: Make this a parameter?
+            max_disp = 1e-3
+            ureg = ctx.batch_positions_arr._REGISTRY
+            if ctx.positions_unit is None:
+                positions_unit = ureg.bohr
+            else:
+                # batch_positions is not in bohr.
+                positions_unit = ctx.positions_unit
+                max_disp = (max_disp * ureg.bohr).to(positions_unit).magnitude
+
+            # epsilon[i] is the scalar multiplying the displacement for batch i.
+            # shape: (batch_size, 1).
+            epsilon = max_disp / torch.max(batch_positions, dim=1, keepdim=True).values
+
+            # espilon_v shape: (batch_size, n_atoms*3).
+            epsilon_v = epsilon * v
+            batch_positions_plus = flattened_to_atom(batch_positions + epsilon_v)
+            batch_positions_plus = batch_positions_plus.detach().numpy() * positions_unit
+            batch_positions_minus = flattened_to_atom(batch_positions - epsilon_v)
+            batch_positions_minus = batch_positions_minus.detach().numpy() * positions_unit
+
+            # Shared kwargs for _run_psi().
+            run_psi4_kwargs = dict(
+                name=ctx.name,
+                molecule=ctx.molecule,
+                return_force=True,
+                write_orbitals=False,
+                restart_file=ctx.restart_file,
+                parallelization_strategy=ctx.parallelization_strategy,
+                on_unconverged=ctx.on_unconverged,
+            )
+
+            # Compute the two forces.
+            forces_plus = _run_psi4(batch_positions=batch_positions_plus,
+                                      **run_psi4_kwargs, **ctx.kwargs)
+            forces_minus = _run_psi4(batch_positions=batch_positions_minus,
+                                       **run_psi4_kwargs, **ctx.kwargs)
+
+            # Convert units.
+            forces_plus = forces_array_to_tensor(
+                forces_plus, ctx.positions_unit, ctx.energy_unit, dtype=forces.dtype)
+            forces_minus = forces_array_to_tensor(
+                forces_minus, ctx.positions_unit, ctx.energy_unit, dtype=forces.dtype)
+
+            # Compute the Hessian-vector product.
+            hessian_v = (forces_plus - forces_minus) / (2 * epsilon)
+            grad_back[0] = hessian_v
+
+        if ctx.needs_input_grad[1]:
+            grad_back[1] = back_back_grad_output * forces
+
+        return tuple(grad_back)
 
 
 def potential_energy_psi4(

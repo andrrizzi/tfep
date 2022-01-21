@@ -47,6 +47,22 @@ _UREG = pint.UnitRegistry()
 
 
 # =============================================================================
+# TEST MODULE CONFIGURATION
+# =============================================================================
+
+_old_default_dtype = None
+
+def setup_module(module):
+    global _old_default_dtype
+    _old_default_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.double)
+
+
+def teardown_module(module):
+    torch.set_default_dtype(_old_default_dtype)
+
+
+# =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
 
@@ -101,6 +117,23 @@ def parallelization_strategy(strategy_name, psi4_config):
         # Keep the pool of processes open until the contextmanager is left.
         with torch.multiprocessing.Pool(2, pool_process_initializer, initargs=[psi4_config]) as p:
             yield ProcessPoolStrategy(p)
+
+
+def reference_psi4_hessian(batch_positions, name):
+    """Compute the Hessian using psi4 features."""
+    batch_size, n_atoms, _ = batch_positions.shape
+    molecule = psi4.core.get_active_molecule()
+    ureg = batch_positions._REGISTRY
+
+    hessian = np.empty((batch_size, 3*n_atoms, 3*n_atoms))
+    for batch_idx, pos in enumerate(batch_positions):
+        molecule.set_geometry(psi4.core.Matrix.from_array(pos.to('bohr').magnitude))
+        molecule.update_geometry()
+
+        hessian[batch_idx] = psi4.hessian(name).to_array()
+
+    hessian = hessian * ureg.hartree / ureg.bohr**2
+    return hessian
 
 
 # =============================================================================
@@ -379,7 +412,7 @@ def test_potential_energy_psi4_gradcheck(name):
     with tempfile.TemporaryDirectory() as tmp_dir_path:
         # Set global options.
         configure_psi4(
-            global_options=dict(basis='cc-pvtz', reference='RHF'),
+            global_options=dict(basis='sto-3g', reference='RHF'),
             psi4_output_file_path='quiet',
             psi4_scratch_dir_path=tmp_dir_path,
             active_molecule=molecule
@@ -413,3 +446,57 @@ def test_potential_energy_psi4_gradcheck(name):
             ],
             atol=0.5,
         )
+
+
+@pytest.mark.skipif(not PSI4_INSTALLED, reason='requires a Python installation of Psi4')
+def test_double_backpropagation():
+    """Test that potential_energy_psi4 implements the correct gradient."""
+    batch_size = 2
+    name = 'scf'
+    positions_unit = _UREG.angstrom
+    energy_unit = _UREG.kJ / _UREG.mol
+
+    molecule, batch_positions = create_water_molecule(batch_size)
+
+    with tempfile.TemporaryDirectory() as tmp_dir_path:
+        # Set global options.
+        configure_psi4(
+            global_options=dict(basis='sto-3g', reference='RHF'),
+            psi4_output_file_path='quiet',
+            psi4_scratch_dir_path=tmp_dir_path,
+            active_molecule=molecule
+        )
+
+        # Compute the reference Hessian.
+        ref_hessian = reference_psi4_hessian(batch_positions, name)
+        ref_hessian = (ref_hessian * _UREG.avogadro_constant).to(energy_unit / positions_unit**2)
+        ref_hessian = torch.tensor(ref_hessian.magnitude)
+
+        # Convert to tensor.
+        batch_positions = np.reshape(batch_positions.to('angstrom').magnitude,
+                                     (batch_size, molecule.natom()*3))
+        batch_positions = torch.tensor(batch_positions, requires_grad=True, dtype=torch.double)
+
+        # Generate the restart files in the first SCF calculation.
+        cached_wfn_file_path = [os.path.join(tmp_dir_path, 'wfn'+str(i)) for i in range(batch_size)]
+        potentials = potential_energy_psi4(
+            batch_positions,
+            name,
+            positions_unit=positions_unit,
+            energy_unit=energy_unit,
+            write_orbitals=cached_wfn_file_path,
+            restart_file=cached_wfn_file_path,
+            precompute_gradient=True,
+        )
+
+        # Compute the forces.
+        grad = torch.autograd.grad(potentials, batch_positions, torch.ones(*potentials.shape), create_graph=True)[0]
+
+        # Now compute the Hessian row by row.
+        hessian = torch.empty(*ref_hessian.shape)
+        for row_idx, grad_output in enumerate(torch.eye(batch_positions.shape[1])):
+            grad_output = grad_output.unsqueeze(0).expand(*grad.shape)
+            grad_grad = torch.autograd.grad(grad, batch_positions, grad_output, create_graph=False, retain_graph=True)[0]
+            hessian[:, row_idx] = grad_grad
+
+        assert torch.allclose(ref_hessian, hessian, rtol=1e-3)
