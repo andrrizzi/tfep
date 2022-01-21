@@ -558,14 +558,17 @@ class TFEPCache:
 
         data_type can be 'train', 'train_metric', or 'eval'.
         """
+        idx_attr = '_loaded_' + data_type + '_idx'  # e.g., _loaded_train_idx
+        idx_str = str(getattr(self, idx_attr))
+
         if data_type == 'eval':
-            file_name = 'step-'+str(self._loaded_eval_idx)
+            file_name = 'step-' + idx_str
             dir_path = self._eval_dir_path
         elif 'train' == data_type:
-            file_name = 'epoch-' + str(self._loaded_train_idx)
+            file_name = 'epoch-' + idx_str
             dir_path = self._train_dir_path
         else:  # train_metric
-            file_name = 'metrics-epoch-' + str(self._loaded_train_idx)
+            file_name = 'metrics-epoch-' + idx_str
             dir_path = self._train_dir_path
 
         return os.path.join(dir_path, file_name + '.npz')
