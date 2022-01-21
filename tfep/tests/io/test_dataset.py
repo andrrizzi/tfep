@@ -170,7 +170,7 @@ def test_trajectory_dataset_subsampling(
     if expected_frame_indices is None:
         expected_frame_indices = list(range(start, stop+1, step))
     assert len(trajectory_dataset) == len(expected_frame_indices)
-    assert np.all(trajectory_dataset._subsampled_traj_sample_indices == expected_frame_indices)
+    assert np.all(trajectory_dataset.trajectory_sample_indices == expected_frame_indices)
 
     # Check that subsampling selected the correct positions.
     _check_correct_subset_positions(trajectory_dataset, expected_frame_indices)
