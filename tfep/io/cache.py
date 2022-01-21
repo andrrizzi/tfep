@@ -101,6 +101,8 @@ class TFEPCache:
         # This keep track of the currently in-memory training/evaluation data.
         self._loaded_train_idx = None
         self._loaded_train_data = None  # Dict[name, Tensor].
+        self._loaded_train_metric_idx = None
+        self._loaded_train_metric_data = None  # Dict[name, Tensor].
         self._loaded_eval_idx = None
         self._loaded_eval_data = None  # Dict[name, Tensor].
 
@@ -240,7 +242,7 @@ class TFEPCache:
             remove_nans=False,
             as_numpy=False
     ):
-        """Read the tensors saved during the given training epoch/batch/step.
+        """Read the tensors saved with ``save_train_tensors``.
 
         At least one between ``step_idx`` and ``epoch_idx`` must be passed.
         Note that only the data for the batches that have been saved are returned.
@@ -276,37 +278,56 @@ class TFEPCache:
             A dictionary mapping the name of the saved tensors to their values.
 
         """
-        # Check input arguments.
-        _, epoch_idx, batch_idx = self._validate_indices(
-            step_idx, epoch_idx, batch_idx, need_batch=False)
+        return self._read_train_data(names, step_idx, epoch_idx, batch_idx,
+                                     remove_nans, as_numpy, is_metric=False)
 
-        # Load in memory the data of this epoch.
-        self._load_data(epoch_idx, data_type='train')
+    def read_train_metrics(
+            self,
+            names=None,
+            step_idx=None,
+            epoch_idx=None,
+            batch_idx=None,
+            remove_nans=False,
+            as_numpy=False
+    ):
+        """Read the tensors saved with ``save_train_metrics``.
 
-        # Determine which names have to be returned.
-        if names is None:
-            names = [k for k in self._loaded_train_data.keys() if k != self.MASK_NAME]
+        At least one between ``step_idx`` and ``epoch_idx`` must be passed.
+        Note that only the data for the batches that have been saved are returned.
+        As a consequence, the returned tensors might be smaller than the
+        number of samples per epoch if the training was interrupted before the
+        end of the epoch.
 
-        # Build mask.
-        mask = self._build_mask(remove_nans, data_type='train')
+        Parameters
+        ----------
+        names : List[str], optional
+            If given, only the tensors saved with the names in this list are
+            returned. Otherwise, all the saved tensors for this step/epoch/batch
+            are returned.
+        step_idx : int, optional
+            If given, the tensors for this optimization step are returned.
+        epoch_idx : int, optional
+            If given, the tensors for this epoch are returned. If ``step_idx``
+            is passed, this is ignored.
+        batch_idx : int, optional
+            If given together with ``epoch_idx``, the tensors for this epoch/batch
+            are returned. If ``step_idx`` is passed, this is ignored.
+        remove_nans : bool or str, optional
+            If ``True`` only the indices corresponding to non NaN entries are
+            returned. If a string, only the indices corresponding to NaN values
+            of ``tensors[remove_nans]`` are returned.
+        as_numpy : bool, optional
+            If ``True``, the tensors are returned as a numpy array rather than
+            PyTorch ``Tensors``.
 
-        # Read data for the specific epoch/batch.
-        tensors = {}
-        for name in names:
-            if batch_idx is None:
-                # Collect data for entire epoch.
-                tensors[name] = self._loaded_train_data[name][mask]
-            else:
-                # Collect data for a single batch.
-                first = self.batch_size * batch_idx
-                last = first + self.batch_size
-                tensors[name] = self._loaded_train_data[name][first:last][mask[first:last]]
+        Returns
+        -------
+        tensors : Dict[str, torch.Tensor]
+            A dictionary mapping the name of the saved tensors to their values.
 
-        # Convert from numpy to Tensors.
-        if not as_numpy:
-            tensors = {k: torch.tensor(v) for k, v in tensors.items()}
-
-        return tensors
+        """
+        return self._read_train_data(names, step_idx, epoch_idx, batch_idx,
+                                     remove_nans, as_numpy, is_metric=True)
 
     def save_eval_tensors(
             self,
@@ -339,6 +360,8 @@ class TFEPCache:
         ----------
         tensors : Dict[str, torch.Tensor]
             A dictionary mapping the name of the saved tensors to their values.
+            All tensors must have shape ``(batch_size,)`` unless only ``epoch_idx``
+            is provided, in which case they must have shape ``(n_samples_per_epoch,)``.
         step_idx : int or None
             If given, the tensors for this optimization step are saved.
         epoch_idx : int or None
@@ -418,7 +441,6 @@ class TFEPCache:
         # Update cached file on disk.
         self._dump_data(data_type='eval')
 
-
     def save_train_tensors(self, tensors, step_idx=None, epoch_idx=None, batch_idx=None):
         """Save the tensors generated during the given epoch/batch/step of training.
 
@@ -429,6 +451,8 @@ class TFEPCache:
         ----------
         tensors : Dict[str, torch.Tensor]
             A dictionary mapping the name of the saved tensors to their values.
+            All tensors must have shape ``(batch_size,)`` unless only ``epoch_idx``
+            is provided, in which case they must have shape ``(n_samples_per_epoch,)``.
         step_idx : int or None
             If given, the tensors for this optimization step are saved.
         epoch_idx : int or None
@@ -440,40 +464,36 @@ class TFEPCache:
         """
         # Warn the user about missing dataset_sample_index nor trajectory_sample_index.
         self._warn_if_no_indices(tensors)
+        # Save tensors.
+        self._save_train_data(tensors, step_idx, epoch_idx, batch_idx, is_metric=False)
 
-        # Validate input arguments.
-        _, epoch_idx, batch_idx = self._validate_indices(
-            step_idx, epoch_idx, batch_idx, need_batch=False)
+    def save_train_metrics(self, tensors, step_idx=None, epoch_idx=None, batch_idx=None):
+        """Save the metrics generated during the given epoch/batch/step of training.
 
-        # Load in memory the data of this epoch.
-        self._load_data(epoch_idx, data_type='train')
+        The difference with ``save_train_tensors`` is that tensors are expected
+        to have one value for each batch rather than for each sample (e.g., value
+        of the loss function).
 
-        # This is the first index pointing to the start of the batch.
-        if batch_idx is not None:
-            first = self.batch_size*batch_idx
+        At least one between ``step_idx`` and ``epoch_idx``/``batch_idx`` must
+        be passed.
 
-        # Update all tensors.
-        mask = self._loaded_train_data[self.MASK_NAME]
-        for name, value in tensors.items():
-            # Convert from tensor to array.
-            value = value.detach().numpy()
+        Parameters
+        ----------
+        tensors : Dict[str, torch.Tensor]
+            A dictionary mapping the name of the saved tensors to their values.
+            All tensors must be 0-dimensional tensors (i.e. floats) unless only
+            ``epoch_idx`` is provided, in which case they must have shape
+            ``(n_batches_per_epoch,)``.
+        step_idx : int or None
+            If given, the tensors for this optimization step are saved.
+        epoch_idx : int or None
+            If given, the tensors for this epoch are saved.
+        batch_idx : int or None
+            If given together with ``epoch_idx``, the tensors for this epoch/batch
+            are saved. Otherwise, the data is assumed to be for the entire epoch.
 
-            if batch_idx is None:
-                # Assume data is for the entire epoch.
-                self._loaded_train_data[name] = value
-                mask[:] = True
-            else:
-                # Initialize the tensor if this is the first time we see it.
-                try:
-                    saved_array = self._loaded_train_data[name]
-                except KeyError:
-                    saved_array = np.empty(self.n_samples_per_epoch, dtype=value.dtype)
-                    self._loaded_train_data[name] = saved_array
-                saved_array[first:first+len(value)] = value
-                mask[first:first+len(value)] = True
-
-        # Update cached file on disk.
-        self._dump_data(data_type='train')
+        """
+        self._save_train_data(tensors, step_idx, epoch_idx, batch_idx, is_metric=True)
 
     # --------------------- #
     # Private class members #
@@ -495,18 +515,18 @@ class TFEPCache:
 
         If no mask must be used, returns None.
 
-        data_type can be 'train' or 'eval'.
+        data_type can be 'train', 'train_metric', or 'eval'.
         """
+        # Load the data to build the NaN mask.
+        data_attr = '_loaded_' + data_type + '_data'  # e.g., _loaded_train_data
+        loaded_data = getattr(self, data_attr)
+
         # No need to use a mask for eval data if remove_nans is False.
         if remove_nans is False:
             if data_type == 'eval':
                 return None
             else:
-                return self._loaded_train_data[self.MASK_NAME]
-
-        # Load the data to build the NaN mask.
-        data_attr = '_loaded_' + data_type + '_data'  # e.g., _loaded_train_data
-        loaded_data = getattr(self, data_attr)
+                return loaded_data[self.MASK_NAME]
 
         # Build the NaN mask.
         if remove_nans is True:
@@ -523,7 +543,7 @@ class TFEPCache:
 
         # Add the invalid training data mask.
         if data_type != 'eval':
-            mask &= self._loaded_train_data[self.MASK_NAME]
+            mask &= loaded_data[self.MASK_NAME]
 
         return mask
 
@@ -536,20 +556,24 @@ class TFEPCache:
     def _get_data_file_path(self, data_type):
         """The file path where the currently loaded training/evaluation data is stored.
 
-        data_type can be 'train' or 'eval'.
+        data_type can be 'train', 'train_metric', or 'eval'.
         """
-        if data_type == 'train':
-            file_name = 'epoch-' + str(self._loaded_train_idx)
-            dir_path = self._train_dir_path
-        else:
+        if data_type == 'eval':
             file_name = 'step-'+str(self._loaded_eval_idx)
             dir_path = self._eval_dir_path
+        elif 'train' == data_type:
+            file_name = 'epoch-' + str(self._loaded_train_idx)
+            dir_path = self._train_dir_path
+        else:  # train_metric
+            file_name = 'metrics-epoch-' + str(self._loaded_train_idx)
+            dir_path = self._train_dir_path
+
         return os.path.join(dir_path, file_name + '.npz')
 
     def _load_data(self, idx, data_type):
         """Load/initialize the training/evaluation data in memory.
 
-        data_type can be 'train' or 'eval'.
+        data_type can be 'train', 'train_metric', or 'eval'.
         """
         # Check if we have already loaded the data.
         idx_attr = '_loaded_' + data_type + '_idx'  # e.g., _loaded_train_idx
@@ -569,10 +593,12 @@ class TFEPCache:
             setattr(self, data_attr, {k: v for k, v in npz_file.items()})
         else:
             # Initialize the data for this epoch.
-            if data_type == 'train':
-                data = {self.MASK_NAME: np.full(self.n_samples_per_epoch, fill_value=False)}
-            else:
+            if data_type == 'eval':
                 data = {}
+            else:
+                # Training data requires a mask.
+                mask_dim = self.n_samples_per_epoch if data_type == 'train' else self.n_batches_per_epoch
+                data = {self.MASK_NAME: np.full(mask_dim, fill_value=False)}
             setattr(self, data_attr, data)
 
     def _metadata_from_data(self, data_loader):
@@ -590,6 +616,96 @@ class TFEPCache:
             metadata = json.load(f)
         self._batch_size = metadata['batch_size']
         self._n_samples_per_epoch = metadata['n_samples_per_epoch']
+
+    def _read_train_data(self, names, step_idx, epoch_idx, batch_idx, remove_nans, as_numpy, is_metric):
+        """Common logic for both read_train_tensors and read_train_metrics."""
+        data_type = 'train_metric' if is_metric else 'train'
+
+        # Check input arguments.
+        _, epoch_idx, batch_idx = self._validate_indices(
+            step_idx, epoch_idx, batch_idx, need_batch=False)
+
+        # Load in memory the data of this epoch.
+        self._load_data(epoch_idx, data_type=data_type)
+
+        # Data for tensors and metrics are stored in two different dictionaries.
+        train_data = getattr(self, '_loaded_' + data_type + '_data')
+
+        # Determine which names have to be returned.
+        if names is None:
+            names = [k for k in train_data.keys() if k != self.MASK_NAME]
+
+        # Build mask.
+        mask = self._build_mask(remove_nans, data_type=data_type)
+
+        # Read data for the specific epoch/batch.
+        tensors = {}
+        for name in names:
+            if batch_idx is None:
+                # Collect data for entire epoch.
+                tensors[name] = train_data[name][mask]
+            elif is_metric:
+                tensors[name] = train_data[name][batch_idx][mask[batch_idx]]
+            else:
+                # Collect data for a single batch.
+                first = self.batch_size * batch_idx
+                last = first + self.batch_size
+                tensors[name] = train_data[name][first:last][mask[first:last]]
+
+        # Convert from numpy to Tensors.
+        if not as_numpy:
+            tensors = {k: torch.tensor(v) for k, v in tensors.items()}
+
+        return tensors
+
+    def _save_train_data(self, tensors, step_idx, epoch_idx, batch_idx, is_metric):
+        """Common save logic for both save_train_tensors and save_train_metrics."""
+        if is_metric:
+            data_type = 'train_metric'
+            array_dim = self.n_batches_per_epoch
+        else:
+            data_type = 'train'
+            array_dim = self.n_samples_per_epoch
+
+        # Validate input arguments.
+        _, epoch_idx, batch_idx = self._validate_indices(
+            step_idx, epoch_idx, batch_idx, need_batch=False)
+
+        # Load in memory the data of this epoch.
+        self._load_data(epoch_idx, data_type=data_type)
+
+        # This is the first index pointing to the start of the batch.
+        if batch_idx is not None:
+            first = batch_idx if is_metric else self.batch_size*batch_idx
+
+        # Data for tensors and metrics are stored in two different dictionaries.
+        train_data = getattr(self, '_loaded_' + data_type + '_data')
+
+        # Update all tensors.
+        mask = train_data[self.MASK_NAME]
+        for name, value in tensors.items():
+            # Convert from tensor to array.
+            value = value.detach().numpy()
+
+            if batch_idx is None:
+                # Assume data is for the entire epoch.
+                train_data[name] = value
+                mask[:] = True
+            else:
+                # Initialize the tensor if this is the first time we see it.
+                try:
+                    saved_array = train_data[name]
+                except KeyError:
+                    saved_array = np.empty(array_dim, dtype=value.dtype)
+                    train_data[name] = saved_array
+
+                # Save the data. Metrics have no length.
+                value_len = 1 if is_metric else len(value)
+                saved_array[first:first+value_len] = value
+                mask[first:first+value_len] = True
+
+        # Update cached file on disk.
+        self._dump_data(data_type=data_type)
 
     def _save_metadata(self, file_path):
         """Save metadata to disk."""

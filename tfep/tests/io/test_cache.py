@@ -56,10 +56,13 @@ def check_all_and_named_train_tensors(cache, read_data, **kwargs):
     """
     Check whether reading all tensors or specific tensors results in the same behavior.
     Finally, assigns the read data to ``read_data``, which is a dict name -> tensor with
-    shape (n_epochs, n_steps_per_epochs).
+    shape (n_epochs, n_steps_per_epochs) of (n_epochs, n_batches_per_epochs) for metrics.
     """
     # Read all tensors at the same time.
     data_all = cache.read_train_tensors(**kwargs)
+    metrics = cache.read_train_metrics(**kwargs)
+    data_all.update(metrics)
+    metrics = set(metrics.keys())
 
     # Find epoch/batch for assignment.
     if 'step_idx' in kwargs:
@@ -70,12 +73,19 @@ def check_all_and_named_train_tensors(cache, read_data, **kwargs):
 
     # Compare it to reading one tensor at a time
     for name in data_all:
-        data_single_tensor = cache.read_train_tensors(names=[name], **kwargs)
+        is_metric = name in metrics
+
+        if is_metric:
+            data_single_tensor = cache.read_train_metrics(names=[name], **kwargs)
+        else:
+            data_single_tensor = cache.read_train_tensors(names=[name], **kwargs)
         assert np.allclose(data_single_tensor[name], data_all[name])
 
         # Assign it to pre-allocated data array.
         if batch_idx is None:
             read_data[name][epoch_idx] = data_single_tensor[name]
+        elif is_metric:
+            read_data[name][epoch_idx, batch_idx] = data_single_tensor[name]
         else:
             first = batch_idx * cache.batch_size
             last = first + cache.batch_size
@@ -162,32 +172,34 @@ def test_tfep_cache_save_read_train_tensors(n_frames, batch_size, drop_last, res
         # This is the data we'll be writing.
         ref_data = {k: torch.empty(n_epochs, cache.n_samples_per_epoch)
                     for k in ['dataset_sample_index', 'mean']}
+        ref_data['metric'] = torch.empty(n_epochs, cache.n_batches_per_epoch)
 
         # Simulate training for 2 epochs.
         for epoch_idx in range(n_epochs):
             for batch_idx, batch_data in enumerate(data_loader):
                 # Generate some fake data to store.
                 batch_means = torch.mean(batch_data['positions'], dim=1) + epoch_idx
+                batch_metric = torch.std(batch_data['positions']) + epoch_idx
 
                 # Reinitialize the cache to test resuming.
                 if resume_train and (batch_idx == reinit_batch_idx):
                     cache = TFEPCache(save_dir_path=tmp_dir_path)
 
                 # Store data using step.
+                step_idx = epoch_idx*len(data_loader) + batch_idx
                 saved_tensors = {
                     'dataset_sample_index': batch_data['dataset_sample_index'],
                     'mean': batch_means
                 }
-                cache.save_train_tensors(
-                    tensors=saved_tensors,
-                    step_idx=epoch_idx*len(data_loader) + batch_idx
-                )
+                cache.save_train_tensors(tensors=saved_tensors, step_idx=step_idx)
+                cache.save_train_metrics(tensors={'metric': batch_metric}, step_idx=step_idx)
 
                 # Keep track of the data for testing later.
                 first = batch_idx * batch_size
                 last = first + batch_size
                 ref_data['dataset_sample_index'][epoch_idx, first:last] = batch_data['dataset_sample_index']
                 ref_data['mean'][epoch_idx, first:last] = batch_means
+                ref_data['metric'][epoch_idx, batch_idx] = batch_metric
 
         # Reconstruct all data by reading it from file. We read by epoch,
         # epoch/batch or step; all tensors at the same time or specific tensors.
@@ -232,26 +244,32 @@ def test_tfep_cache_mask():
     data_loader = torch.utils.data.DataLoader(
         dataset, batch_size=2, drop_last=False, shuffle=True)
 
+    # Test data organized in batches (in this case 3 batches per epoch).
+    tensor_data = torch.tensor([[0, 1], [2, 3], [4, 5]])
+    metrics_data = torch.tensor([3., 6., 9.])
+
     with tempfile.TemporaryDirectory() as tmp_dir_path:
         cache = TFEPCache(save_dir_path=tmp_dir_path, data_loader=data_loader)
 
-        # Save some data for the last batch.
-        cache.save_train_tensors({'dataset_sample_index': torch.tensor([4, 5])},
-                                 epoch_idx=1, batch_idx=2)
-        read = cache.read_train_tensors(epoch_idx=1)
-        assert torch.all(read['dataset_sample_index'] == torch.tensor([4, 5]))
+        # Save the data for the last, the first, and the middle batch in this order.
+        batch_order = [2, 0, 1]
+        for write_idx, batch_idx in enumerate(batch_order):
+            # Save tensor and metrics data.
+            cache.save_train_tensors({'dataset_sample_index': tensor_data[batch_idx]},
+                                     epoch_idx=1, batch_idx=batch_idx)
+            cache.save_train_metrics({'metric': metrics_data[batch_idx]},
+                                     epoch_idx=1, batch_idx=batch_idx)
 
-        # Save also the first batch.
-        cache.save_train_tensors({'dataset_sample_index': torch.tensor([0, 1])},
-                                 epoch_idx=1, batch_idx=0)
-        read = TFEPCache(tmp_dir_path).read_train_tensors(epoch_idx=1)
-        assert torch.all(read['dataset_sample_index'] == torch.tensor([0, 1, 4, 5]))
+            # Read the full data.
+            read_tensors = cache.read_train_tensors(epoch_idx=1)
+            read_metrics = cache.read_train_metrics(epoch_idx=1)
 
-        # Finally the second batch.
-        cache.save_train_tensors({'dataset_sample_index': torch.tensor([2, 3])},
-                                 epoch_idx=1, batch_idx=1)
-        read = cache.read_train_tensors(epoch_idx=1)
-        assert torch.all(read['dataset_sample_index'] == torch.tensor([0, 1, 2, 3, 4, 5]))
+            # Expected tensor.
+            expected_tensors = tensor_data[batch_order[:write_idx+1]].flatten().sort().values
+            expected_metrics = metrics_data[batch_order[:write_idx+1]].sort().values
+
+            assert torch.all(read_tensors['dataset_sample_index'] == expected_tensors)
+            assert torch.all(read_metrics['metric'] == expected_metrics)
 
 
 @pytest.mark.parametrize('func_type', ['train', 'eval'])
