@@ -17,8 +17,6 @@ Continuous normalizing flow layer for PyTorch.
 import enum
 
 import torch
-from torchdiffeq import odeint_adjoint
-from torchdiffeq import odeint
 
 from tfep.utils.math import batchwise_dot
 
@@ -134,6 +132,10 @@ class ContinuousFlow(torch.nn.Module):
         return self._pass(y, inverse=True)
 
     def _pass(self, x, inverse):
+        # We import these here as torchdiffeq is an optional dependency.
+        from torchdiffeq import odeint_adjoint
+        from torchdiffeq import odeint
+
         # Determine integration extremes.
         if inverse:
             t = [1.0, 0.0]
