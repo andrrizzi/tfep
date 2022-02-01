@@ -159,6 +159,9 @@ def normalize_vector(x):
 def vector_vector_angle(x1, x2):
     """Return the angle in radians between a two vectors.
 
+    If both ``x1`` and ``x2`` have multiple vectors, the angles are computed
+    in a batchwise fashion.
+
     Parameters
     ----------
     x1 : torch.Tensor
@@ -168,10 +171,10 @@ def vector_vector_angle(x1, x2):
 
     Returns
     -------
-    angle : torch.Tensor
+    angles : torch.Tensor
         A tensor of shape ``(*,)``. As an example, if both inputs have shape
-        ``(batch_size, D)``, then ``angle`` has shape ``(batch_size,)`` and
-        ``angle[i]`` is the angle between vectors ``x1[i]`` and ``x2[i]``.
+        ``(batch_size, D)``, then ``angles`` has shape ``(batch_size,)`` and
+        ``angles[i]`` is the angle between vectors ``x1[i]`` and ``x2[i]``.
 
     """
     x1_norm = torch.linalg.vector_norm(x1, dim=-1)
@@ -205,6 +208,60 @@ def vector_plane_angle(x, plane):
     # Catch round-offs.
     cos_theta = torch.clamp(cos_theta, min=-1, max=1)
     return torch.asin(cos_theta)  # asin(x) = pi/2 - acos(x).
+
+
+def proper_dihedral_angle(x1, x2, x3):
+    """Compute the proper dihedral angle between the plane ``x1``-``x2`` and ``x2``-``x3``.
+
+    If both ``x1``, ``x2``, and ``x3`` have multiple vectors, the angles are
+    computed in a batchwise fashion.
+
+    In the description of the parameters, we will use the example of four atoms
+    at positions p0, p1, p2, and p3.
+
+    Parameters
+    ----------
+    x1 : torch.Tensor
+        The vector p1 - p0 with shape ``(*, D)``, where ``D`` is the vector
+        dimensionality.
+    x2 : torch.Tensor
+        The vector p2 - p1 with shape ``(*, D)``, where ``D`` is the vector
+        dimensionality.
+    x3 : torch.Tensor
+        The vector p3 - p2 with shape ``(*, D)``, where ``D`` is the vector
+        dimensionality.
+
+    Returns
+    -------
+    dihedrals : torch.Tensor
+        A tensor of shape ``(*,)``. As an example, if all inputs have shape
+        ``(batch_size, D)``, then ``dihedrals`` has shape ``(batch_size,)`` and
+        ``dihedrals[i]`` is the angle between the planes ``x1[i]``-``x2[i]`` and
+        ``x2[i]``-``x3[i]``.
+
+    """
+    # The implementation is from Praxeolitic.
+    # see: https://stackoverflow.com/questions/20305272/dihedral-torsion-angle-from-four-points-in-cartesian-coordinates-in-python
+    x1 = -x1
+
+    # normalize x2 so that it does not influence magnitude of vector
+    # rejections that come next
+    x2 = x2 / torch.linalg.vector_norm(x2, dim=-1, keepdim=True)
+
+    # vector rejections
+    # v = projection of x1 onto plane perpendicular to x2
+    #   = x1 minus component that aligns with x2
+    # w = projection of x3 onto plane perpendicular to x2
+    #   = x3 minus component that aligns with x2
+    v = x1 - batchwise_dot(x1, x2, keepdim=True) * x2
+    w = x3 - batchwise_dot(x3, x2, keepdim=True) * x2
+
+    # angle between v and w in a plane is the torsion angle
+    # v and w may not be normalized but that's fine since tan is y/x
+    x = batchwise_dot(v, w)
+    x2_cross_v = torch.cross(x2, v, dim=-1)
+    y = batchwise_dot(x2_cross_v, w)
+    return torch.atan2(y, x)
 
 
 def rotation_matrix_3d(angles, directions):

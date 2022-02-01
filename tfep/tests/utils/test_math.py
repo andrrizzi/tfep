@@ -20,7 +20,7 @@ import pytest
 import torch
 
 from tfep.utils.math import (
-    cov, vector_vector_angle, vector_plane_angle,
+    cov, vector_vector_angle, vector_plane_angle, proper_dihedral_angle,
     rotation_matrix_3d, batchwise_rotate
 )
 
@@ -35,14 +35,28 @@ _GENERATOR.manual_seed(0)
 
 
 # =============================================================================
+# TEST MODULE CONFIGURATION
+# =============================================================================
+
+_old_default_dtype = None
+
+def setup_module(module):
+    global _old_default_dtype
+    _old_default_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.double)
+
+
+def teardown_module(module):
+    torch.set_default_dtype(_old_default_dtype)
+
+
+# =============================================================================
 # REFERENCE FUNCTIONS FOR TESTING
 # =============================================================================
 
 def reference_vector_vector_angle(v1, v2):
     v1_np, v2_np = v1.detach().numpy(), v2.detach().numpy()
     angles = [MDAnalysis.lib.mdamath.angle(v, v2_np) for v in v1_np]
-    # v1_np, v2_np = v1.detach().numpy(), v2.detach().numpy()
-    # angles = [MDAnalysis.lib.mdamath.angle(v1_np[i], v2_np[i]) for i in len(v1_np)]
     return torch.tensor(angles, dtype=v1.dtype)
 
 
@@ -58,6 +72,12 @@ def reference_vector_plane_angle(vectors, plane):
             return -np.pi/2
         angles.append(np.arcsin(x))
     return torch.tensor(angles, dtype=plane.dtype)
+
+
+def reference_proper_dihedral_angle(v1, v2, v3):
+    v1_np, v2_np, v3_np = v1.detach().numpy(), v2.detach().numpy(), v3.detach().numpy()
+    dihedrals = [MDAnalysis.lib.mdamath.dihedral(v1_np[i], v2_np[i], v3_np[i]) for i in range(len(v1_np))]
+    return torch.tensor(dihedrals, dtype=v1.dtype)
 
 
 def reference_rotation_matrix_3d(angles, directions):
@@ -153,6 +173,24 @@ def test_vector_plane_angle_against_reference(batch_size, dimension):
     angles = vector_plane_angle(vectors, plane)
     ref_angles = reference_vector_plane_angle(vectors, plane)
     assert torch.allclose(angles, ref_angles)
+
+
+@pytest.mark.parametrize('batch_size', [1, 20])
+def test_proper_dihedral_angle_against_reference(batch_size):
+    """Test the vector_vector_angle() function on random tensors against a reference implementation."""
+    # Cross product works only in 3D.
+    dimension = 3
+
+    # Build a random inputs.
+    v1 = torch.randn((batch_size, dimension), generator=_GENERATOR)
+    v2 = torch.randn((batch_size, dimension), generator=_GENERATOR)
+    v3 = torch.randn((batch_size, dimension), generator=_GENERATOR)
+
+    # Compare reference and PyTorch implementation. MDAnalysis adopts the
+    # opposite sign convention for the angles.
+    dihedrals = proper_dihedral_angle(v1, v2, v3)
+    ref_dihedrals = reference_proper_dihedral_angle(v1, v2, v3)
+    assert torch.allclose(dihedrals, -ref_dihedrals)
 
 
 def test_rotation_matrix_axes():
