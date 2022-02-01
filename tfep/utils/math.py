@@ -156,6 +156,49 @@ def normalize_vector(x):
     return x / torch.linalg.vector_norm(x, dim=-1, keepdim=True)
 
 
+def pdist(x, pairs=None, return_diff=False):
+    """Compute p-norm distances between pairs of row vectors.
+
+    In comparison to ``torch.nn.functional.pdist``, the function can handle
+    batches and compute distances between a subset of all pairs. Only the
+    Euclidean norm is currently supported.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Positions of particles with shape ``(batch_size, n_particles, D)``, where
+        ``D`` is the dimensionality of the vector space.
+    pairs : torch.Tensor, optional
+        A tensor of shape ``(2, n_pairs)``. For each batch sample, the function
+        will compute the ``i``-th distance between the ``pairs[0, i]``-th and the
+        ``pairs[1, i]``-th atoms. If not passed, all pairwise distances are computed.
+    return_diff : bool, optional
+        If ``True``, the difference vector between pairs of particles are also
+        returned.
+
+    Returns
+    -------
+    distances : torch.Tensor
+        This has shape ``(batch_size, n_pairs)``, and ``distances[b, i]`` is the
+        distance between the particles of the ``i``-th pair for the ``b``-th batch
+        sample
+    diff : torch.Tensor, optional
+        This has shape ``(batch_size, n_pairs, 3)``, and ``diff[b, i]`` is the
+        vector ``p1-p0``, where ``pX`` is the position of particle ``pairs[b, X]``.
+        This is returned only if ``return_diff`` is ``True``.
+
+    """
+    n_particles = x.shape[-2]
+    if pairs is None:
+        pairs = torch.triu_indices(n_particles, n_particles, offset=1)
+
+    diff = x[:, pairs[1]] - x[:, pairs[0]]
+    distances = torch.sqrt(torch.sum(diff**2, dim=-1))
+    if return_diff:
+        return distances, diff
+    return distances
+
+
 def vector_vector_angle(x1, x2):
     """Return the angle in radians between a two vectors.
 

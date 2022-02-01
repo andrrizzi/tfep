@@ -20,7 +20,7 @@ import pytest
 import torch
 
 from tfep.utils.math import (
-    cov, vector_vector_angle, vector_plane_angle, proper_dihedral_angle,
+    cov, pdist, vector_vector_angle, vector_plane_angle, proper_dihedral_angle,
     rotation_matrix_3d, batchwise_rotate
 )
 
@@ -53,6 +53,26 @@ def teardown_module(module):
 # =============================================================================
 # REFERENCE FUNCTIONS FOR TESTING
 # =============================================================================
+
+def reference_pdist(x, pairs=None):
+    batch_size, n_atoms, dim = x.shape
+    if pairs is None:
+        pairs = torch.triu_indices(n_atoms, n_atoms, offset=1)
+    n_pairs = pairs.shape[1]
+
+    x, pairs = x.detach().numpy(), pairs.transpose(0, 1).detach().numpy()
+
+    distances = np.empty((batch_size, n_pairs))
+    diff = np.empty((batch_size, n_pairs, dim))
+    for batch_idx in range(batch_size):
+        for pair_idx, (i, j) in enumerate(pairs):
+            p_i = x[batch_idx, i]
+            p_j = x[batch_idx, j]
+            diff[batch_idx, pair_idx] = p_j - p_i
+            distances[batch_idx, pair_idx] = np.linalg.norm(diff[batch_idx, pair_idx])
+
+    return torch.tensor(distances), torch.tensor(diff)
+
 
 def reference_vector_vector_angle(v1, v2):
     v1_np, v2_np = v1.detach().numpy(), v2.detach().numpy()
@@ -118,6 +138,20 @@ def test_cov(ddof, dim_sample):
     assert np.allclose(cov_np, cov_torch)
 
 
+@pytest.mark.parametrize('pairs', [None, torch.tensor([[0, 0, 2], [1, 2, 3]])])
+def test_pdist(pairs):
+    """Test the pairwise distance function pdist()."""
+    batch_size = 2
+    n_atoms = 4
+    dimension = 3
+    x = torch.randn((batch_size, n_atoms, dimension), generator=_GENERATOR)
+
+    distances, diff = pdist(x, pairs=pairs, return_diff=True)
+    ref_distances, ref_diff = reference_pdist(x, pairs=pairs)
+    assert torch.allclose(distances, ref_distances)
+    assert torch.allclose(diff, ref_diff)
+
+
 def test_vector_vector_angle_axes():
     """Test the vector_vector_angle() function to measure angles between axes."""
     v1 = torch.eye(3)
@@ -177,7 +211,7 @@ def test_vector_plane_angle_against_reference(batch_size, dimension):
 
 @pytest.mark.parametrize('batch_size', [1, 20])
 def test_proper_dihedral_angle_against_reference(batch_size):
-    """Test the vector_vector_angle() function on random tensors against a reference implementation."""
+    """Test the proper_dihedral_angle() function on random tensors against a reference implementation."""
     # Cross product works only in 3D.
     dimension = 3
 
