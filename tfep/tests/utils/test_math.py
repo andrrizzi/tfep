@@ -41,6 +41,8 @@ _GENERATOR.manual_seed(0)
 def reference_vector_vector_angle(v1, v2):
     v1_np, v2_np = v1.detach().numpy(), v2.detach().numpy()
     angles = [MDAnalysis.lib.mdamath.angle(v, v2_np) for v in v1_np]
+    # v1_np, v2_np = v1.detach().numpy(), v2.detach().numpy()
+    # angles = [MDAnalysis.lib.mdamath.angle(v1_np[i], v2_np[i]) for i in len(v1_np)]
     return torch.tensor(angles, dtype=v1.dtype)
 
 
@@ -99,12 +101,16 @@ def test_cov(ddof, dim_sample):
 def test_vector_vector_angle_axes():
     """Test the vector_vector_angle() function to measure angles between axes."""
     v1 = torch.eye(3)
+
     angles = vector_vector_angle(v1, v1[0])
     assert torch.allclose(angles, torch.tensor([0.0, np.pi/2, np.pi/2]))
     angles = vector_vector_angle(v1, v1[1])
     assert torch.allclose(angles, torch.tensor([np.pi/2, 0.0, np.pi/2]))
     angles = vector_vector_angle(v1, v1[2])
     assert torch.allclose(angles, torch.tensor([np.pi/2, np.pi/2, 0.0]))
+
+    angles = vector_vector_angle(v1, v1)
+    assert torch.allclose(angles, torch.zeros_like(angles))
 
 
 @pytest.mark.parametrize('batch_size', [1, 3])
@@ -117,7 +123,9 @@ def test_vector_vector_angle_against_reference(batch_size, dimension):
 
     # Compare reference and PyTorch implementation.
     angles = vector_vector_angle(v1, v2)
+    angles2 = vector_vector_angle(v1, v2.unsqueeze(0).expand(len(v1), -1))
     ref_angles = reference_vector_vector_angle(v1, v2)
+    assert torch.allclose(angles, angles2)
     assert torch.allclose(angles, ref_angles)
 
 

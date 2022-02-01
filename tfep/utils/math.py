@@ -157,20 +157,21 @@ def normalize_vector(x):
 
 
 def vector_vector_angle(x1, x2):
-    """Return the angle in radians between a batch of vectors and another vector.
+    """Return the angle in radians between a two vectors.
 
     Parameters
     ----------
     x1 : torch.Tensor
-        A tensor of shape ``(batch_size, N)`` or ``(N,)``.
+        A tensor of shape ``(*, D)``, where ``D`` is the vector dimensionality.
     x2 : torch.Tensor
-        A tensor of shape ``(N,)``.
+        A tensor of shape ``(*, D)``, where ``D`` is the vector dimensionality.
 
     Returns
     -------
     angle : torch.Tensor
-        A tensor of shape ``(batch_size,)`` where ``angle[i]`` is the angle
-        between vectors ``x1[i]`` and ``x2``.
+        A tensor of shape ``(*,)``. As an example, if both inputs have shape
+        ``(batch_size, D)``, then ``angle`` has shape ``(batch_size,)`` and
+        ``angle[i]`` is the angle between vectors ``x1[i]`` and ``x2[i]``.
 
     """
     x1_norm = torch.linalg.vector_norm(x1, dim=-1)
