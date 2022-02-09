@@ -17,9 +17,10 @@ Transformation that constrains the rotational degrees of freedom.
 import torch
 
 from tfep.nn.flows.partial import PartialFlow
-from tfep.utils.math import (
-    batchwise_dot, vector_vector_angle, vector_plane_angle,
+from tfep.utils.geometry import (
+    vector_vector_angle, vector_plane_angle,
     rotation_matrix_3d, batchwise_rotate)
+from tfep.utils.math import batchwise_dot
 from tfep.utils.misc import (
     flattened_to_atom, atom_to_flattened, atom_to_flattened_indices)
 

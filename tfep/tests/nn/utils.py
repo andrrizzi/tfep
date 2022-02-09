@@ -24,7 +24,7 @@ import torch
 
 def create_random_input(batch_size, n_features, n_parameters=0, dtype=None,
                         seed=0, x_func=torch.randn, par_func=torch.randn):
-    """Create input, parameters and gates.
+    """Create input and parameters.
 
     Returns random input data with shape ``(batch_size, n_features)`` and
     parameters with shape ``(batch_size, n_parameters, n_features)`` generated

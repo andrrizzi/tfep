@@ -20,7 +20,7 @@ import scipy.spatial.transform
 import torch
 
 from tfep.nn.graph.egnn import EGNNDynamics, _EGLayer, _unsorted_segment_sum
-from tfep.utils.math import batchwise_rotate
+from tfep.utils.geometry import batchwise_rotate
 from tfep.utils.misc import atom_to_flattened, flattened_to_atom
 
 

@@ -19,7 +19,8 @@ import torch
 
 import tfep.nn.flows
 from tfep.nn.flows.oriented import OrientedFlow
-from tfep.utils.math import normalize_vector, batchwise_dot
+from tfep.utils.geometry import normalize_vector
+from tfep.utils.math import batchwise_dot
 from tfep.utils.misc import atom_to_flattened, flattened_to_atom
 
 # =============================================================================
