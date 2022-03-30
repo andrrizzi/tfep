@@ -26,6 +26,7 @@ def bootstrap(
         confidence_level=0.95,
         n_resamples=9999,
         bootstrap_sample_size=None,
+        take_first_only=False,
         batch=None,
         method='percentile',
         generator=None
@@ -59,10 +60,17 @@ def bootstrap(
         The number of resamples performed to generate the bootstrap distribution
         of the statistic.
     bootstrap_sample_size : {int, List[int]}, optional
-        If given, in each resample only ``bootstrap_sample_size`` will be drawn
-        from the data (rather than the default ``n_samples``). If a ``list``, the
-        function will perform multiple bootstrap analyses for each of the
-        ``bootstrap_sample_size`` provided.
+        If given, in each resample only ``bootstrap_sample_size`` samples will
+        be drawn from the data (rather than the default ``n_samples``). If a
+        ``list``, the function will perform multiple bootstrap analyses for each
+        of the ``bootstrap_sample_size`` provided.
+    take_first_only : bool, optional
+        If ``True`` and ``bootstrap_sample_size < n_samples``, the bootstrap samples
+        will be drawn only from ``data[:bootstrap_sample_size]`` rather than the
+        eintire ``data`` tensor. This is useful, for example, if the data represent
+        generalized work values coming from mapping functions that are progressively
+        more trained, so that we expect the samples towards the end to be more
+        accurate than the first ones.
     batch : int, optional
         If given, the ``n_resamples`` resamples are performed into batches of
         size ``batch`` so that the memory consumption becomes ``batch * n_samples``.
@@ -126,7 +134,7 @@ def bootstrap(
     for sample_size in bootstrap_sample_size:
         _bootstrap_statistics(
             data_expanded, statistic, n_resamples, sample_size,
-            batch, generator, bootstrap_statistics)
+            take_first_only, batch, generator, bootstrap_statistics)
 
         # Calculate percentile confidence interval.
         alpha = (1 - confidence_level)/2
@@ -155,6 +163,7 @@ def _bootstrap_statistics(
         statistic,
         n_resamples,
         bootstrap_sample_size,
+        take_first_only,
         batch,
         generator,
         bootstrap_statistics
@@ -165,6 +174,12 @@ def _bootstrap_statistics(
     """
     n_samples = data_expanded.shape[1]
 
+    # Check if we need to sample only between the first bootstrap_sample_size samples.
+    if take_first_only:
+        max_data_idx = bootstrap_sample_size
+    else:
+        max_data_idx = n_samples
+
     # Divide the bootstrap in batches to limit memory usage.
     for k in range(0, n_resamples, batch):
         # The last batch might be smaller.
@@ -174,7 +189,7 @@ def _bootstrap_statistics(
 
         # Resample.
         bootstrap_sample_indices = torch.randint(
-            low=0, high=n_samples,
+            low=0, high=max_data_idx,
             size=(batch_actual, bootstrap_sample_size),
             generator=generator
         )
