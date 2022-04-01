@@ -18,7 +18,7 @@ import pytest
 import torch
 import torch.autograd
 
-from tfep.nn.conditioners.masked import (
+from tfep.nn.masked import (
     MaskedLinear,
     masked_linear,
     masked_weight_norm,

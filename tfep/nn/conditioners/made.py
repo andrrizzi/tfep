@@ -17,7 +17,7 @@ Masked Autoregressive layer for Density Estimation (MADE) module for PyTorch.
 import numpy as np
 import torch
 
-from tfep.nn.conditioners import masked
+from tfep.nn import masked
 from tfep.nn.utils import generate_block_sizes
 
 
@@ -186,6 +186,7 @@ class MADE(torch.nn.Module):
                 if n_remaining != 0:
                     degrees_current = np.concatenate([degrees_current, self.degrees_hidden_motif[:n_remaining]])
 
+            # TODO: MAKE SURE YOU TRANSPOSE WHEN YOU PLUG IN THE create_mask IN tfep.masked
             mask = self.create_mask(degrees_previous, degrees_current, is_output_layer)
 
             # Add the linear layer with or without weight normalization.
