@@ -6,7 +6,7 @@
 # =============================================================================
 
 """
-Test objects and functions in tfep.nn.modules.masked.
+Test objects and functions in tfep.nn.conditioners.masked.
 """
 
 
@@ -18,7 +18,7 @@ import pytest
 import torch
 import torch.autograd
 
-from tfep.nn.modules.masked import (
+from tfep.nn.conditioners.masked import (
     MaskedLinear,
     masked_linear,
     masked_weight_norm,

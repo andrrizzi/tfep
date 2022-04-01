@@ -17,7 +17,7 @@ Masked Autoregressive layer for Density Estimation (MADE) module for PyTorch.
 import numpy as np
 import torch
 
-from tfep.nn.modules import masked
+from tfep.nn.conditioners import masked
 from tfep.nn.utils import generate_block_sizes
 
 

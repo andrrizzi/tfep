@@ -6,7 +6,7 @@
 # =============================================================================
 
 """
-Test layers in tfep.nn.modules.made.
+Test layers in tfep.nn.conditioners.made.
 """
 
 
@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 import torch
 
-from tfep.nn.modules import MADE
+from tfep.nn.conditioners.made import MADE
 
 
 # =============================================================================

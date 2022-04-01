@@ -17,7 +17,7 @@ Masked autoregressive flow layer for PyTorch.
 import numpy as np
 import torch
 
-from tfep.nn.modules.made import MADE
+from tfep.nn.conditioners.made import MADE
 from tfep.nn.transformers.affine import AffineTransformer
 
 
@@ -28,7 +28,7 @@ from tfep.nn.transformers.affine import AffineTransformer
 class MAF(torch.nn.Module):
     """Masked Autoregressive Flow.
 
-    This implements an autoregressive flow in which the :class:`tfep.nn.modules.MADE`
+    This implements an autoregressive flow in which the :class:`tfep.nn.conditioners.MADE`
     network is used for the conditioner. The class supports arbitrary
     transformers.
 

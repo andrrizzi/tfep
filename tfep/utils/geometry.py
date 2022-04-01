@@ -107,6 +107,8 @@ def vector_vector_angle(x1, x2):
         ``(batch_size, D)``, then ``angles`` has shape ``(batch_size,)`` and
         ``angles[i]`` is the angle between vectors ``x1[i]`` and ``x2[i]``.
 
+        The angle is from 0 to pi.
+
     """
     x1_norm = torch.linalg.vector_norm(x1, dim=-1)
     x2_norm = torch.linalg.vector_norm(x2, dim=-1)
