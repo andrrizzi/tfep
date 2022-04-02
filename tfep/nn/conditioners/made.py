@@ -186,8 +186,10 @@ class MADE(torch.nn.Module):
                 if n_remaining != 0:
                     degrees_current = np.concatenate([degrees_current, self.degrees_hidden_motif[:n_remaining]])
 
-            # TODO: MAKE SURE YOU TRANSPOSE WHEN YOU PLUG IN THE create_mask IN tfep.masked
-            mask = self.create_mask(degrees_previous, degrees_current, is_output_layer)
+            # We transpose the mask from shape (in, out) to (out, in) because
+            # the mask must have the same shape of the weights in MaskedLinear.
+            mask = masked.create_autoregressive_mask(degrees_previous, degrees_current, is_output_layer)
+            mask = mask.t()
 
             # Add the linear layer with or without weight normalization.
             masked_linear = masked.MaskedLinear(
@@ -265,51 +267,6 @@ class MADE(torch.nn.Module):
 
     def forward(self, x):
         return self.layers(x)
-
-    @staticmethod
-    def create_mask(degrees_previous, degrees_next, is_output_layer, dtype=None):
-        """Create a mask following the MADE prescription for the current layer.
-
-        ``mask[i][j]`` is 1 if the j-th input is connected to th i-th output.
-        The output nodes of the output layers are connected to input nodes with
-        a strictly smaller degree. In all other layers, the output nodes are
-        connected to inputs with degree equal or smaller.
-
-        Parameters
-        ----------
-        degrees_previous : numpy.ndarray[int]
-            degrees_previous[k] is the integer degree assigned to the
-            k-th unit of the previous hidden layer (i.e. in the MADE
-            paper :math:`m^{l-1}(k)`).
-        degrees_next : numpy.ndarray[int]
-            degrees_next[k] is the integer degree assigned to the
-            k-th unit of the next hidden layer (i.e. in the MADE
-            paper :math:`m^l(k)`).
-        is_output_layer : bool
-            ``True`` if the current layer is the output layer of the
-            MADE module, ``False`` otherwise.
-        dtype : torch.dtype, optional
-            The data type of the returned mask.
-
-        Returns
-        -------
-        mask : torch.Tensor
-            The mask of shape ``(len(degrees_next), len(degrees_previous))``
-            for the weight matrix in the current layer (i.e., in the
-            MADE paper :math:`W^l`.
-
-        """
-        # If this is the last layer, the inequality is strict
-        # (see Eq. 13 in the MADE paper).
-        if is_output_layer:
-            mask = degrees_next[:, None] > degrees_previous[None, :]
-        else:
-            mask = degrees_next[:, None] >= degrees_previous[None, :]
-
-        # Convert to tensor of default type before returning.
-        if dtype is None:
-            dtype = torch.get_default_dtype()
-        return torch.tensor(mask, dtype=dtype)
 
     @staticmethod
     def _get_dimensions(

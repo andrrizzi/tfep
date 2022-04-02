@@ -14,11 +14,13 @@ Test objects and functions in tfep.nn.conditioners.masked.
 # GLOBAL IMPORTS
 # =============================================================================
 
+import numpy as np
 import pytest
 import torch
 import torch.autograd
 
 from tfep.nn.masked import (
+    create_autoregressive_mask,
     MaskedLinear,
     masked_linear,
     masked_weight_norm,
@@ -53,6 +55,97 @@ def check_wnorm_components(layer, mask):
 # =============================================================================
 # TESTS
 # =============================================================================
+
+@pytest.mark.parametrize('dimension_in,n_layers,conditioning_indices', [
+    (5, 3, ()),
+    (5, 3, [0]),
+    (7, 2, range(2)),
+    (7, 2, [1, 5]),
+    (7, 4, range(1)),
+    (7, 4, [2, 3]),
+    (10, 3, range(3)),
+    (10, 3, [8,9]),
+])
+def test_create_autoregressive_mask(dimension_in, n_layers, conditioning_indices):
+    """Test the method create_autoregressive_mask().
+
+    Simulate a multi-layer MADE network with sequential degree assignment
+    and check that all the masks have the appropriate shape and are upper
+    triangular.
+
+    """
+    if isinstance(conditioning_indices, range):
+        conditioning_indices = list(conditioning_indices)
+
+    first_layer_dim = dimension_in
+    inner_layer_dim = dimension_in - 1
+    n_conditioning_dofs = len(conditioning_indices)
+    output_layer_dim = dimension_in - n_conditioning_dofs
+
+    # Determine conditioning and mapped degrees of freedom.
+    conditioning_indices_set = set(conditioning_indices)
+    mapped_indices = [i for i in range(dimension_in) if i not in conditioning_indices_set]
+
+    # Assign degrees sequentially for the simulated multi-layer network.
+    degrees = []
+    for layer_idx in range(n_layers+1):
+        # The first and last layers have an extra unit.
+        if layer_idx == 0:
+            # First layer must have the conditioning degrees in the correct positions.
+            if len(conditioning_indices) == 0:
+                layer_degrees = np.arange(output_layer_dim)
+            else:
+                layer_degrees = np.empty(first_layer_dim)
+                layer_degrees[mapped_indices] = np.arange(output_layer_dim)
+                layer_degrees[conditioning_indices] = -1
+        elif layer_idx == n_layers:
+            # Last layer only have non-conditioning degrees.
+            layer_degrees = np.arange(output_layer_dim)
+        else:
+            # For intermediate layers, the position of the conditioning
+            # degrees does not matter so we keep them at the beginning.
+            layer_degrees = np.full(n_conditioning_dofs, fill_value=-1)
+            layer_degrees = np.concatenate([layer_degrees, np.arange(inner_layer_dim-n_conditioning_dofs)])
+        degrees.append(layer_degrees)
+
+    # Build masks for all 3 layers.
+    masks = [create_autoregressive_mask(degrees[i], degrees[i+1], strictly_less=(i==n_layers-1))
+             for i in range(n_layers)]
+
+    for layer_idx, mask in enumerate(masks):
+        is_first_mask = layer_idx == 0
+        is_last_mask = (layer_idx == n_layers-1)
+
+        # Check mask dimension.
+        if is_first_mask:
+            assert mask.shape == (first_layer_dim, inner_layer_dim)
+        elif is_last_mask:
+            assert mask.shape == (inner_layer_dim, output_layer_dim)
+        else:
+            assert mask.shape == (inner_layer_dim, inner_layer_dim)
+
+        # The conditioning degrees affect all the mapped DOFs.
+        if is_first_mask:
+            conditioning_mask = mask[conditioning_indices, :]
+            mask = mask[mapped_indices, :]
+        else:
+            conditioning_mask = mask[:n_conditioning_dofs, :]
+            mask = mask[n_conditioning_dofs:, :]
+        assert torch.all(conditioning_mask == torch.ones(conditioning_mask.shape))
+
+        # Because we assigned the degrees in the order of the input,
+        # the mask of the non-conditioning DOFs must be upper triangular.
+        if is_last_mask:
+            # Contrarily to other layers, the output DOFs don't depend on themselves.
+            assert torch.all(mask == torch.triu(mask, diagonal=-1))
+        else:
+            assert torch.all(mask == torch.triu(mask))
+
+        # In the first layer, the last input unit must have no connection to the
+        # first hidden layer since that unit would otherwise not affect any output.
+        if is_first_mask:
+            assert torch.all(mask[-1, :] == False)
+
 
 def test_masked_linear_gradcheck():
     """Run autograd.gradcheck on the masked_linear function."""
