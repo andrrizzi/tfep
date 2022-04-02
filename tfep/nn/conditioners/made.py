@@ -188,8 +188,8 @@ class MADE(torch.nn.Module):
 
             # We transpose the mask from shape (in, out) to (out, in) because
             # the mask must have the same shape of the weights in MaskedLinear.
-            mask = masked.create_autoregressive_mask(degrees_previous, degrees_current, is_output_layer)
-            mask = mask.t()
+            mask = masked.create_autoregressive_mask(degrees_previous, degrees_current,
+                                                     strictly_less=is_output_layer, transpose=True)
 
             # Add the linear layer with or without weight normalization.
             masked_linear = masked.MaskedLinear(

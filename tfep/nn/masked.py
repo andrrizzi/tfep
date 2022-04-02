@@ -37,6 +37,7 @@ def create_autoregressive_mask(
         degrees_in,
         degrees_out,
         strictly_less=False,
+        transpose=False,
         dtype=None
 ):
     """Create an autoregressive mask between input and output connections.
@@ -64,6 +65,9 @@ def create_autoregressive_mask(
         ``True`` if the output nodes must be connected to input node with a strictly
         less degree. Otherwise, nodes are connected if they have a less or equal
         degree.
+    transpose : bool, optional
+        If ``True``, the returned mask is transposed and input/output node indices
+        are swapped.
     dtype : torch.dtype, optional
         The data type of the returned mask. By default, the default PyTorch type
         is used.
@@ -83,10 +87,16 @@ def create_autoregressive_mask(
         Learning 2015 Jun 1 (pp. 881-889).
 
     """
-    if strictly_less:
-        mask = degrees_out[None, :] > degrees_in[:, None]
+    if transpose:
+        if strictly_less:
+            mask = degrees_out[:, None] > degrees_in[None, :]
+        else:
+            mask = degrees_out[:, None] >= degrees_in[None, :]
     else:
-        mask = degrees_out[None, :] >= degrees_in[:, None]
+        if strictly_less:
+            mask = degrees_out[None, :] > degrees_in[:, None]
+        else:
+            mask = degrees_out[None, :] >= degrees_in[:, None]
 
     # Convert to tensor of default type before returning.
     if dtype is None:
