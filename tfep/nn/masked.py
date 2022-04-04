@@ -99,9 +99,13 @@ def create_autoregressive_mask(
             mask = degrees_out[None, :] >= degrees_in[:, None]
 
     # Convert to tensor of default type before returning.
+    if not torch.is_tensor(mask):
+        mask = torch.from_numpy(mask)
     if dtype is None:
         dtype = torch.get_default_dtype()
-    return torch.tensor(mask, dtype=dtype)
+    if mask.dtype != dtype:
+        mask = mask.type(dtype)
+    return mask
 
 
 # =============================================================================
