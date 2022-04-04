@@ -96,10 +96,10 @@ def test_compute_edge_distances():
     n_particles = 3
 
     # We compute distances only for a subset of the possible edges.
-    edges = [
-        torch.tensor([0, 0, 2, 3, 3, 5]),
-        torch.tensor([1, 2, 1, 4, 5, 4]),
-    ]
+    edges = torch.tensor([
+        [0, 0, 2, 3, 3, 5],
+        [1, 2, 1, 4, 5, 4],
+    ])
     n_edges = len(edges[0])
 
     # Create random (but reproducible) input and compute distances with torch.
@@ -115,10 +115,10 @@ def test_compute_edge_distances():
     assert directions.shape == (n_edges, 3)
 
     # Compare distances with pytorch-computed reference.
-    for edge_idx, (dest, src) in enumerate(zip(*edges)):
-        batch_idx = dest % batch_size
+    for edge_idx, (src, dest) in enumerate(edges.t()):
+        batch_idx = int(src) // n_particles
         ref_dest, ref_src = dest % n_particles, src % n_particles
-        ref_dist = ref_distances[batch_idx, ref_dest, ref_src]
+        ref_dist = ref_distances[batch_idx, ref_src, ref_dest]
         assert torch.allclose(ref_dist, distances[edge_idx])
 
         ref_dir = x[batch_idx, ref_dest] - x[batch_idx, ref_src]

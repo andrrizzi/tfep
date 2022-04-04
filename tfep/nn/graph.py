@@ -133,7 +133,7 @@ def compute_edge_distances(x, edges, normalize_directions=False):
         if ``normalize_direction`` is ``True``.
 
     """
-    directions = x[edges[0]] - x[edges[1]]
+    directions = x[edges[1]] - x[edges[0]]
     distances = torch.sqrt(torch.sum(directions**2, dim=-1))
     if normalize_directions:
         directions = directions / distances.unsqueeze(-1)
