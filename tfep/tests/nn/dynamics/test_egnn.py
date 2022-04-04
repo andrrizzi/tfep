@@ -19,7 +19,7 @@ import pytest
 import scipy.spatial.transform
 import torch
 
-from tfep.nn.dynamics.egnn import EGNNDynamics, _EGLayer
+from tfep.nn.dynamics.egnn import EGNNDynamics
 from tfep.utils.geometry import batchwise_rotate
 from tfep.utils.misc import atom_to_flattened, flattened_to_atom
 
