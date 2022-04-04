@@ -14,10 +14,9 @@ E(n) equivariant graph neural network for continuous normalizing flows.
 # GLOBAL IMPORTS
 # =============================================================================
 
-import itertools
-
 import torch
 
+import tfep.nn.graph
 from tfep.nn.encoders import GaussianBasisExpansion, BehlerParrinelloRadialExpansion
 from tfep.utils.misc import flattened_to_atom, atom_to_flattened
 
@@ -140,6 +139,7 @@ class EGNNDynamics(torch.nn.Module):
         # Initializing this requires knowing the number of particles and it is
         # thus initialized lazily and cached on the first forward().
         self._edges = None
+        self._n_edges = None
 
     @property
     def n_particles(self):
@@ -177,7 +177,14 @@ class EGNNDynamics(torch.nn.Module):
         h = self._create_node_embedding(t, batch_size)
 
         # Get the edges.
-        edges = self._get_edges(batch_size)
+        if self._edges is None:
+            # Generate all the possible edges between the nodes and cache them.
+            edges = tfep.nn.graph.get_all_edges(batch_size, self.n_particles)
+            self._edges = edges
+            self._n_edges = int(edges.shape[1]) // batch_size
+        else:
+            # The last batch might have a smaller batch size than the one cached.
+            edges = tfep.nn.graph.reduce_edges_batch_size(self._edges, batch_size, self._n_edges)
 
         # Run through the graph.
         for layer_idx in range(self._n_layers):
@@ -222,42 +229,6 @@ class EGNNDynamics(torch.nn.Module):
         h = h.repeat(batch_size, 1)
 
         return h
-
-    def _get_edges(self, batch_size):
-        """Return all the possible edges.
-
-        Returns
-        -------
-        edges : List[torch.Tensor]
-            A list of two tensors, both of shape ``(n_edges,)``. The i-th edge
-            is created from node ``edges[1][i]`` to ``edges[0][i]``. The edge is
-            directional so if a message must be passed in both directions, two
-            entries are needed.
-        """
-        n_particles = self.n_particles  # Shortcut
-
-        if self._edges is None:
-            edges = itertools.permutations(range(n_particles), 2)
-            edges = list(zip(*edges))
-
-            # Now edges are for a single batch sample. Remember that internally
-            # we work with positions in the (batch_size*n_particles, 3) format.
-            # This extends edges[i] from shape (n_edges,) to (batch_size, n_edges).
-            edges = [torch.tensor(e).unsqueeze(0).expand(batch_size, -1) for e in edges]
-
-            # Now multiply it by the batch index. shift has shape (batch_size, 1).
-            shift = torch.arange(0, batch_size*n_particles, n_particles).unsqueeze(-1)
-            edges = [e + shift for e in edges]
-
-            # Back to shape (batch_size*n_edges,)
-            n_edges = edges[0].shape[-1]
-            self._edges = [e.view(batch_size * n_edges) for e in edges]
-
-        # The last batch could be smaller than the one used to create the edges.
-        n_returned_edges = n_particles * (n_particles-1) * batch_size
-        if len(self._edges[0]) > n_returned_edges:
-            return [e[:n_returned_edges] for e in self._edges]
-        return self._edges
 
 
 class _EGLayer(torch.nn.Module):
@@ -322,17 +293,23 @@ class _EGLayer(torch.nn.Module):
             Vector node features with shape ``(batch_size*n_particles, 3)``.
         edges : List[torch.Tensor]
             A list of two tensors, both of shape ``(n_edges,)``. The i-th edge
-            is created from node ``x[edges[1][i]]`` to ``x[edges[0][i]]``. The edge
+            is created from node ``x[edges[0][i]]`` to ``x[edges[1][i]]``. The edge
             is directional so if a message must be passed in both directions, two
             entries are needed.
 
         """
         # Compute distances and unit diff vectors between particles positions.
         # distances has shape (n_edges,) and directions (n_edges, 3).
-        distances, directions = self._compute_distances(x, edges)
+        # The original implementation in [1] normalized the directions by
+        # distance + 1e-8 to avoid division by 0.0. In this application, it is
+        # unlikely that two atoms will overlap in the middle of the training and
+        # if it happens the SCF won't converge anyway.
+        distances, directions = tfep.nn.graph.compute_edge_distances(
+            x, edges, normalize_directions=True)
 
         # Identify the edges that are within the cutoff and discard the others.
-        distances, directions, edges = self._prune_edges(distances, directions, edges)
+        edges, distances, directions = tfep.nn.graph.prune_long_edges(
+            self.distance_embedding.r_cutoff, edges, distances, directions)
 
         # Create the messages between edges.
         edge_messages = self._create_edge_messages(h, distances, edges)
@@ -342,33 +319,6 @@ class _EGLayer(torch.nn.Module):
         x = self._update_x(x, edge_messages, directions, edges)
 
         return h, x
-
-    def _compute_distances(self, x, edges):
-        """Return distances and radial.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Positions of particles with shape (batch_size*n_particles, 3).
-
-        Returns
-        -------
-        distances : torch.Tensor
-            Shape (n_edges,) where distances[i] is the distance between the
-            particles of the i-th edge.
-        direction : torch.Tensor
-            Shape (n_edges, 3) where direction[i] is the unit vector connecting
-            the particles of the i-th edge.
-
-        """
-        diff = x[edges[0]] - x[edges[1]]
-        distances = torch.sqrt(torch.sum(diff**2, dim=-1))
-        directions = diff / distances.unsqueeze(-1)
-        # The original implementation in [1] divided by distance + 1e-8 to avoid
-        # division by 0.0. In this application, it is unlikely that two atoms will
-        # overlap in the middle of the training and if it happens the SCF won't
-        # converge anyway.
-        return distances, directions
 
     def _create_edge_messages(self, h, distances, edges):
         """Create a message for each edge.
@@ -398,19 +348,11 @@ class _EGLayer(torch.nn.Module):
 
         return edge_messages
 
-    def _prune_edges(self, distances, directions, edges):
-        """Detect which edges have distances larger than the cutoff and remove them"""
-        mask = distances <= self.distance_embedding.r_cutoff
-        edges = [e[mask] for e in edges]
-        distances = distances[mask]
-        directions = directions[mask]
-        return distances, directions, edges
-
     def _update_h(self, h, edge_messages, edges):
-        # Aggregate all messages with destination edges[0]. Like h,
+        # Aggregate all messages with destination edges[1]. Like h,
         # node_messages has shape (batch_size*n_particles, node_feat_dim).
-        dest, src = edges
-        node_messages = _unsorted_segment_sum(edge_messages, dest, h.shape[0])
+        src, dest = edges
+        node_messages = tfep.nn.graph.unsorted_segment_sum(edge_messages, dest, h.shape[0])
 
         # Concatenate the current h and the aggregated message and feed them
         # to the node-update MLP. out has shape (batch_size*n_particles, node_feat_dim).
@@ -432,16 +374,8 @@ class _EGLayer(torch.nn.Module):
         disp = self.speed_factor * directions * disp_magnitude
 
         # Aggregate displacement. aggregate_disp has shape (batch_size*n_particles, 3).
-        dest, src = edges
-        aggregate_disp = _unsorted_segment_sum(disp, dest, x.shape[0])
+        src, dest = edges
+        aggregate_disp = tfep.nn.graph.unsorted_segment_sum(disp, dest, x.shape[0])
 
         # Add the displacement.
         return x + aggregate_disp
-
-
-def _unsorted_segment_sum(data, segment_ids, n_segments):
-    """Replicates TensorFlow's tf.math.unsorted_segment_sum in PyTorch."""
-    segment_sum = data.new_full((n_segments, data.shape[1]), fill_value=0.0)
-    segment_ids = segment_ids.unsqueeze(-1).expand(-1, data.shape[1])
-    segment_sum.scatter_add_(0, segment_ids, data)
-    return segment_sum
