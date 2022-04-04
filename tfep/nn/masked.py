@@ -36,7 +36,7 @@ from torch.nn.utils.weight_norm import WeightNorm
 def create_autoregressive_mask(
         degrees_in,
         degrees_out,
-        strictly_less=False,
+        strictly_less=True,
         transpose=False,
         dtype=None
 ):
