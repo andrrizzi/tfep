@@ -23,6 +23,60 @@ import torch
 # UTILITIES
 # =============================================================================
 
+class FixedGraph(torch.nn.Module):
+    """Graph base class with a fixed topology.
+
+    The class provides utilities to determine the edges between nodes (optionally
+    based on a mask) and cache them. It is assumed that the edges do not change
+    after constructions.
+
+    The edges must be accessed by the parent class through the ``get_edges()``
+    method, which takes care of determining the edges compatible with features
+    in the shape ``(batch_size*n_nodes, n_feats_per_node)``.
+
+    Parameters
+    ----------
+    n_nodes : int
+        The number of nodes in the graph.
+    mask : torch.Tensor, optional
+        Shape ``(n_nodes, n_nodes)``. A (directional) edge from node ``i`` to
+        node ``j`` is created only if ``mask[i, j] != 0``. If ``mask`` is not
+        provided, all nodes are connected to all nodes (excluding self interactions).
+
+    """
+
+    def __init__(self, n_nodes, mask=None):
+        super().__init__()
+        # We initially build the edges for a batch of size 1 so at this point
+        # self._edges will have shape (2, n_edges).
+        self._edges = get_all_edges(1, n_nodes, mask=mask)
+        # The number of nodes and edges (for a single batch) is needed for get_edges().
+        self._n_nodes = n_nodes
+        self._n_edges = int(self._edges.shape[1])
+
+    def get_edges(self, batch_size):
+        """Return the edges between nodes for the given batch size.
+
+        Parameters
+        ----------
+        batch_size : int
+            The size of the current batch.
+
+        Returns
+        -------
+        edges : torch.Tensor
+            Shape ``(2, n_edges*batch_size)``. The ``i``-th edge is created from
+            node ``edges[0][i]`` to ``edges[1][i]``, where ``edges[0][i]`` is a
+            node index in the range ``[0, batch_size*n_nodes]``.
+
+            Edges are directional so if a message must be passed in both directions,
+            two entries connecting the nodes with inverse order are present.
+
+        """
+        return fix_edges_batch_size(
+            self._edges, batch_size, self._n_edges, n_nodes=self._n_nodes)
+
+
 def get_all_edges(batch_size, n_nodes, mask=None):
     """Return all possible edges between nodes after applying the mask.
 
@@ -64,46 +118,65 @@ def get_all_edges(batch_size, n_nodes, mask=None):
         edges = mask.nonzero()
         edges = edges.t()
 
-    # To shape (2, batch_size, n_edges).
-    edges = edges.unsqueeze(1).expand(-1, batch_size, -1)
-
-    # Now multiply repeated node indices by the batch index. shift has shape (1, batch_size, 1).
-    shift = torch.arange(0, batch_size*n_nodes, n_nodes).unsqueeze(-1)
-    edges = edges + shift
-
-    # To shape (2, batch_size*n_edges)
-    n_edges = edges.shape[-1]
-    edges = edges.reshape((2, batch_size*n_edges))
+    # Determine the edges for the given shape.
+    n_edges = edges.shape[1]
+    edges = fix_edges_batch_size(edges, batch_size, n_edges, n_nodes)
 
     return edges
 
 
-def reduce_edges_batch_size(edges, new_batch_size, n_edges):
-    """Reduce the number of edges for the given batch size.
+def fix_edges_batch_size(edges, new_batch_size, n_edges, n_nodes=None):
+    """Return edges compatible with with features in shape ``(new_batch_size*n_nodes, n_feats)``.
 
-    As the last batch could be smaller than the one used to create the edges with
-    :func:`.get_all_edges()`, this takes care of fixing the edges to remove the
-    extra batches.
+    This takes previously cached edges for batch size ``old_batch_size`` and
+    reformat them to be compatible with ``new_batch_size`. This happens, for
+    example, for the last batch, which could be smaller than the one used to
+    create the edges cached during the first forward pass.
 
     Parameters
     ----------
     edges : torch.Tensor
-        Shape ``(2, n_edges)``. The edges are returned by :func:`.get_all_edges()`
+        Shape ``(2, old_batch_size*n_edges)``, where ``n_edges`` are the number
+        of edges between nodes in the graph. This is the output of :func:`.get_all_edges()`.
     new_batch_size : int
         The output batch size.
     n_edges : int
         The number of edges between nodes in the graph.
+    n_nodes : int, optional
+        The number of nodes in the graph. This is only required if
+        ``new_batch_size > old_batch_size``.
 
     Returns
     -------
     edges : torch.Tensor
-        Shape ``(2, new_batch_size*n_edges)``. The new edges after removing the
-        extra batches.
+        Shape ``(2, new_batch_size*n_edges)``. The new edges after fixing the
+        batch size.
 
     """
     n_returned_edges = new_batch_size * n_edges
+
+    if edges.shape[1] == n_returned_edges:
+        return edges
+
     if edges.shape[1] > n_returned_edges:
-        return edges[:, :n_returned_edges]
+        # Cut extra batches.
+        edges = edges[:, :n_returned_edges]
+    else:
+        # Add more batches. First determine the edges for the first batch.
+        if edges.shape[1] > n_edges:
+            edges = edges[:, :n_edges]
+
+        # To shape (2, batch_size, n_edges).
+        edges = edges.unsqueeze(1).expand(-1, new_batch_size, -1)
+
+        # Now multiply repeated node indices by the batch index. shift has shape (1, batch_size, 1).
+        shift = torch.arange(0, new_batch_size*n_nodes, n_nodes).unsqueeze(-1)
+        edges = edges + shift
+
+        # To shape (2, batch_size*n_edges)
+        n_edges = edges.shape[-1]
+        edges = edges.reshape((2, new_batch_size*n_edges))
+
     return edges
 
 

@@ -20,7 +20,7 @@ import torch
 from tfep.nn.masked import create_autoregressive_mask
 from tfep.nn.graph import (
     get_all_edges,
-    reduce_edges_batch_size,
+    fix_edges_batch_size,
     compute_edge_distances,
     prune_long_edges,
     unsorted_segment_sum,
@@ -47,7 +47,7 @@ def teardown_module(module):
 # TESTS
 # =============================================================================
 
-@pytest.mark.parametrize('batch_size', [1, 2])
+@pytest.mark.parametrize('batch_size', [1, 5])
 @pytest.mark.parametrize('n_nodes', [1, 3])
 @pytest.mark.parametrize('autoregressive_mask', [False, True])
 def test_get_all_edges(batch_size, n_nodes, autoregressive_mask):
@@ -77,17 +77,17 @@ def test_get_all_edges(batch_size, n_nodes, autoregressive_mask):
         batch_idx  = edge_src.tolist() // n_nodes
         assert batch_idx < batch_size
 
-        edge_src -= batch_idx * n_nodes
-        edge_dst -= batch_idx * n_nodes
+        edge_src = edge_src - batch_idx * n_nodes
+        edge_dst = edge_dst - batch_idx * n_nodes
 
         assert mask[edge_src, edge_dst] == 1.0
 
-    # In the last batch the batch_size can be different. Check that
-    # reduce_edges_batch_size handles this case.
-    if batch_size > 1:
-        reduced_edges = reduce_edges_batch_size(edges, 1, n_edges)
-        assert reduced_edges.shape == (2, n_edges)
-        assert torch.all(edges[:, :n_edges] == reduced_edges)
+    # Check that fix_edges_batch_size correctly fixes the number of batches.
+    new_batch_size = 2
+    expected_edges = get_all_edges(new_batch_size, n_nodes, mask)
+    fixed_edges = fix_edges_batch_size(edges, new_batch_size, n_edges, n_nodes)
+    assert fixed_edges.shape == (2, new_batch_size*n_edges)
+    assert torch.all(expected_edges == fixed_edges)
 
 
 def test_compute_edge_distances():
