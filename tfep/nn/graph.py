@@ -73,8 +73,15 @@ class FixedGraph(torch.nn.Module):
             two entries connecting the nodes with inverse order are present.
 
         """
-        return fix_edges_batch_size(
+        new_edges = fix_edges_batch_size(
             self._edges, batch_size, self._n_edges, n_nodes=self._n_nodes)
+
+        # If the batch size has increased, this is likely the first call. We
+        # cache the edges with the usual batch size.
+        if new_edges.shape[1] > self._n_edges.shape[1]:
+            self._n_edges = new_edges
+
+        return new_edges
 
 
 def get_all_edges(batch_size, n_nodes, mask=None):
@@ -181,7 +188,7 @@ def fix_edges_batch_size(edges, new_batch_size, n_edges, n_nodes=None):
 
 
 # TODO: MERGE THIS WITH tfep.utils.geometry.pdist?
-def compute_edge_distances(x, edges, normalize_directions=False):
+def compute_edge_distances(x, edges, normalize_directions=False, inverse_directions=False):
     """Return distances between nodes across edges.
 
     Parameters
@@ -194,6 +201,9 @@ def compute_edge_distances(x, edges, normalize_directions=False):
         in the range ``[0, batch_size*n_nodes]``.
     normalize_directions : bool, optional
         If ``True``, the returned directions are normalized by their norms.
+    inverse_directions : bool, optional
+        If ``True``, the direction vectors go from the destination node to the
+        source node rather than the opposite.
 
     Returns
     -------
@@ -206,8 +216,13 @@ def compute_edge_distances(x, edges, normalize_directions=False):
         if ``normalize_direction`` is ``True``.
 
     """
-    directions = x[edges[1]] - x[edges[0]]
+    if inverse_directions:
+        directions = x[edges[0]] - x[edges[1]]
+    else:
+        directions = x[edges[1]] - x[edges[0]]
+
     distances = torch.sqrt(torch.sum(directions**2, dim=-1))
+
     if normalize_directions:
         directions = directions / distances.unsqueeze(-1)
     return distances, directions

@@ -110,7 +110,8 @@ def test_compute_edge_distances():
 
     # Compute the distances and direction with our implementation.
     x_batch_fmt = x.view(batch_size*n_particles, 3)
-    distances, directions = compute_edge_distances(x_batch_fmt, edges, normalize_directions=True)
+    distances, directions = compute_edge_distances(
+        x_batch_fmt, edges, normalize_directions=True)
     assert distances.shape == (n_edges,)
     assert directions.shape == (n_edges, 3)
 
@@ -124,6 +125,12 @@ def test_compute_edge_distances():
         ref_dir = x[batch_idx, ref_dest] - x[batch_idx, ref_src]
         ref_dir = torch.nn.functional.normalize(ref_dir.unsqueeze(0))[0]
         assert torch.allclose(ref_dir, directions[edge_idx])
+
+    # Check normalization and inverse direction.
+    distances2, directions2 = compute_edge_distances(
+        x_batch_fmt, edges, normalize_directions=False, inverse_directions=True)
+    directions2 = directions2 / distances2.unsqueeze(-1)
+    assert torch.allclose(directions, -directions2)
 
 
 def test_prune_long_edges():
