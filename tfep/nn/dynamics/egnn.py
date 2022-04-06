@@ -25,7 +25,7 @@ from tfep.utils.misc import flattened_to_atom, atom_to_flattened
 # LAYERS
 # =============================================================================
 
-class EGNNDynamics(torch.nn.Module):
+class EGNNDynamics(tfep.nn.graph.FixedGraph):
     """
     E(n) equivariant graph neural network for continuous normalizing flows.
 
@@ -104,7 +104,7 @@ class EGNNDynamics(torch.nn.Module):
         speed_factor=1.0,
         initialize_identity=True,
     ):
-        super().__init__()
+        super().__init__(n_nodes=len(particle_types))
 
         # Store the random vectors associated to each particle type as the one-hot
         # encoding h of the particle types and a matrix of parameters W so that
@@ -135,11 +135,6 @@ class EGNNDynamics(torch.nn.Module):
                 eg_layer.update_x_mlp[-2].weight.data.fill_(0.0)
 
             self.add_module('graph_layer_'+str(layer_idx), eg_layer)
-
-        # Initializing this requires knowing the number of particles and it is
-        # thus initialized lazily and cached on the first forward().
-        self._edges = None
-        self._n_edges = None
 
     @property
     def n_particles(self):
@@ -177,14 +172,7 @@ class EGNNDynamics(torch.nn.Module):
         h = self._create_node_embedding(t, batch_size)
 
         # Get the edges.
-        if self._edges is None:
-            # Generate all the possible edges between the nodes and cache them.
-            edges = tfep.nn.graph.get_all_edges(batch_size, self.n_particles)
-            self._edges = edges
-            self._n_edges = int(edges.shape[1]) // batch_size
-        else:
-            # The last batch might have a smaller batch size than the one cached.
-            edges = tfep.nn.graph.reduce_edges_batch_size(self._edges, batch_size, self._n_edges)
+        edges = self.get_edges(batch_size)
 
         # Run through the graph.
         for layer_idx in range(self._n_layers):
