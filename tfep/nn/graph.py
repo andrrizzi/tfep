@@ -78,8 +78,8 @@ class FixedGraph(torch.nn.Module):
 
         # If the batch size has increased, this is likely the first call. We
         # cache the edges with the usual batch size.
-        if new_edges.shape[1] > self._n_edges.shape[1]:
-            self._n_edges = new_edges
+        if new_edges.shape[1] > self._n_edges:
+            self._n_edges = new_edges.shape[1]
 
         return new_edges
 
