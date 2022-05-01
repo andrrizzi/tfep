@@ -200,7 +200,5 @@ def batch_autograd_log_abs_det_J(x, y, **grad_kwargs):
     """
     # First compute the batch jacobian.
     jacobian = batch_autograd_jacobian(x, y, **grad_kwargs)
-
     # Compute the log det J numerically.
-    log_det_J = torch.log(torch.abs(torch.linalg.det(jacobian)))
-    return log_det_J
+    return torch.linalg.slogdet(jacobian)[1]
