@@ -20,7 +20,8 @@ import torch
 import torch.autograd
 
 from tfep.nn.transformers.spline import neural_spline_transformer
-from ..utils import create_random_input, reference_log_det_J
+from tfep.utils.math import batch_autograd_log_abs_det_J
+from ..utils import create_random_input
 
 
 # =============================================================================
@@ -125,5 +126,5 @@ def test_neural_spline_transformer_reference(batch_size, n_features, x0, y0, n_b
     assert torch.all(torch_y < yf)
 
     # Compute the reference log_det_J also with autograd and numpy.
-    ref_log_det_J2 = reference_log_det_J(x, torch_y)
-    assert np.allclose(ref_log_det_J2, torch_log_det_J.detach().numpy())
+    ref_log_det_J2 = batch_autograd_log_abs_det_J(x, torch_y)
+    assert torch.allclose(ref_log_det_J2, torch_log_det_J)

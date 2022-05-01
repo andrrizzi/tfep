@@ -21,7 +21,8 @@ import torch.autograd
 
 from tfep.nn.transformers.affine import AffineTransformer
 from tfep.nn.transformers.sos import sos_polynomial_transformer, SOSPolynomialTransformer
-from ..utils import create_random_input, reference_log_det_J
+from tfep.utils.math import batch_autograd_log_abs_det_J
+from ..utils import create_random_input
 
 
 # =============================================================================
@@ -87,8 +88,8 @@ def test_sos_polynomial_transformer_reference(batch_size, n_features, n_polynomi
     assert np.allclose(ref_log_det_J, torch_log_det_J.detach().numpy())
 
     # Compute the reference log_det_J also with autograd and numpy.
-    ref_log_det_J2 = reference_log_det_J(x, torch_y)
-    assert np.allclose(ref_log_det_J2, torch_log_det_J.detach().numpy())
+    ref_log_det_J2 = batch_autograd_log_abs_det_J(x, torch_y)
+    assert torch.allclose(ref_log_det_J2, torch_log_det_J)
 
 
 @pytest.mark.parametrize('batch_size', [2, 5])

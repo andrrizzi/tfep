@@ -14,16 +14,16 @@ Test objects and function in tfep.nn.transformers.affine.
 # GLOBAL IMPORTS
 # =============================================================================
 
-import numpy as np
 import pytest
 import torch
 import torch.autograd
 
+from tfep.utils.math import batch_autograd_log_abs_det_J
 from tfep.nn.transformers.affine import (
     affine_transformer,
     affine_transformer_inverse,
 )
-from ..utils import create_random_input, reference_log_det_J
+from ..utils import create_random_input
 
 
 # =============================================================================
@@ -57,5 +57,5 @@ def test_affine_transformer_log_det_J(batch_size, n_features, func):
 
     # Check the log(abs(det(J))).
     y, log_det_J = func(x, shift, log_scale)
-    log_det_J_ref = reference_log_det_J(x, y)
-    assert np.allclose(log_det_J.detach().numpy(), log_det_J_ref)
+    log_det_J_ref = batch_autograd_log_abs_det_J(x, y)
+    assert torch.allclose(log_det_J, log_det_J_ref)
