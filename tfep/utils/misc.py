@@ -180,12 +180,16 @@ def energies_array_to_tensor(energies, energy_unit=None, dtype=None):
         except pint.errors.DimensionalityError:
             energies = energies.to(energy_unit)
 
-        # Reconvert Pint array to tensor.
+    # Reconvert Pint array to tensor.
     return torch.tensor(energies.magnitude, dtype=dtype)
 
 
 def forces_array_to_tensor(forces, distance_unit=None, energy_unit=None, dtype=None):
     """Helper function to convert the a batch of forces from numpy array to PyTorch tensor.
+
+    ``distance_unit`` and ``energy_unit`` must be passed together. If they are
+     both ``None`` no conversion is performed. If only one of them is ``None``
+     an error is raised.
 
     Parameters
     ----------
@@ -207,6 +211,11 @@ def forces_array_to_tensor(forces, distance_unit=None, energy_unit=None, dtype=N
         The forces with shape ``(batch_size, n_atoms*3)`` as a unitless ``Tensor``
         in units of ``energy_unit/distance_unit``.
 
+    Raises
+    ------
+    ValueError
+        If only one between ``distance_unit`` and ``energy_unit`` is passed.
+
     """
     if (energy_unit is not None) and (distance_unit is not None):
         force_unit = energy_unit / distance_unit
@@ -215,6 +224,8 @@ def forces_array_to_tensor(forces, distance_unit=None, energy_unit=None, dtype=N
             forces = (forces * force_unit._REGISTRY.avogadro_constant).to(force_unit)
         except pint.errors.DimensionalityError:
             forces = forces.to(force_unit)
+    elif not ((energy_unit is None) and (distance_unit is None)):
+        raise ValueError('Both or neither energy_unit and distance_unit must be passed.')
 
     # The tensor must be unitless and with shape (batch_size, n_atoms*3).
     forces = atom_to_flattened(forces)
