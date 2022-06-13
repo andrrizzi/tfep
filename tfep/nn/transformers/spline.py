@@ -30,26 +30,29 @@ class NeuralSplineTransformer(torch.nn.Module):
     in [1]. Using the therminology in [1], the spline function is defined
     from K+1 knots (x, y) that give rise to K bins.
 
+    This class can also implement circular splines [2] by setting ``circular``
+    to ``True``.
+
     Parameters
     ----------
     x0 : torch.Tensor
-        Position of the first of the K+1 knots determining the positions of the
-        K bins for the input as a tensor of shape ``(n_features,)``. Inputs that
-        are equal or below this (in any dimension) are mapped to itself.
+        Shape ``(n_features,)``. Position of the first of the K+1 knots determining
+        the positions of the K bins for the input.
     xf : torch.Tensor
-        Position of the last of the K+1 knots determining the positions of the
-        K bins for the input as a tensor of shape ``(n_features,)``. Inputs that
-        are equal or above this (in any dimension) are mapped to itself.
+        Shape ``(n_features,)``. Position of the last of the K+1 knots determining
+        the positions of the K bins for the input.
     n_bins : int
         Total number of bins (i.e., K).
     y0 : torch.Tensor, optional
-        Position of the first of the K+1 knots determining the positions of the
-        K bins for the output as a tensor of shape ``(n_features,)``. If not
-        passed, ``x0`` is taken.
+        Shape ``(n_features,)``. Position of the first of the K+1 knots determining
+        the positions of the K bins for the output. If not passed, ``x0`` is taken.
     yf : torch.Tensor, optional
-        Position of the last of the K+1 knots determining the positions of the
-        K bins for the output as a tensor of shape ``(n_features,)``. If not
-        passed, ``x0`` is taken.
+        Shape ``(n_features,)``. Position of the last of the K+1 knots determining
+        the positions of the K bins for the output. If not passed, ``xf`` is taken.
+    circular : bool, optional
+        If ``True``, the slope of the last know is set equal to the last node and
+        ``y0`` and ``yf`` are set to ``x0`` and ``xf`` respectively. This effectively
+        implements circular splines [2].
 
     See Also
     --------
@@ -59,10 +62,16 @@ class NeuralSplineTransformer(torch.nn.Module):
     ----------
     [1] Durkan C, Bekasov A, Murray I, Papamakarios G. Neural spline flows.
         arXiv preprint arXiv:1906.04032. 2019 Jun 10.
+    [2] Rezende DJ, et al. Normalizing flows on tori and spheres. arXiv preprint
+        arXiv:2002.02428. 2020 Feb 6.
 
     """
-    def __init__(self, x0, xf, n_bins, y0=None, yf=None):
+    def __init__(self, x0, xf, n_bins, y0=None, yf=None, circular=False):
         super().__init__()
+
+        # Check consistent configuration.
+        if circular and not (y0 is None and yf is None):
+            raise ValueError('With circular=True, both y0 and yf must be None.')
 
         # Handle mutable default arguments y_0 and y_final.
         if y0 is None:
@@ -72,15 +81,23 @@ class NeuralSplineTransformer(torch.nn.Module):
 
         self.x0 = x0
         self.xf = xf
-        self.y0 = y0
-        self.yf = yf
         self.n_bins = n_bins
+        self._y0 = y0
+        self._yf = yf
+        self._circular = circular
+
+    @property
+    def circular(self):
+        return self._circular
 
     @property
     def n_parameters_per_input(self):
         """Number of parameters needed by the transformer for each input dimension."""
-        # n_bins widths, n_bins heights and n_bins-1 slopes.
-        return 3*self.n_bins - 1
+        # n_bins widths, n_bins heights. The number of slopes depends on whether
+        # the spline is circular (n_bins) or not (n_bins+1).
+        if self.circular:
+            return 3*self.n_bins
+        return 3*self.n_bins + 1
 
     def forward(self, x, parameters):
         """Apply the transformation to the input.
@@ -88,31 +105,31 @@ class NeuralSplineTransformer(torch.nn.Module):
         Parameters
         ----------
         x : torch.Tensor
-            Input tensor x of shape ``(batch_size, n_features)``.
+            Shape ``(batch_size, n_features)``. Input features.
         parameters : torch.Tensor
-            Parameters of the transformation with shape ``(batch_size, 3*n_bins-1, n_features)``
-            where ``parameters[:, 0:n_bins, i]`` determine the widths,
-            ``parameters[:, n_bins:2*n_bins, i]`` determine the heights, and
-            ``parameters[:, 2*n_bins:3*n_bins-1, i]`` determine the slopes of
-            the bins.
+            Shape: ``(batch_size, K, n_features)`` where ``K`` equals ``3*n_bins``
+            if circular or ``3*n_bins+1`` if not. Parameters of the transformation,
+            where ``parameters[b, 0:n_bins, i]`` determine the widths,
+            ``parameters[b, n_bins:2*n_bins, i]`` determine the heights,
+            and ``parameters[b, 2*n_bins:, i]`` determine the slopes of the bins
+            for feature ``x[b, i]``.
 
-            As in the original paper, the parameters determine the widths and
-            heights go through a ``softmax`` function and those determining the
-            slopes through a ``softplus`` function to generate widths and heights
-            that are positive and slopes that ensures the transformation will be
-            monotonic increasing (and thus invertible).
+            As in the original paper, the passed widths and heights go through
+            a ``softmax`` function and the slopes through a ``softplus`` function
+            to generate widths/heights that are positive and slopes that make a
+            monotonic increasing transformation.
 
         Returns
         -------
         y : torch.Tensor
-            Output tensor of shape ``(batch_size, n_features)``.
+            Shape ``(batch_size, n_features)``. Output.
 
         """
+        assert parameters.shape[1] == self.n_parameters_per_input
+
         # Divide the parameters in widths, heights and slopes.
-        widths = torch.nn.functional.softmax(parameters[:, :self.n_bins], dim=1) * (self.xf - self.x0)
-        heights = torch.nn.functional.softmax(parameters[:, self.n_bins:2*self.n_bins], dim=1) * (self.yf - self.y0)
-        slopes = torch.nn.functional.softplus(parameters[:, 2*self.n_bins:])
-        return neural_spline_transformer(x, self.x0, self.y0, widths, heights, slopes)
+        widths, heights, slopes = self._get_parameters(parameters)
+        return neural_spline_transformer(x, self.x0, self._y0, widths, heights, slopes)
 
     def inverse(self, y, parameters):
         """Currently not implemented."""
@@ -122,7 +139,7 @@ class NeuralSplineTransformer(torch.nn.Module):
     def get_identity_parameters(self, n_features):
         """Return the value of the parameters that makes this the identity function.
 
-        Note that if ``self.x0 != self.y0`` or ``self.y0 != self.y1`` it is
+        Note that if ``x0 != y0`` or ``y0 != y1`` it is
         impossible to implement the identity using this transformer, and the
         returned parameters will be those to map linearly the input domain of
         ``x`` to the output of ``y``.
@@ -138,15 +155,17 @@ class NeuralSplineTransformer(torch.nn.Module):
         Returns
         -------
         parameters : torch.Tensor
-            A tensor of shape ``(3*n_bins-1, n_features)`` where ``K`` and ``L`` are
-            the number and degree of the polynomials.
+            A tensor of shape ``(K, n_features)``  where ``K`` equals ``3*n_bins``
+            if circular or ``3*n_bins+1`` if not.
 
         """
-        # Strictly speaking, this becomes the identity conditioner only if x0 == y0 and xf == yf.
-        id_conditioner = torch.empty(size=(self.n_parameters_per_input, n_features))
+        if not (torch.allclose(self.x0, self._y0) and torch.allclose(self.xf, self._yf)):
+            raise ValueError('The identity neural spline transformer can be '
+                             'implemented only if x0=y0 and xf=yf.')
 
         # Both the width and the height of each bin must be constant.
         # Remember that the parameters go through the softmax function.
+        id_conditioner = torch.empty(size=(self.n_parameters_per_input, n_features))
         id_conditioner[:self.n_bins].fill_(1 / self.n_bins)
         id_conditioner[self.n_bins:2*self.n_bins].fill_(1 / self.n_bins)
 
@@ -155,6 +174,18 @@ class NeuralSplineTransformer(torch.nn.Module):
         id_conditioner[2*self.n_bins:].fill_(np.log(np.e - 1))
 
         return id_conditioner
+
+    def _get_parameters(self, parameters):
+        widths = torch.nn.functional.softmax(parameters[:, :self.n_bins], dim=1) * (self.xf - self.x0)
+        heights = torch.nn.functional.softmax(parameters[:, self.n_bins:2*self.n_bins], dim=1) * (self._yf - self._y0)
+        slopes = torch.nn.functional.softplus(parameters[:, 2*self.n_bins:])
+
+        # If this is a circular spline flow, we set the slope of the last knot
+        # to the first. Otherwise, this has already shape (batch_size, K+1, n_features).
+        if slopes.shape[1] < self.n_bins+1:
+            slopes = torch.cat((slopes, slopes[:, 0:1]), dim=1)
+
+        return widths, heights, slopes
 
 
 # =============================================================================
@@ -176,27 +207,25 @@ def neural_spline_transformer(x, x0, y0, widths, heights, slopes):
     Parameters
     ----------
     x : torch.Tensor
-        Input tensor x of shape ``(batch_size, n_features)``. Currently, this
+        Shape ``(batch_size, n_features)``. Input features. Currently, this
         must hold: ``x0[i] <= x[i] <= x0[i] + cumsum(widths)`` for all ``i``.
     x0 : torch.Tensor
-        Position of the first of the K+1 knots determining the positions of the
-        K bins for the input as a tensor of shape ``(n_features,)``. Inputs that
-        are equal or below this (in any dimension) are mapped to itself.
+        Shape ``(n_features,)``. Position of the first of the K+1 knots determining
+        the positions of the K bins for the input.
     y0 : torch.Tensor
-        Position of the first of the K+1 knots determining the positions of the
-        K bins for the output as a tensor of shape ``(n_features,)``.
+        Shape ``(n_features,)``. Position of the first of the K+1 knots determining
+        the positions of the K bins for the output.
     widths : torch.Tensor
-        ``widths[b, k, i]`` is the width of the k-th bin between the k-th and (k+1)-th
-         knot for the i-th feature and b-th batch. The tensor has shape
-         ``(batch_size, K, n_features)``.
+        Shape ``(batch_size, K, n_features)``. ``widths[b, k, i]`` is the width
+        of the k-th bin between the k-th and (k+1)-th knot for the i-th feature
+        and b-th batch.
     heights : torch.Tensor
-        ``heights[b, k, i]`` is the height of the k-th bin between the k-th and (k+1)-th
-         knot for the i-th feature and b-th batch. The tensor has shape
-         ``(batch_size, K, n_features)``.
+        Shape ``(batch_size, K, n_features)``. ``heights[b, k, i]`` is the height
+        of the k-th bin between the k-th and (k+1)-th knot for the i-th feature
+        and b-th batch.
     slopes : torch.Tensor
-        ``slopes[b, k, i]`` is the slope at the (k+1)-th knot (the slope of the
-        first and last knots are always 1. The tensor has shape
-        ``(batch_size, K-1, n_features)``.
+        Shape ``(batch_size, K+1, n_features)``. ``slopes[b, k, i]`` is the slope
+        at the k-th knot.
 
     References
     ----------
@@ -208,18 +237,13 @@ def neural_spline_transformer(x, x0, y0, widths, heights, slopes):
     batch_size, n_bins, n_features = widths.shape
     n_knots = n_bins + 1
 
-    # knots_x has shape (n_features, K+1).
+    # knots_x has shape (batch, K+1, n_features).
     knots_x = torch.empty(batch_size, n_knots, n_features, dtype=dtype)
     knots_x[:, 0] = x0
     knots_x[:, 1:] = x0 + torch.cumsum(widths, dim=1)
     knots_y = torch.empty(batch_size, n_knots, n_features, dtype=dtype)
     knots_y[:, 0] = y0
     knots_y[:, 1:] = y0 + torch.cumsum(heights, dim=1)
-
-    # The 0-th and last knots have always slope 1 to avoid discontinuities.
-    # After this, slopes has shape (batch_size, n_features, K+1).
-    ones = torch.ones(batch_size, 1, n_features, dtype=dtype)
-    slopes = torch.cat((ones, slopes, ones), dim=1)
 
     # For an idea about how the indexing is working in this function, see
     # https://stackoverflow.com/questions/55628014/indexing-a-3d-tensor-using-a-2d-tensor.
