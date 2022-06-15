@@ -145,11 +145,23 @@ def test_neural_spline_transformer_reference(batch_size, n_features, x0, y0, n_b
     assert torch.allclose(ref_log_det_J2, torch_log_det_J)
 
 
-def test_circular_spline_transformer_periodic():
+@pytest.mark.parametrize('circular', [
+    True,
+    torch.tensor([0]),
+    torch.tensor([1]),
+    torch.tensor([0, 1]),
+    torch.tensor([1, 2]),
+])
+def test_circular_spline_transformer_periodic(circular):
     """Test that circular spline transformer conditions for periodicity are verified."""
     batch_size = 5
     n_features = 3
     n_bins = 3
+
+    if circular is True:
+        circular_indices = torch.arange(n_features)
+    else:
+        circular_indices = circular
 
     # Input lower/upper boundaries.
     x0 = torch.tensor([0.0, -1, 2])
@@ -165,25 +177,34 @@ def test_circular_spline_transformer_periodic():
     ])
 
     # Create random parameters.
-    parameters = torch.randn((batch_size, 3*n_bins, n_features))
+    parameters = torch.randn((batch_size, 3*n_bins+1, n_features))
 
     # Create and run the transformer.
-    transformer = NeuralSplineTransformer(x0=x0, xf=xf, n_bins=n_bins, circular=True)
+    transformer = NeuralSplineTransformer(x0=x0, xf=xf, n_bins=n_bins, circular=circular)
     y, log_det_J = transformer(x, parameters)
 
-    # The boundaries must be mapped to themselves.
-    assert torch.allclose(x[:2], y[:2], atol=epsilon)
-
     # The slopes of the first and last knots must be the same.
-    _, _, slopes = transformer._get_parameters(parameters)
-    assert torch.allclose(slopes[:, 0], slopes[:, -1])
+    _, _, slopes, shifts = transformer._get_parameters(parameters)
+    assert torch.allclose(slopes[:, 0, circular_indices], slopes[:, -1, circular_indices])
 
     # The random input are still within boundaries
     assert torch.all(x0 < y)
     assert torch.all(y < xf)
 
+    # If the shifts are 0.0, the boundaries must be mapped to themselves.
+    parameters[:, 3*n_bins, circular_indices] = 0.0
+    y, log_det_J = transformer(x, parameters)
+    assert torch.allclose(x[:2], y[:2], atol=10*epsilon)
 
-@pytest.mark.parametrize('circular', [False, True])
+
+@pytest.mark.parametrize('circular', [
+    False,
+    True,
+    torch.tensor([0]),
+    torch.tensor([1]),
+    torch.tensor([0, 2]),
+    torch.tensor([1, 2]),
+])
 def test_identity_neural_spline(circular):
     """Test that get_identity_parameters returns the correct parameters for the identity function."""
     batch_size = 5
@@ -198,7 +219,9 @@ def test_identity_neural_spline(circular):
     # Obtain identity parameters.
     transformer = NeuralSplineTransformer(x0=x0, xf=xf, n_bins=n_bins, circular=circular)
     parameters = transformer.get_identity_parameters(n_features)
-    parameters = parameters.unsqueeze(0).expand(batch_size, -1, -1)
+    # We need to clone to actually allocate the memory or sliced
+    # assignment operations on parameters won't work.
+    parameters = parameters.unsqueeze(0).expand(batch_size, -1, -1).clone()
 
     # Check that the parameters give the identity functions.
     y, log_det_J = transformer(x, parameters)

@@ -24,14 +24,21 @@ import torch.autograd
 # =============================================================================
 
 class NeuralSplineTransformer(torch.nn.Module):
-    """Neural spline transformer module for autoregressive normalizing flows.
+    r"""Neural spline transformer module for autoregressive normalizing flows.
 
     This is an implementation of the neural spline transformer proposed
     in [1]. Using the therminology in [1], the spline function is defined
     from K+1 knots (x, y) that give rise to K bins.
 
-    This class can also implement circular splines [2] by setting ``circular``
-    to ``True``.
+    This class can also implement circular splines [2] for (optionally a subset
+    of) the degrees of freedom that are periodic. The periodic DOFs do not take
+    slopes for the last knot (which is set to be equal to that of the first),
+    but take instead a shift parameter so that the final transformation is
+
+    :math:`y = \mathrm{spline}((x - x_0 + \phi) % p + x_0)
+
+    where :math:`x_0` correspond to the ``x0`` parameter for that DOF, :math:`p`
+    is the period, and :math:`\phi` is the shift.
 
     Parameters
     ----------
@@ -49,10 +56,10 @@ class NeuralSplineTransformer(torch.nn.Module):
     yf : torch.Tensor, optional
         Shape ``(n_features,)``. Position of the last of the K+1 knots determining
         the positions of the K bins for the output. If not passed, ``xf`` is taken.
-    circular : bool, optional
-        If ``True``, the slope of the last know is set equal to the last node and
-        ``y0`` and ``yf`` are set to ``x0`` and ``xf`` respectively. This effectively
-        implements circular splines [2].
+    circular : bool or torch.Tensor, optional
+        If ``True``, all degrees of freedom are treated as periodic. If a list of
+        integers, only the features at these indices are periodic. For the periodic
+        DOFs, ``y0`` and ``yf`` must correspond to ``x0`` and ``xf``.
 
     See Also
     --------
@@ -69,15 +76,17 @@ class NeuralSplineTransformer(torch.nn.Module):
     def __init__(self, x0, xf, n_bins, y0=None, yf=None, circular=False):
         super().__init__()
 
-        # Check consistent configuration.
-        if circular and not (y0 is None and yf is None):
-            raise ValueError('With circular=True, both y0 and yf must be None.')
-
         # Handle mutable default arguments y_0 and y_final.
         if y0 is None:
             y0 = x0.detach()
         if yf is None:
             yf = xf.detach()
+
+        # Check consistent configuration of circular.
+        if (circular is not False) and not (
+                    torch.allclose(x0[circular], y0[circular]) and
+                    torch.allclose(xf[circular], yf[circular])):
+            raise ValueError('x0==y0 and xf==yf must hold for all periodic degrees of freedom.')
 
         self.x0 = x0
         self.xf = xf
@@ -87,16 +96,11 @@ class NeuralSplineTransformer(torch.nn.Module):
         self._circular = circular
 
     @property
-    def circular(self):
-        return self._circular
-
-    @property
     def n_parameters_per_input(self):
         """Number of parameters needed by the transformer for each input dimension."""
-        # n_bins widths, n_bins heights. The number of slopes depends on whether
-        # the spline is circular (n_bins) or not (n_bins+1).
-        if self.circular:
-            return 3*self.n_bins
+        # n_bins widths, n_bins heights, and n_bins slopes. The +1 can be
+        # either the slope of the last knot for not circular DOFs or the shift
+        # for periodic DOFs.
         return 3*self.n_bins + 1
 
     def forward(self, x, parameters):
@@ -107,12 +111,15 @@ class NeuralSplineTransformer(torch.nn.Module):
         x : torch.Tensor
             Shape ``(batch_size, n_features)``. Input features.
         parameters : torch.Tensor
-            Shape: ``(batch_size, K, n_features)`` where ``K`` equals ``3*n_bins``
-            if circular or ``3*n_bins+1`` if not. Parameters of the transformation,
-            where ``parameters[b, 0:n_bins, i]`` determine the widths,
-            ``parameters[b, n_bins:2*n_bins, i]`` determine the heights,
-            and ``parameters[b, 2*n_bins:, i]`` determine the slopes of the bins
-            for feature ``x[b, i]``.
+            Shape: ``(batch_size, 3*n_bins+1, n_features)``. Parameters of the
+            transformation, where ``parameters[b, 0:n_bins, i]`` determine the
+            widths, ``parameters[b, n_bins:2*n_bins, i]`` determine the heights,
+            and ``parameters[b, 2*n_bins:3*n_bins, i]`` determine the slopes of
+            the bins for feature ``x[b, i]``. ``parameters[b, 3*n_bins:, i]``
+            instead depend on wheter the i-th feature is periodic. If not periodic,
+            they are interpreted the slopes of the last knot. Otherwise, the slope
+            of the last knot is set equal to the first and the parameters are
+            used as shifts.
 
             As in the original paper, the passed widths and heights go through
             a ``softmax`` function and the slopes through a ``softplus`` function
@@ -125,10 +132,17 @@ class NeuralSplineTransformer(torch.nn.Module):
             Shape ``(batch_size, n_features)``. Output.
 
         """
-        assert parameters.shape[1] == self.n_parameters_per_input
+        # Divide the parameters in widths, heights and slopes (and shifts).
+        # shift has shape (batch, n_features).
+        widths, heights, slopes, shifts = self._get_parameters(parameters)
 
-        # Divide the parameters in widths, heights and slopes.
-        widths, heights, slopes = self._get_parameters(parameters)
+        # First we shift the periodic DOFs so that we can learn the fixed point
+        # of the neural spline transformation. Shifting is volume preserving
+        # (i.e., log_det_J = 0).
+        if shifts is not None:
+            x = (x - self.x0 + shifts) % (self.xf - self.x0) + self.x0
+
+        # Run rational quadratic spline.
         return neural_spline_transformer(x, self.x0, self._y0, widths, heights, slopes)
 
     def inverse(self, y, parameters):
@@ -173,19 +187,36 @@ class NeuralSplineTransformer(torch.nn.Module):
         # go through the softplus function.
         id_conditioner[2*self.n_bins:].fill_(np.log(np.e - 1))
 
+        # Finally we set the shift to 0.0.
+        if self._circular is True:
+            id_conditioner[3*self.n_bins] = 0
+        elif self._circular is not False:
+            id_conditioner[3*self.n_bins, self._circular] = 0
+
         return id_conditioner
 
     def _get_parameters(self, parameters):
+        # Handle slopes and shifts for periodic DOFs.
+        slopes = parameters[:, 2*self.n_bins:]
+        if self._circular is False:
+            shifts = None
+        elif self._circular is True:
+            # Divide slopes from shifts. We clone or the next step will modify shifts as well.
+            shifts = slopes[:, self.n_bins].clone()
+            # Set the slope of the last knot to the first.
+            slopes[:, self.n_bins] = slopes[:, 0]
+        else:
+            # Fix shifts and slopes only for the specific DOFs.
+            batch_size, _, n_features = slopes.shape
+            shifts = torch.zeros((batch_size, n_features), dtype=slopes.dtype)
+            shifts[:, self._circular] = slopes[:, self.n_bins, self._circular]
+            slopes[:, self.n_bins, self._circular] = slopes[:, 0, self._circular]
+
+        # Normalize widths/heights to boundaries and slopes positive.
         widths = torch.nn.functional.softmax(parameters[:, :self.n_bins], dim=1) * (self.xf - self.x0)
         heights = torch.nn.functional.softmax(parameters[:, self.n_bins:2*self.n_bins], dim=1) * (self._yf - self._y0)
-        slopes = torch.nn.functional.softplus(parameters[:, 2*self.n_bins:])
-
-        # If this is a circular spline flow, we set the slope of the last knot
-        # to the first. Otherwise, this has already shape (batch_size, K+1, n_features).
-        if slopes.shape[1] < self.n_bins+1:
-            slopes = torch.cat((slopes, slopes[:, 0:1]), dim=1)
-
-        return widths, heights, slopes
+        slopes = torch.nn.functional.softplus(slopes)
+        return widths, heights, slopes, shifts
 
 
 # =============================================================================
