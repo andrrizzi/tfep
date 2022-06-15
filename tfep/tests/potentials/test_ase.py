@@ -14,15 +14,20 @@ Test objects and function in the module ``tfep.potentials.ase``.
 # GLOBAL IMPORTS
 # =============================================================================
 
-# Psi4 is an optional dependency of tfep.
+# ASE is an optional dependency of tfep.
 try:
     import ase
 except ImportError:
     ASE_INSTALLED = False
 else:
     ASE_INSTALLED = True
+    import ase.calculators.tip3p
+    import ase.calculators.amber
 
 import contextlib
+import os
+import shutil
+import tempfile
 
 import numpy as np
 import pint
@@ -40,6 +45,23 @@ from tfep.utils.parallel import SerialStrategy, ProcessPoolStrategy
 
 # Common unit registry for all tests.
 _UREG = pint.UnitRegistry()
+
+# Path to data.
+SCRIPT_DIR_PATH = os.path.dirname(__file__)
+DATA_DIR_PATH = os.path.realpath(os.path.join(SCRIPT_DIR_PATH, '..', 'data'))
+
+# Determine the available calculators.
+_CALCULATORS = [ase.calculators.tip3p.TIP3P()]
+
+# AMBER.
+if shutil.which('sander') is not None:
+    _CALCULATORS.append(ase.calculators.amber.Amber(
+        amber_exe='sander -O',
+        infile=os.path.join(DATA_DIR_PATH, 'amber', 'amber.in'),
+        outfile='amber.out',
+        topologyfile=os.path.join(DATA_DIR_PATH, 'amber', 'water.prmtop'),
+        incoordfile='coord.crd',
+    ))
 
 
 # =============================================================================
@@ -92,13 +114,32 @@ def create_two_waters(batch_size, calculator):
 
 
 @contextlib.contextmanager
-def parallelization_strategy(strategy_name):
+def temporary_dir_cd():
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        old_cd = os.getcwd()
+        os.chdir(tmp_dir)
+        try:
+            yield tmp_dir
+        finally:
+            os.chdir(old_cd)
+
+
+def pool_process_initializer(tmp_dir):
+    """Initialize a subprocess for pool parallelization."""
+    # Create subdir and cd into it.
+    subdir = os.path.join(tmp_dir, str(os.getpid()))
+    os.makedirs(subdir, exist_ok=True)
+    os.chdir(subdir)
+
+
+@contextlib.contextmanager
+def parallelization_strategy(strategy_name, tmp_dir):
     """Context manager safely creating/destroying the parallelization strategy."""
     if strategy_name == 'serial':
         yield SerialStrategy()
     else:
         # Keep the pool of processes open until the contextmanager has left.
-        with torch.multiprocessing.Pool(2) as p:
+        with torch.multiprocessing.Pool(2, pool_process_initializer, initargs=[tmp_dir]) as p:
             yield ProcessPoolStrategy(p)
 
 
@@ -136,7 +177,8 @@ def reference_energy_forces(atoms, batch_positions):
 @pytest.mark.skipif(not ASE_INSTALLED, reason='requires ASE to be installed')
 @pytest.mark.parametrize('batch_size', [1, 2])
 @pytest.mark.parametrize('strategy', ['serial', 'pool'])
-def test_potential_ase_energy_force(batch_size, strategy):
+@pytest.mark.parametrize('calculator', _CALCULATORS)
+def test_potential_ase_energy_force(batch_size, strategy, calculator):
     """Test the calculation of energies/forces with PotentialASE.
 
     This tests that:
@@ -144,54 +186,54 @@ def test_potential_ase_energy_force(batch_size, strategy):
     - Test Serial and ProcessPool parallelization strategies.
 
     """
-    from ase.calculators.tip3p import TIP3P
-
-    calculator = TIP3P()
     atoms, batch_positions = create_two_waters(batch_size, calculator)
     batch_positions.requires_grad = True
 
-    # Compute reference energies and forces.
-    ref_energies, ref_forces = reference_energy_forces(atoms, batch_positions)
+    # Execute the calculation in a temp dir.
+    with temporary_dir_cd() as tmp_dir:
+        # Compute reference energies and forces.
+        ref_energies, ref_forces = reference_energy_forces(atoms, batch_positions)
 
-    with parallelization_strategy(strategy) as ps:
-        potential = PotentialASE(
-            calculator=calculator,
-            symbols=atoms.symbols,
-            position_unit=_UREG.angstrom,
-            energy_unit=_UREG.kcal/_UREG.mole,
-            parallelization_strategy=ps,
-        )
+        with parallelization_strategy(strategy, tmp_dir) as ps:
+            potential = PotentialASE(
+                calculator=calculator,
+                symbols=atoms.symbols,
+                position_unit=_UREG.angstrom,
+                energy_unit=_UREG.kcal/_UREG.mole,
+                parallelization_strategy=ps,
+            )
 
-        # Compute energy and compare to reference.
-        energies = potential(batch_positions)
-        assert torch.allclose(energies, ref_energies)
+            # Compute energy and compare to reference.
+            energies = potential(batch_positions)
+            assert torch.allclose(energies, ref_energies)
 
-        # Compute forces (negative gradient).
-        energies.sum().backward()
-        forces = -batch_positions.grad
-        assert torch.allclose(forces, atom_to_flattened(ref_forces))
+            # Compute forces (negative gradient).
+            energies.sum().backward()
+            forces = -batch_positions.grad
+            assert torch.allclose(forces, atom_to_flattened(ref_forces))
 
 
 @pytest.mark.skipif(not ASE_INSTALLED, reason='requires ASE to be installed')
-def test_potential_energy_ase_gradcheck():
+@pytest.mark.parametrize('calculator', _CALCULATORS)
+def test_potential_energy_ase_gradcheck(calculator):
     """Test that potential_energy_ase implements the correct gradient."""
-    from ase.calculators.tip3p import TIP3P
-
     batch_size = 2
-    calculator = TIP3P()
     atoms, batch_positions = create_two_waters(batch_size, calculator)
     batch_positions.requires_grad = True
 
     # Run gradcheck. We keep precompute_gradient = False because gradcheck
     # performs a bunch of forward without backward.
-    torch.autograd.gradcheck(
-        func=potential_energy_ase,
-        inputs=[
-            batch_positions,
-            atoms,
-            None,  # batch_cell
-            None,  # positions_unit
-            None,  # energy_unit
-            None,  # parallelization_strategy
-        ],
-    )
+    # Execute the calculation in a temp dir.
+    with temporary_dir_cd() as tmp_dir:
+        torch.autograd.gradcheck(
+            func=potential_energy_ase,
+            inputs=[
+                batch_positions,
+                atoms,
+                None,  # batch_cell
+                None,  # positions_unit
+                None,  # energy_unit
+                None,  # parallelization_strategy
+            ],
+            atol=1e-3,
+        )
