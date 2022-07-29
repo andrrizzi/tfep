@@ -139,6 +139,7 @@ class VolumePreservingShiftTransformer(torch.nn.Module):
     n_parameters_per_input = 1
 
     def __init__(self, periodic_indices=None, periodic_limits=None):
+        super().__init__()
         self.periodic_indices = periodic_indices
         self.periodic_limits = periodic_limits
 
