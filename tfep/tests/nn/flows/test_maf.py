@@ -244,7 +244,7 @@ def test_identity_initialization_MAF(dimensions_hidden, conditioning_indices, pe
     AffineTransformer(),
     MobiusTransformer(blocks=3, shorten_last_block=True)
 ])
-@pytest.mark.parametrize('weight_norm', [False])#, True])
+@pytest.mark.parametrize('weight_norm', [False, True])
 def test_round_trip_MAF(conditioning_indices, periodic_indices, degrees_in, weight_norm, split_conditioner, transformer):
     """Test that the MAF.inverse(MAF.forward(x)) equals the identity."""
     dimension = 5
