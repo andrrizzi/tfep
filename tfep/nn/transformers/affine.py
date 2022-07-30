@@ -337,7 +337,7 @@ def volume_preserving_shift_transformer(x, shift, periodic_indices=None, periodi
     """
     y = x + shift
     if periodic_indices is not None:
-        y = y % (periodic_limits[1] - periodic_limits[0]) + periodic_limits[0]
+        y[:, periodic_indices] = y[:, periodic_indices] % (periodic_limits[1] - periodic_limits[0]) + periodic_limits[0]
     log_det_J = torch.zeros(x.shape[0], dtype=x.dtype, device=x.device)
     return y, log_det_J
 
