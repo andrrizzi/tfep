@@ -142,3 +142,7 @@ def test_volume_preserving_transformer_periodic(batch_size, periodic_indices, pe
     assert torch.all(y[:, periodic_indices] <= periodic_limits[1])
     assert torch.all(x_inv[:, periodic_indices] >= periodic_limits[0])
     assert torch.all(x_inv[:, periodic_indices] <= periodic_limits[1])
+
+    # The non-periodic DOFs are simply shifted.
+    non_periodic_indices = [i for i in range(n_features) if i not in periodic_indices]
+    assert torch.allclose(y[:, non_periodic_indices], x[:, non_periodic_indices] + shift[:, non_periodic_indices])
