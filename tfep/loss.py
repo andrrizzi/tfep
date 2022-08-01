@@ -101,9 +101,9 @@ class BoltzmannKLDivLoss(torch.nn.Module):
         """
         reduced_work = potentials_B
         if log_det_J is not None:
-            reduced_work -= log_det_J
+            reduced_work = reduced_work - log_det_J
         if potentials_A is not None:
-            reduced_work -= potentials_A
+            reduced_work = reduced_work - potentials_A
 
         # Check if this must be a weighted or unweighted mean.
         if log_weights is not None:
