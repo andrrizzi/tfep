@@ -38,10 +38,17 @@ class PartialFlow(torch.nn.Module):
         The wrapped normalizing flows mapping the non-constant degrees of freedom.
     fixed_indices : array-like of int, optional
         The indices of the degrees of freedom that must be kept constant.
+    return_partial : bool, optional
+        If ``True``, only the propagated indices are returned.
+
+    Attributes
+    ----------
+    return_partial : bool
+        If ``True``, only the propagated indices are returned.
 
     """
 
-    def __init__(self, flow, fixed_indices):
+    def __init__(self, flow, fixed_indices, return_partial=False):
         super().__init__()
         self.flow = flow
 
@@ -52,6 +59,7 @@ class PartialFlow(torch.nn.Module):
             self._fixed_indices = fixed_indices.tolist()
         except AttributeError:
             self._fixed_indices = fixed_indices
+        self.return_partial = return_partial
 
         # We also need the indices that we are not factoring out.
         # This is initialized lazily in self._pass() because we
@@ -88,6 +96,9 @@ class PartialFlow(torch.nn.Module):
             x, log_det_J = self.flow.inverse(x)
         else:
             x, log_det_J = self.flow(x)
+
+        if self.return_partial:
+            return x, log_det_J
 
         # Add to the factored out dimensions.
         y[:, self._propagated_indices] = x

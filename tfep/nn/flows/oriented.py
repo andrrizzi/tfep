@@ -80,6 +80,8 @@ class OrientedFlow(PartialFlow):
     rotate_back : bool, optional
         If ``False``, the output configuration has the centroid in the ``origin``.
         Otherwise, it the centroid is restored to the original position.
+    return_partial : bool, optional
+        If ``True``, only the propagated indices are returned.
 
     Attributes
     ----------
@@ -88,6 +90,8 @@ class OrientedFlow(PartialFlow):
     rotate_back : bool
         Whether the frame of reference is restored to its original orientation
         in the output configuration.
+    return_partial : bool
+        If ``True``, only the propagated indices are returned.
 
     """
 
@@ -107,7 +111,11 @@ class OrientedFlow(PartialFlow):
             plane='xz',
             round_off_imprecisions=True,
             rotate_back=True,
+            return_partial=False,
     ):
+        if return_partial and rotate_back:
+            raise ValueError("'return_partial=True' is supported only if 'rotate_back=False'")
+
         # Automatic selection of the points placed on the axis/plane.
         if axis_point_idx is None:
             if plane_point_idx != 0:
@@ -152,7 +160,7 @@ class OrientedFlow(PartialFlow):
                                    plane_point_flattened_indices[is_constrained_on_plane]])
 
         # Call PartialFlow constructor to fix the indices.
-        super().__init__(flow, fixed_indices=fixed_indices)
+        super().__init__(flow, fixed_indices=fixed_indices, return_partial=return_partial)
 
         # Save all other parameters.
         self._axis_point_idx = axis_point_idx
@@ -236,6 +244,10 @@ class OrientedFlow(PartialFlow):
             y, log_det_J = super().inverse(x)
         else:
             y, log_det_J = super().forward(x)
+
+        # Check if we need only to return the partial result.
+        if self.return_partial:
+            return y, log_det_J
 
         # If we need to rotate back, the new frame of reference must equal the original.
         if self.rotate_back:

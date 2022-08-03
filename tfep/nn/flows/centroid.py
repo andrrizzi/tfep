@@ -82,6 +82,8 @@ class CenteredCentroidFlow(PartialFlow):
     translate_back : bool, optional
         If ``False``, the output configuration has the centroid in the ``origin``.
         Otherwise, it the centroid is restored to the original position.
+    return_partial : bool, optional
+        If ``True``, only the propagated indices are returned.
 
     Attributes
     ----------
@@ -93,6 +95,8 @@ class CenteredCentroidFlow(PartialFlow):
     translate_back : bool
         Whether the centroid is restored to its original position in the output
         configuration or if it is left at the ``origin``.
+    return_partial : bool
+        If ``True``, only the propagated indices are returned.
 
     """
 
@@ -104,8 +108,12 @@ class CenteredCentroidFlow(PartialFlow):
             weights=None,
             fixed_point_idx=0,
             origin=None,
-            translate_back=True
+            translate_back=True,
+            return_partial=False,
     ):
+        if return_partial and translate_back:
+            raise ValueError("'return_partial=True' is supported only if 'translate_back=False'")
+
         # Handle mutable defaults.
         if origin is None:
             origin = torch.zeros(space_dimension)
@@ -127,7 +135,7 @@ class CenteredCentroidFlow(PartialFlow):
         fixed_indices = atom_to_flattened_indices(torch.tensor([fixed_point_idx]), space_dimension)
 
         # Call PartialFlow constructor to fix the indices.
-        super().__init__(flow, fixed_indices=fixed_indices)
+        super().__init__(flow, fixed_indices=fixed_indices, return_partial=return_partial)
 
         # Normalize the weights and shape them so that we can simply multiply them later.
         if weights is not None:
@@ -190,6 +198,10 @@ class CenteredCentroidFlow(PartialFlow):
             y, log_det_J = super().inverse(x_translated)
         else:
             y, log_det_J = super().forward(x_translated)
+
+        # Check if we need only to return the partial result.
+        if self.return_partial:
+            return y, log_det_J
 
         # Modify the fixed degrees of freedom so that the centroid remains in the
         # origin. If the centroid is computed only using the fixed_atom_idx, we
