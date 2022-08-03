@@ -68,7 +68,7 @@ class NeuralSplineTransformer(torch.nn.Module):
     References
     ----------
     [1] Durkan C, Bekasov A, Murray I, Papamakarios G. Neural spline flows.
-        arXiv preprint arXiv:1906.04032. 2019 Jun 10.
+        arXiv preprint arXiv:1906.04032. 2019 Dec 12.
     [2] Rezende DJ, et al. Normalizing flows on tori and spheres. arXiv preprint
         arXiv:2002.02428. 2020 Feb 6.
 
@@ -146,9 +146,23 @@ class NeuralSplineTransformer(torch.nn.Module):
         return neural_spline_transformer(x, self.x0, self._y0, widths, heights, slopes)
 
     def inverse(self, y, parameters):
-        """Currently not implemented."""
-        raise NotImplementedError(
-            'Inversion of neural spline transformer has not been implemented yet.')
+        """Inverse function.
+
+        See ``forward`` for the parameters description.
+
+        """
+        # Divide the parameters in widths, heights and slopes (and shifts).
+        # shift has shape (batch, n_features).
+        widths, heights, slopes, shifts = self._get_parameters(parameters)
+
+        # Invert rational quadratic spline.
+        x, log_det_J = neural_spline_transformer_inverse(y, self.x0, self._y0, widths, heights, slopes)
+
+        # Shifts the periodic DOFs. Shifting is volume preserving.
+        if shifts is not None:
+            x = (x - self.x0 - shifts) % (self.xf - self.x0) + self.x0
+
+        return x, log_det_J
 
     def get_identity_parameters(self, n_features):
         """Return the value of the parameters that makes this the identity function.
@@ -200,17 +214,21 @@ class NeuralSplineTransformer(torch.nn.Module):
         slopes = parameters[:, 2*self.n_bins:]
         if self._circular is False:
             shifts = None
-        elif self._circular is True:
-            # Divide slopes from shifts. We clone or the next step will modify shifts as well.
-            shifts = slopes[:, self.n_bins].clone()
-            # Set the slope of the last knot to the first.
-            slopes[:, self.n_bins] = slopes[:, 0]
         else:
-            # Fix shifts and slopes only for the specific DOFs.
-            batch_size, _, n_features = slopes.shape
-            shifts = torch.zeros((batch_size, n_features), dtype=slopes.dtype)
-            shifts[:, self._circular] = slopes[:, self.n_bins, self._circular]
-            slopes[:, self.n_bins, self._circular] = slopes[:, 0, self._circular]
+            # Do not modify the original parameters.
+            slopes = slopes.clone()
+
+            if self._circular is True:
+                # Divide slopes from shifts. We clone or the next step will modify shifts as well.
+                shifts = slopes[:, self.n_bins].clone()
+                # Set the slope of the last knot to the first.
+                slopes[:, self.n_bins] = slopes[:, 0]
+            else:
+                # Fix shifts and slopes only for the specific DOFs.
+                batch_size, _, n_features = slopes.shape
+                shifts = torch.zeros((batch_size, n_features), dtype=slopes.dtype)
+                shifts[:, self._circular] = slopes[:, self.n_bins, self._circular]
+                slopes[:, self.n_bins, self._circular] = slopes[:, 0, self._circular]
 
         # Normalize widths/heights to boundaries and slopes positive.
         widths = torch.nn.functional.softmax(parameters[:, :self.n_bins], dim=1) * (self.xf - self.x0)
@@ -261,9 +279,100 @@ def neural_spline_transformer(x, x0, y0, widths, heights, slopes):
     References
     ----------
     [1] Durkan C, Bekasov A, Murray I, Papamakarios G. Neural spline flows.
-        arXiv preprint arXiv:1906.04032. 2019 Jun 10.
+        arXiv preprint arXiv:1906.04032. 2019 Dec 12.
 
     """
+    # Assign inputs to bins. _b_f suffix represents the shape (batch_size, n_features).
+    (widths_b_f, heights_b_f,
+     lower_knot_x_b_f, lower_knot_y_b_f,
+     slopes_k_b_f, slopes_k1_b_f,
+     s_b_f) = _assign_bins(x, x0, y0, widths, heights, slopes, inverse=False)
+
+    # epsilon_b_f[i][j] is the epsilon value for x[i][j].
+    epsilon_b_f = (x - lower_knot_x_b_f) / widths_b_f
+
+    # epsilon * (1 - epsilon)
+    epsilon_1mepsilon_b_f = epsilon_b_f * (1 - epsilon_b_f)
+    epsilon2_b_f = epsilon_b_f**2
+
+    # Compute the output.
+    numerator = heights_b_f * (s_b_f * epsilon2_b_f + slopes_k_b_f * epsilon_1mepsilon_b_f)
+    denominator = s_b_f + (slopes_k1_b_f + slopes_k_b_f - 2*s_b_f) * epsilon_1mepsilon_b_f
+    y = lower_knot_y_b_f + numerator/denominator
+
+    # Compute the log_det_J.
+    log_det_J = _compute_log_det_J(
+        x, widths_b_f, lower_knot_x_b_f, slopes_k_b_f, slopes_k1_b_f, s_b_f,
+        epsilon_b_f, epsilon_1mepsilon_b_f, epsilon2_b_f, inverse=False,
+    )
+    return y, log_det_J
+
+
+def neural_spline_transformer_inverse(y, x0, y0, widths, heights, slopes):
+    r"""Implement the inverse of the neural spline transformer.
+
+    For more details, see the documentation of ``neural_spline_transformer``.
+
+    References
+    ----------
+    [1] Durkan C, Bekasov A, Murray I, Papamakarios G. Neural spline flows.
+        arXiv preprint arXiv:1906.04032. 2019 Dec 12.
+
+    """
+    # Assign inputs to bins. _b_f suffix represents the shape (batch_size, n_features).
+    (widths_b_f, heights_b_f,
+     lower_knot_x_b_f, lower_knot_y_b_f,
+     slopes_k_b_f, slopes_k1_b_f,
+     s_b_f) = _assign_bins(y, x0, y0, widths, heights, slopes, inverse=True)
+
+    # Common terms for inversion coefficients. All variable refers to the paper [1].
+    # y - y^k
+    y_myk = y - lower_knot_y_b_f
+    # delta^{k+1} + delta^k - 2s^k
+    dk1_dk_m2s = slopes_k1_b_f + slopes_k_b_f - 2*s_b_f
+
+    # Inversion coefficients: a, b, c.
+    a = heights_b_f*(s_b_f - slopes_k_b_f) + y_myk*dk1_dk_m2s
+    b = heights_b_f*slopes_k_b_f - y_myk*dk1_dk_m2s
+    c = -s_b_f * y_myk
+
+    # Compute inverse.
+    epsilon_b_f = 2 * c.div(-b - torch.sqrt(b**2 - 4*a*c))
+    x = epsilon_b_f * widths_b_f + lower_knot_x_b_f
+
+    # Compute the log_det_J.
+    epsilon_1mepsilon_b_f = epsilon_b_f * (1 - epsilon_b_f)
+    epsilon2_b_f = epsilon_b_f**2
+    log_det_J = _compute_log_det_J(
+        x, widths_b_f, lower_knot_x_b_f, slopes_k_b_f, slopes_k1_b_f, s_b_f,
+        epsilon_b_f, epsilon_1mepsilon_b_f, epsilon2_b_f, inverse=True,
+    )
+    return x, log_det_J
+
+
+def _compute_log_det_J(
+        x, widths_b_f, lower_knot_x_b_f, slopes_k_b_f, slopes_k1_b_f, s_b_f,
+        epsilon_b_f, epsilon_1mepsilon_b_f, epsilon2_b_f, inverse,
+):
+    """Compute the log det J of the transformation.
+
+    The ``x`` is always the x coordinate. Even for the inverse function.
+    If epsilon_1mepsilon_b_f and epsilon2_b_f are not given they are computed here.
+    """
+    # Compute the derivative
+    numerator = s_b_f**2 * (slopes_k1_b_f*epsilon2_b_f + 2*s_b_f*epsilon_1mepsilon_b_f + slopes_k_b_f*(1 - epsilon_b_f)**2)
+    denominator = (s_b_f + (slopes_k1_b_f + slopes_k_b_f - 2 * s_b_f) * epsilon_1mepsilon_b_f)**2
+    dy_dx = numerator / denominator
+
+    # Compute the log det J of the forward transformation.
+    log_det_J = torch.sum(torch.log(dy_dx), dim=1)
+    if inverse:
+        return -log_det_J
+    return log_det_J
+
+
+def _assign_bins(x, x0, y0, widths, heights, slopes, inverse):
+    """Assign the input to the bins and return the values of knots, widths, heights, and slopes."""
     dtype = x0.dtype
     batch_size, n_bins, n_features = widths.shape
     n_knots = n_bins + 1
@@ -282,9 +391,12 @@ def neural_spline_transformer(x, x0, y0, widths, heights, slopes):
     feat_indices = torch.arange(n_features).repeat(batch_size, 1)  # Shape: (batch_size, n_features).
 
     # bin_indices[i][j] is the index of the bin assigned to x[i][j].
-    bin_indices = torch.sum((x.unsqueeze(1) > knots_x), dim=1) - 1
+    if inverse:
+        bin_indices = torch.sum((x.unsqueeze(1) > knots_y), dim=1) - 1
+    else:
+        bin_indices = torch.sum((x.unsqueeze(1) > knots_x), dim=1) - 1
 
-    # All the following arrays have shape (batch_size, n_features).
+    # _b_f suffix represents the shape (batch_size, n_features).
     # widths_b_f[i][j] is the width of the bin assigned to x[i][j].
     widths_b_f = widths[batch_indices, bin_indices, feat_indices]
     heights_b_f = heights[batch_indices, bin_indices, feat_indices]
@@ -301,23 +413,10 @@ def neural_spline_transformer(x, x0, y0, widths, heights, slopes):
     # This is s_k = (y^k+1 - y^k)/(x^k+1 - x^k) and epsilon in the
     # paper, both with shape (batch_size, n_features).
     s_b_f = heights_b_f / widths_b_f
-    epsilon_b_f = (x - lower_knot_x_b_f) / widths_b_f
 
-    # epsilon * (1 - epsilon)
-    epsilon_1mepsilon_b_f = epsilon_b_f * (1 - epsilon_b_f)
-    epsilon2_b_f = epsilon_b_f**2
-
-    # Compute the output.
-    numerator = heights_b_f * (s_b_f * epsilon2_b_f + slopes_k_b_f * epsilon_1mepsilon_b_f)
-    denominator = s_b_f + (slopes_k1_b_f + slopes_k_b_f - 2*s_b_f) * epsilon_1mepsilon_b_f
-    y = lower_knot_y_b_f + numerator/denominator
-
-    # Compute the derivative
-    numerator = s_b_f**2 * (slopes_k1_b_f*epsilon2_b_f + 2*s_b_f*epsilon_1mepsilon_b_f + slopes_k_b_f*(1 - epsilon_b_f)**2)
-    denominator = (s_b_f + (slopes_k1_b_f + slopes_k_b_f - 2 * s_b_f) * epsilon_1mepsilon_b_f)**2
-    dy_dx = numerator / denominator
-
-    # Compute the log det J.
-    log_det_J = torch.sum(torch.log(dy_dx), dim=1)
-
-    return y, log_det_J
+    return (
+        widths_b_f, heights_b_f,
+        lower_knot_x_b_f, lower_knot_y_b_f,
+        slopes_k_b_f, slopes_k1_b_f,
+        s_b_f,
+    )

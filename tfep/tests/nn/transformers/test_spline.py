@@ -19,7 +19,10 @@ import pytest
 import torch
 import torch.autograd
 
-from tfep.nn.transformers.spline import neural_spline_transformer, NeuralSplineTransformer
+from tfep.nn.transformers.spline import (
+    NeuralSplineTransformer,
+    neural_spline_transformer, neural_spline_transformer_inverse,
+)
 from tfep.utils.math import batch_autograd_log_abs_det_J
 from ..utils import create_random_input
 
@@ -100,7 +103,7 @@ def reference_neural_spline(x, x0, y0, widths, heights, slopes):
 # TESTS
 # =============================================================================
 
-@pytest.mark.parametrize('batch_size', [2, 5])
+@pytest.mark.parametrize('batch_size', [1, 4])
 @pytest.mark.parametrize('n_features', [2, 5, 8])
 @pytest.mark.parametrize('x0', [-2, -1])
 @pytest.mark.parametrize('y0', [1, 2])
@@ -143,6 +146,17 @@ def test_neural_spline_transformer_reference(batch_size, n_features, x0, y0, n_b
     # Compute the reference log_det_J also with autograd and numpy.
     ref_log_det_J2 = batch_autograd_log_abs_det_J(x, torch_y)
     assert torch.allclose(ref_log_det_J2, torch_log_det_J)
+
+    # Check that inverting returns the original input.
+    y = torch_y.detach()
+    y.requires_grad = True
+    x_inv, log_det_J_inv = neural_spline_transformer_inverse(y, x0, y0, widths, heights, slopes)
+    assert torch.allclose(x, x_inv)
+    assert torch.allclose(torch_log_det_J+log_det_J_inv, torch.zeros_like(torch_log_det_J))
+
+    # Check also the inverse log_det_J.
+    ref_log_det_J_inv = batch_autograd_log_abs_det_J(y, x_inv)
+    assert torch.allclose(ref_log_det_J_inv, log_det_J_inv)
 
 
 @pytest.mark.parametrize('circular', [
@@ -191,6 +205,11 @@ def test_circular_spline_transformer_periodic(circular):
     assert torch.all(x0 < y)
     assert torch.all(y < xf)
 
+    # The inverse returns the original input.
+    x_inv, log_det_J_inv = transformer.inverse(y, parameters)
+    assert torch.allclose(x, x_inv)
+    assert torch.allclose(log_det_J+log_det_J_inv, torch.zeros_like(log_det_J))
+
     # If the shifts are 0.0, the boundaries must be mapped to themselves.
     parameters[:, 3*n_bins, circular_indices] = 0.0
     y, log_det_J = transformer(x, parameters)
@@ -227,3 +246,8 @@ def test_identity_neural_spline(circular):
     y, log_det_J = transformer(x, parameters)
     assert torch.allclose(x, y)
     assert torch.allclose(log_det_J, torch.zeros_like(log_det_J))
+
+    # The inverse is the identity function as well.
+    x_inv, log_det_J_inv = transformer.inverse(y, parameters)
+    assert torch.allclose(x, x_inv)
+    assert torch.allclose(log_det_J_inv, torch.zeros_like(log_det_J))
