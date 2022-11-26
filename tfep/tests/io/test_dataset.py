@@ -6,7 +6,7 @@
 # =============================================================================
 
 """
-Test objects and function in the module ``tfep.dataset.dataset``.
+Test objects and function in the module ``tfep.io.dataset.traj``.
 """
 
 
@@ -24,7 +24,7 @@ import pytest
 import torch
 import torch.utils.data
 
-from tfep.io.dataset import TrajectoryDataset, TrajectorySubset
+from tfep.io.dataset.traj import TrajectoryDataset, TrajectorySubset
 
 
 # =============================================================================
@@ -85,7 +85,7 @@ def _check_correct_subset_positions(
 
 
 # =============================================================================
-# TESTS
+# TEST TRAJECTORY DATASET
 # =============================================================================
 
 @pytest.mark.parametrize('return_dataset_sample_index', [False, True])
@@ -237,6 +237,10 @@ def test_trajectory_dataset_auxiliary(dt):
     assert torch.all(aux[:, 1] == expected_first_column)
     assert torch.all(aux[:, 2] == expected_second_column)
 
+
+# =============================================================================
+# TEST TRAJECTORY SUBSET
+# =============================================================================
 
 def test_trajectory_subset_nested(read_only_trajectory_dataset):
     """Check that the indices of nested subsets are handled correctly in TrajectorySubset.
