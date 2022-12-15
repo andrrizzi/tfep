@@ -17,10 +17,6 @@ For usage examples see the documentation of :class:`.MergedDataset`.
 # GLOBAL IMPORTS
 # =============================================================================
 
-import copy
-
-import numpy as np
-import pint
 import torch.utils.data
 
 
@@ -72,3 +68,6 @@ class MergedDataset(torch.utils.data.Dataset):
             # datasets do not overlap.
             sample.update(dataset[item])
         return sample
+
+    def __len__(self):
+        return len(self._datasets[0])
