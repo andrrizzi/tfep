@@ -87,12 +87,7 @@ class PLUMEDAuxReader(MDAnalysis.auxiliary.XVG.XVGReader):
         # columns to the columns of the array.
         self.col_names = col_names
 
-        self._auxdata_values = read_table(file_path, col_names=col_names, as_array=True)
-
-        # In some cases, PLUMED at the beginning has a double entry
-        # with time == 0.0 which cause AuxReader to crash.
-        if self._auxdata_values[0][0] == self._auxdata_values[1][0]:
-            self._auxdata_values = self._auxdata_values[1:]
+        self._auxdata_values = read_table(file_path, col_names=col_names, as_array=True, remove_duplicates=True)
 
         # Convert units.
         if units is not None:

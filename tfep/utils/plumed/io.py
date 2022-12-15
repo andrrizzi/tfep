@@ -77,6 +77,7 @@ def read_table(
         file_path,
         col_names=None,
         as_array=False,
+        remove_duplicates=True,
         row_filter_func=None,
         dtype=None,
         ordering_col_name=None,
@@ -96,6 +97,9 @@ def read_table(
         If ``True``, the data is returned as a single array of shape
         ``(n_rows, n_cols)``. Otherwise, the table is returned in ``dict``
         format with one column for each key. Default is ``False``.
+    remove_duplicates : bool, optional
+        In some cases, the first and second rows of the PLUMED file are
+        duplicates. If ``True`` (default) the first record is not loaded.
     row_filter_func : Callable[[str], bool], optional
         Rows for which this function returns False will be skipped.
     dtype : type, optional
@@ -130,6 +134,12 @@ def read_table(
     if len(columns_to_read) != len(col_names):
         raise ValueError(f"Can't find columns {col_names}. Fields in the file are {field_names}")
 
+    # If we need to remove duplicates, we also need to load the "time" field,
+    # which is always in the first column.
+    time_loaded = 0 in columns_to_read
+    if remove_duplicates and not time_loaded:
+        columns_to_read = [0] + columns_to_read
+
     # Read the file using numpy.
     with open(file_path, 'r') as fh:
         # Check if we need to apply a filter or not.
@@ -137,13 +147,26 @@ def read_table(
             fh = filter(row_filter_func, fh)
 
         # Read file.
-        data_matrix = np.loadtxt(fh, comments='#!', usecols=columns_to_read, unpack=not as_array)
+        data_matrix = np.loadtxt(fh, comments='#!', usecols=columns_to_read)
+
+    # Check duplicates.
+    if remove_duplicates:
+        if time_loaded:
+            time_col_idx = col_names.index('time')
+        else:
+            time_col_idx = 0
+        if data_matrix[0][time_col_idx] == data_matrix[1][time_col_idx]:
+            data_matrix = data_matrix[1:]
+
+        # If we added time just for checking duplicates, we remove it from data.
+        if not time_loaded:
+            data_matrix = data_matrix[:, 1:]
 
     # Re-order rows.
     if ordering_col_name is not None:
         col_idx = col_names.index(ordering_col_name)
-        sorting_indices = np.argsort(data_matrix[col_idx])
-        data_matrix[:] = data_matrix[:, sorting_indices]
+        sorting_indices = np.argsort(data_matrix[:, col_idx])
+        data_matrix = data_matrix[sorting_indices]
 
     if as_array:
         return data_matrix
@@ -152,7 +175,7 @@ def read_table(
     if len(col_names) == 1:
         data = {col_names[0]: data_matrix}
     else:
-        data = {col_name: col for col_name, col in zip(col_names, data_matrix)}
+        data = {col_name: col for col_name, col in zip(col_names, data_matrix.T)}
     return data
 
 
