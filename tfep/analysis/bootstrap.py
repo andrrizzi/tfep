@@ -49,11 +49,14 @@ def bootstrap(
     Parameters
     ----------
     data : torch.Tensor
-        A 1D tensor of shape ``(n_samples,)``.
+        A tensor of shape ``(n_samples,)`` or ``(n_samples, data_dimension)``.
     statistic : Callable
-        A function taking a 2D tensor of shape ``(batch_size, n_samples)`` and
-        returning the value of the statistic for each batch as a tensor of shape
-        ``(batch_size,)``.
+        A function taking a tensor of shape ``(n_samples,)`` or ``(n_samples, data_dim)``
+        and returning the value of the statistic.
+
+        The function must also accept a keyword argument ``vectorized``. If
+        ``True``, ``data`` has an extra dimension ``batch_size`` prepended and
+        the returned value must have shape ``(batch_size,)``.
     confidence_level : float, optional
         The confidence level of the confidence interval.
     n_resamples : int, optional
@@ -107,8 +110,6 @@ def bootstrap(
        https://en.wikipedia.org/wiki/Bootstrapping_%28statistics%29
 
     """
-    if len(data.shape) > 1:
-        raise ValueError('We currently support only 1D data.')
     n_samples = len(data)
 
     # Make sure the gradient tree is not traced.
@@ -124,7 +125,7 @@ def bootstrap(
 
     # Expand the data so that we can index it easily when resampling
     # since torch.gather does not broadcast (see pytorch#9407).
-    data_expanded = data.expand((batch, n_samples))
+    data_expanded = data.expand((batch, *data.shape))
 
     # bootstrap_statistics[i] contains the value of the statistic for the i-th resampling.
     bootstrap_statistics = torch.empty(n_resamples, dtype=data.dtype)
@@ -134,7 +135,7 @@ def bootstrap(
     for sample_size in bootstrap_sample_size:
         _bootstrap_statistics(
             data_expanded, statistic, n_resamples, sample_size,
-            take_first_only, batch, generator, bootstrap_statistics)
+            take_first_only, generator, bootstrap_statistics)
 
         # Calculate percentile confidence interval.
         alpha = (1 - confidence_level)/2
@@ -164,7 +165,6 @@ def _bootstrap_statistics(
         n_resamples,
         bootstrap_sample_size,
         take_first_only,
-        batch,
         generator,
         bootstrap_statistics
 ):
@@ -172,6 +172,7 @@ def _bootstrap_statistics(
 
     This modify bootstrap_statistics in place.
     """
+    batch = data_expanded.shape[0]
     n_samples = data_expanded.shape[1]
 
     # Check if we need to sample only between the first bootstrap_sample_size samples.
@@ -187,16 +188,24 @@ def _bootstrap_statistics(
         if batch_actual != batch:
             data_expanded = data_expanded[:batch_actual]
 
-        # Resample.
+        # Generate random indices for resampling.
         bootstrap_sample_indices = torch.randint(
             low=0, high=max_data_idx,
             size=(batch_actual, bootstrap_sample_size),
             generator=generator
         )
+
+        # If each sample is multidimensional the indices for gather() need an extra dimension.
+        if len(data_expanded.shape) > 2:
+            data_dimensionality = data_expanded.shape[2]
+            bootstrap_sample_indices = bootstrap_sample_indices.repeat_interleave(
+                repeats=data_dimensionality, dim=1).reshape(batch_actual, bootstrap_sample_size, data_dimensionality)
+
+        # Resample.
         bootstrap_samples = torch.gather(
             data_expanded, dim=1, index=bootstrap_sample_indices)
 
         # Compute statistic for these batch.
-        bootstrap_statistics[k:k+batch_actual] = statistic(bootstrap_samples, dim=1)
+        bootstrap_statistics[k:k+batch_actual] = statistic(bootstrap_samples, vectorized=True)
 
     return bootstrap_statistics

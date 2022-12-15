@@ -21,6 +21,7 @@ import torch
 
 from tfep.analysis import bootstrap
 
+
 # =============================================================================
 # GLOBAL VARIABLES
 # =============================================================================
@@ -52,9 +53,12 @@ def teardown_module(module):
 # UTILS
 # =============================================================================
 
-def rmse(data):
-    """Vectorized version of root-mean-squared error."""
-    return torch.sqrt((data[:, :, 1] - data[:, :, 0]).mean())
+def std(data, vectorized=True):
+    return torch.std(data, dim=-1)
+
+
+def mean(data, vectorized=True):
+    return torch.mean(data, dim=-1)
 
 
 # =============================================================================
@@ -75,7 +79,7 @@ def test_against_scipy(confidence_level, batch, method):
     # Compute bootstrap with tfep.
     tfep_result = bootstrap(
         data=data,
-        statistic=torch.std,
+        statistic=std,
         n_resamples=n_resamples,
         method=method,
     )
@@ -113,7 +117,7 @@ def test_multiple_bootstrap_sample_size(confidence_level, batch, method):
     # Compute bootstrap with tfep.
     results = bootstrap(
         data=data,
-        statistic=torch.mean,
+        statistic=mean,
         bootstrap_sample_size=bootstrap_sample_size,
         method=method,
     )
@@ -127,3 +131,34 @@ def test_multiple_bootstrap_sample_size(confidence_level, batch, method):
                    for res in results]
     for i in range(1, len(ci_interval)):
         assert ci_interval[i-1] > ci_interval[i]
+
+
+def test_multiple_inputs():
+    """bootstrap() handles statistics with multiple input arguments."""
+
+    def _statistic(_data, vectorized=True):
+        """Sum of 3 numbers."""
+        s = torch.sum(_data, dim=-1)
+        return torch.mean(s, dim=-1)
+
+    # The triplets of inputs always sum to 5.
+    data = torch.tensor([
+        [0, 3, 2],
+        [1, 4, 0],
+        [3, 1, 1],
+        [5, 0, 0],
+    ], dtype=float)
+
+    result = bootstrap(
+        data=data,
+        statistic=_statistic,
+        n_resamples=100,
+        method='percentile',
+    )
+
+    # The statistic should be constant and equal 5.
+    assert result['confidence_interval']['low'] == 5
+    assert result['confidence_interval']['high'] == 5
+    assert result['standard_deviation'] == 0
+    assert result['mean'] == 5
+    assert result['median'] == 5
