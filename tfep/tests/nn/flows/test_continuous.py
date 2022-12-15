@@ -30,6 +30,15 @@ from tfep.nn.flows.continuous import (
 # TEST MODULE CONFIGURATION
 # =============================================================================
 
+# torchdiffeq is an optional dependency of tfep.
+try:
+    import torchdiffeq
+except ImportError:
+    TORCHDIFFEQ_INSTALLED = False
+else:
+    TORCHDIFFEQ_INSTALLED  = True
+
+
 _old_default_dtype = None
 _old_torch_seed = None
 
@@ -186,6 +195,7 @@ def test_hutchinson_trace_estimator(batch_size, create_graph, seed):
     assert torch.allclose(reg, ref_reg, atol=tol)
 
 
+@pytest.mark.skipif(not TORCHDIFFEQ_INSTALLED, reason='requires torchdiffeq to be installed')
 @pytest.mark.parametrize('vmap', [True, False])
 def test_identity_flow(vmap):
     """Check that the continuous flow behaves well with an identity dynamics."""
@@ -208,6 +218,7 @@ def test_identity_flow(vmap):
     assert torch.allclose(x.grad, torch.ones_like(x.grad))
 
 
+@pytest.mark.skipif(not TORCHDIFFEQ_INSTALLED, reason='requires torchdiffeq to be installed')
 @pytest.mark.parametrize('batch_size', [1, 10])
 @pytest.mark.parametrize('vmap', [True, False])
 @pytest.mark.parametrize('create_graph', [True, False])
