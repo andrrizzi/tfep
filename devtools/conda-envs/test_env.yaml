@@ -6,7 +6,7 @@ channels:
 
 dependencies:
     # Base depends
-  - python
+  - python >=3.8
   - pip
 
     # Testing
@@ -15,21 +15,15 @@ dependencies:
   - codecov
 
     # External packages.
+  - pytorch >=1.11
   - mdanalysis >=2.0
   - numpy
   - pint
-  - pytorch >=1.9
 
-    # Optional dependencies (here for completeness to test locally).
-    # As of Nov 24, 2021, psi4 has a problem with conda-forge. This
-    # is a recipe for installing everything that works:
-    #       conda create --name tfep python=3.8 psi4 -c psi4
-    #       conda activate tfep
-    #       conda install mdanalysis">=2.0" pytorch">=1.9" -c conda-forge
-    #       pip install --upgrade numpy
-    # - psi4 (this can be found on the psi4 conda channel)
+    # Psi4 tests are very expensive. We need to flag some as "slow" before turning them on.
+  #- psi4  # Currently requires psi4 conda channel.
 
-    # Pip-only installs
-  #- pip:
-  #  - codecov
-
+    # Pip-only installs optional dependencies
+  - pip:
+    - ase
+    - torchdiffeq
