@@ -29,11 +29,11 @@ creates a separate conda environment with all the dependencies and installs ``tf
 
 ```bash
 # Required dependencies.
-conda create --name tfepenv pytorch">=1.11" mdanalysis">=2.0" psi4 -c pytorch -c conda-forge -c psi4
+conda create --name tfepenv pytorch">=1.11" mdanalysis">=2.0" pint numpy -c conda-forge
 conda activate tfepenv
 
 # Optional dependency using pip.
-pip install --upgrade --user ase
+pip install ase
 
 # Install package.
 git clone https://github.com/andrrizzi/tfep.git
