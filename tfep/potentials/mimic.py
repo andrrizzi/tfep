@@ -12,6 +12,15 @@ The code interfaces with the molecular dynamics software through the command lin
 
 """
 
+import warnings
+warnings.warn('The potential interface for MiMiC is still experimental and under heavy development.')
+
+# TODO: THE FORCES OF THE QM REGION ATOMS ARE OK BUT CPMD CHANGES THE ORDER OF THE OTHER ATOMS AS WELL WHICH NEED RE-SORTING
+# TODO: UNDERSTAND KINETIC ENERGY PRINTING IN WAVEFUNCTION OPTIMIZATION
+# TODO: THE PV CONTRIBUTION IS NOT COMPUTED! THE RETURNED ENERGY IS NOT THE REDUCED POTENTIAL.
+# TODO: USE logging MODULE INSTEAD OF print()
+# TODO: CHANGE CELL -> 3 BY 3 DIMENSIONS
+
 
 # =============================================================================
 # GLOBAL IMPORTS
@@ -34,10 +43,6 @@ from tfep.utils.misc import (
     flattened_to_atom, energies_array_to_tensor, forces_array_to_tensor, temporary_cd)
 from tfep.utils.parallel import SerialStrategy
 
-# TODO: CAPISCI COS'È KINETIC ENERGY IN WAVEFUNCTION OPTIMIZATION!
-# TODO: THE PV CONTRIBUTION IS NOT COMPUTED! THE RETURNED ENERGY IS NOT THE REDUCED POTENTIAL.
-# TODO: USE logging MODULE INSTEAD OF print()
-# TODO: THE FORCES OF THE MAPPED ATOMS ARE OK BUT CPMD CHANGES THE ORDER OF THE OTHER ATOMS AS WELL WHICH NEED RE-SORTING
 
 # =============================================================================
 # GROMACS/CPMD COMMANDS UTILITIES
@@ -319,7 +324,7 @@ class PotentialMiMiC(torch.nn.Module):
         self.on_unconverged = on_unconverged
         self.on_local_error = on_local_error
 
-    def forward(self, batch_positions, batch_box_vectors):
+    def forward(self, batch_positions, batch_cell):
         """Compute a differential potential energy for a batch of configurations.
 
         Parameters
@@ -333,7 +338,7 @@ class PotentialMiMiC(torch.nn.Module):
             input files, not the one used internally by CPMD (which always puts the
             QM atoms first). The atom map used to match them is based on the CPMD
             input script option ``&MIMIC.OVERLAPS``.
-        batch_box_vectors : torch.Tensor, optional
+        batch_cell : torch.Tensor, optional
             An tensor of box vectors with shape ``(batch_size, 3)`` defining the
             orthorhombic box side lengths (the only one currently supported in MiMiC)
             in units of ``self.positions_units`` (or MiMiC units is ``positions_units``
@@ -343,14 +348,14 @@ class PotentialMiMiC(torch.nn.Module):
         -------
         potential_energy : torch.Tensor
             ``potential_energy[i]`` is the potential energy of configuration
-            ``batch_positions[i]`` and ``batch_box_vectors[i]`` in units of
+            ``batch_positions[i]`` and ``batch_cell[i]`` in units of
             ``self.energy_unit`` (or MiMiC units if ``energy_unit`` is not
             provided).
 
         """
         return potential_energy_mimic(
             batch_positions=batch_positions,
-            batch_box_vectors=batch_box_vectors,
+            batch_cell=batch_cell,
             cpmd_cmd=self.cpmd_cmd,
             mdrun_cmd=self.mdrun_cmd,
             grompp_cmd=self.grompp_cmd,
@@ -369,7 +374,7 @@ class PotentialMiMiC(torch.nn.Module):
             on_local_error=self.on_local_error,
         )
 
-    def energy(self, batch_positions, batch_box_vectors):
+    def energy(self, batch_positions, batch_cell):
         """Compute a the potential energy of a batch of configurations.
 
         Parameters
@@ -384,7 +389,7 @@ class PotentialMiMiC(torch.nn.Module):
             input files, not the one used internally by CPMD (which always puts the
             QM atoms first). The atom map used to match them is based on the CPMD
             input script option ``&MIMIC.OVERLAPS``.
-        batch_box_vectors : pint.Quantity, optional
+        batch_cell : pint.Quantity, optional
             An array of box vectors with units and shape: ``(batch_size, 3)`` or
             ``(3,)`` defining the orthorhombic box side lengths (the only one currently
             supported in MiMiC). If no units are attached to the array, it is
@@ -395,18 +400,18 @@ class PotentialMiMiC(torch.nn.Module):
         -------
         potential_energies : pint.Quantity
             ``potential_energies[i]`` is the potential energy of configuration
-            ``batch_positions[i]`` and ``batch_box_vectors[i]``.
+            ``batch_positions[i]`` and ``batch_cell[i]``.
 
         """
         # Add units.
         batch_positions = self._ensure_positions_has_units(batch_positions)
-        batch_box_vectors = self._ensure_positions_has_units(batch_box_vectors)
+        batch_cell = self._ensure_positions_has_units(batch_cell)
         return _run_mimic(
             self.cpmd_cmd,
             self.mdrun_cmd,
             grompp_cmd=self.grompp_cmd,
             batch_positions=batch_positions,
-            batch_box_vectors=batch_box_vectors,
+            batch_cell=batch_cell,
             launcher=self.launcher,
             grompp_launcher=self.grompp_launcher,
             return_energy=True,
@@ -422,7 +427,7 @@ class PotentialMiMiC(torch.nn.Module):
             on_local_error=self.on_local_error,
         )
 
-    def force(self, batch_positions, batch_box_vectors):
+    def force(self, batch_positions, batch_cell):
         """Compute the force for a batch of configurations.
 
         Parameters
@@ -437,7 +442,7 @@ class PotentialMiMiC(torch.nn.Module):
             input files, not the one used internally by CPMD (which always puts the
             QM atoms first). The atom map used to match them is based on the CPMD
             input script option ``&MIMIC.OVERLAPS``.
-        batch_box_vectors : pint.Quantity, optional
+        batch_cell : pint.Quantity, optional
             An array of box vectors with units and shape: ``(batch_size, 3)`` or
             ``(3,)`` defining the orthorhombic box side lengths (the only one currently
             supported in MiMiC). If no units are attached to the array, it is
@@ -448,18 +453,18 @@ class PotentialMiMiC(torch.nn.Module):
         -------
         forces : pint.Quantity
             ``forces[i]`` is the force of configuration ``batch_positions[i]``
-            and ``batch_box_vectors[i]``.
+            and ``batch_cell[i]``.
 
         """
         # Add units.
         batch_positions = self._ensure_positions_has_units(batch_positions)
-        batch_box_vectors = self._ensure_positions_has_units(batch_box_vectors)
+        batch_cell = self._ensure_positions_has_units(batch_cell)
         return _run_mimic(
             self.cpmd_cmd,
             self.mdrun_cmd,
             grompp_cmd=self.grompp_cmd,
             batch_positions=batch_positions,
-            batch_box_vectors=batch_box_vectors,
+            batch_cell=batch_cell,
             launcher=self.launcher,
             grompp_launcher=self.grompp_launcher,
             return_energy=False,
@@ -563,7 +568,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
         input files, not the one used internally by CPMD (which always puts the
         QM atoms first). The atom map used to match them is based on the CPMD
         input script option ``&MIMIC.OVERLAPS``.
-    batch_box_vectors : pint.Quantity, optional
+    batch_cell : pint.Quantity, optional
         An tensor of box vectors with shape ``(batch_size, 3)`` defining the
         orthorhombic box side lengths (the only one currently supported in MiMiC).
     cpmd_cmd : tfep.potentials.mimic.Cpmd
@@ -660,7 +665,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
     def forward(
             ctx,
             batch_positions,
-            batch_box_vectors,
+            batch_cell,
             cpmd_cmd,
             mdrun_cmd,
             grompp_cmd,
@@ -695,11 +700,11 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
         batch_positions_arr = flattened_to_atom(batch_positions.detach().numpy())
         batch_positions_arr *= positions_unit
 
-        if batch_box_vectors is None:
-            batch_box_vectors_arr = None
+        if batch_cell is None:
+            batch_cell_arr = None
         else:
-            batch_box_vectors_arr = batch_box_vectors.detach().numpy()
-            batch_box_vectors_arr *= positions_unit
+            batch_cell_arr = batch_cell.detach().numpy()
+            batch_cell_arr *= positions_unit
 
         # Determine whether we need forces.
         if precompute_gradient:
@@ -713,7 +718,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
             mdrun_cmd,
             grompp_cmd,
             batch_positions=batch_positions_arr,
-            batch_box_vectors=batch_box_vectors_arr,
+            batch_cell=batch_cell_arr,
             launcher=launcher,
             grompp_launcher=grompp_launcher,
             return_energy=True,
@@ -768,7 +773,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
 
 def potential_energy_mimic(
         batch_positions,
-        batch_box_vectors,
+        batch_cell,
         cpmd_cmd,
         mdrun_cmd,
         grompp_cmd,
@@ -801,7 +806,7 @@ def potential_energy_mimic(
     # apply() does not accept keyword arguments.
     return PotentialEnergyMiMiCFunc.apply(
         batch_positions,
-        batch_box_vectors,
+        batch_cell,
         cpmd_cmd,
         mdrun_cmd,
         grompp_cmd,
@@ -830,7 +835,7 @@ def _run_mimic(
         mdrun_cmd,
         grompp_cmd=None,
         batch_positions=None,
-        batch_box_vectors=None,
+        batch_cell=None,
         launcher=None,
         grompp_launcher=None,
         return_energy=False,
@@ -898,7 +903,7 @@ def _run_mimic(
         input files, not the one used internally by CPMD (which always puts the
         QM atoms first). The atom map used to match them is based on the CPMD
         input script option ``&MIMIC.OVERLAPS``.
-    batch_box_vectors : pint.Quantity, optional
+    batch_cell : pint.Quantity, optional
         An array of box vectors with units and shape: ``(batch_size, 3)`` or
         ``(3,)`` defining the orthorhombic box side lengths (the only one currently
         supported in MiMiC). If ``None``, the box vectors in the input files are
@@ -994,10 +999,10 @@ def _run_mimic(
     is_batch = (batch_positions is not None) and (len(batch_positions.shape) >= 3)
     if not is_batch:
         batch_positions = [batch_positions]
-        batch_box_vectors = [batch_box_vectors]
-    elif batch_box_vectors is None:
-        # batch_box_vectors still needs to be in batch format.
-        batch_box_vectors = [batch_box_vectors] * batch_positions.shape[0]
+        batch_cell = [batch_cell]
+    elif batch_cell is None:
+        # batch_cell still needs to be in batch format.
+        batch_cell = [batch_cell] * batch_positions.shape[0]
 
     # Make sure working_dir_path and launcher are in batch format.
     n_configurations = len(batch_positions)
@@ -1016,7 +1021,7 @@ def _run_mimic(
         return_energy, return_force, cleanup_working_dir, launcher_kwargs,
         grompp_launcher_kwargs, n_attempts, on_unconverged, on_local_error,
     )
-    distributed_args = zip(batch_positions, batch_box_vectors, launcher, working_dir_path)
+    distributed_args = zip(batch_positions, batch_cell, launcher, working_dir_path)
     returned_values = parallelization_strategy.run(task, distributed_args)
 
     # Convert from a list of shape (batch_size, 2) to (2, batch_size).
@@ -1529,9 +1534,10 @@ def _read_first_energy(cpmd_dir_path):
     energies_traj_file_path = os.path.join(cpmd_dir_path, 'ENERGIES')
     with open(energies_traj_file_path, 'r') as f:
         for line in f:
-            line = line.split()
-            if int(line[0]) == 1:
-                return float(line[3])
+            step = int(line[:10])
+            if step == 1:
+                energy = float(line[31:49])
+                return energy
 
 
 def _read_first_force(cpmd_dir_path, gromacs_to_cpmd_atom_map):
