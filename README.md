@@ -23,9 +23,9 @@ ase          # To evaluate the target potentials using the Atomistic Simulation 
 torchdiffeq  # To use continuous normalizing flows.
 ```
 
-The suggested way of installing ``tfep`` is by first installing all the dependencies through ``conda``/``pip``, and then
-installing ``tfep`` from the source (I plan to add a ``tfep`` conda package in the near future). Here is an example that
-creates a separate conda environment with all the dependencies and installs ``tfep`` in editable mode.
+The suggested way of installing ``tfep`` is by first installing all the dependencies through ``conda``/``pip``/``setuptools``,
+and then installing ``tfep`` from the source (I plan to add a ``tfep`` conda package in the near future). Here is an
+example that creates a separate conda environment with all the dependencies and installs ``tfep``.
 
 ```bash
 # Required dependencies.
@@ -35,10 +35,13 @@ conda activate tfepenv
 # Optional dependency using pip.
 pip install ase
 
-# Install package.
+# Install package in editable mode.
 git clone https://github.com/andrrizzi/tfep.git
 cd tfep
-pip install -e .
+pip install .
+
+# Or if you want to modify the source code, install it in editable mode.
+# pip install -e .
 ```
 
 
