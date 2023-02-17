@@ -76,25 +76,19 @@ Andrea Rizzi, Paolo Carloni, Michele Parrinello. *Multimap targeted free energy 
 
 ### References
 
-[1] Papamakarios G, Pavlakou T, Murray I. Masked autoregressive flow for density estimation. In Advances in Neural
-    Information Processing Systems (2017).
-
-[2] Germain M, Gregor K, Murray I, Larochelle H. Made: Masked autoencoder for distribution estimation. In International
-    Conference on Machine Learning (2015).
-
-[3] Durkan C, Bekasov A, Murray I, Papamakarios G. Neural spline flows. Advances in Neural Information Processing
-    Systems (2019).
-
-[4] Rezende DJ, Papamakarios G, Racaniere S, Albergo M, Kanwar G, Shanahan P, Cranmer K. Normalizing flows on tori and
-    spheres. In International Conference on Machine Learning (2020).
-
-[5] Jaini P, Selby KA, Yu Y. Sum-of-squares polynomial flow. In International Conference on Machine Learning (2019).
-
-[6] Chen RT, Rubanova Y, Bettencourt J, Duvenaud DK. Neural ordinary differential equations. Advances in Neural
-    Information Processing Systems (2018).
-
-[7] Garcia Satorras V, Hoogeboom E, Fuchs F, Posner I, Welling M. E(n) Equivariant Normalizing Flows. Advances in
-    Neural Information Processing Systems. (2021).
+1. Papamakarios G, Pavlakou T, Murray I. Masked autoregressive flow for density estimation. In [Advances in Neural
+   Information Processing Systems](https://doi.org/10.48550/arXiv.1705.07057) (2017).
+2. Germain M, Gregor K, Murray I, Larochelle H. Made: Masked autoencoder for distribution estimation. In [International
+   Conference on Machine Learning](https://doi.org/10.48550/arXiv.1502.03509) (2015).
+3. Durkan C, Bekasov A, Murray I, Papamakarios G. Neural spline flows. Advances in [Neural Information Processing
+   Systems](https://doi.org/10.48550/arXiv.1906.04032) (2019).
+4. Rezende DJ, Papamakarios G, Racaniere S, Albergo M, Kanwar G, Shanahan P, Cranmer K. Normalizing flows on tori and
+   spheres. In [International Conference on Machine Learning](https://doi.org/10.48550/arXiv.2002.02428) (2020).
+5. Jaini P, Selby KA, Yu Y. Sum-of-squares polynomial flow. In [International Conference on Machine Learning](https://doi.org/10.48550/arXiv.1905.02325) (2019).
+6. Chen RT, Rubanova Y, Bettencourt J, Duvenaud DK. Neural ordinary differential equations. Advances in [Neural
+   Information Processing Systems](https://doi.org/10.48550/arXiv.1806.07366) (2018).
+7. Garcia Satorras V, Hoogeboom E, Fuchs F, Posner I, Welling M. E(n) Equivariant Normalizing Flows. Advances in
+   [Neural Information Processing Systems](https://doi.org/10.48550/arXiv.2105.09016). (2021).
 
 
 ### Acknowledgements
