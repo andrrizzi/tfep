@@ -6,6 +6,8 @@ TFEP
 
 A Python utility library to perform (multimap) targeted free energy perturbation.
 
+### Features
+
 The library includes implementations for the following flows:
 
 - Masked Autoregressive Flows [1] with a ready-to-use MADE [2] conditioner and the following transformers:
@@ -76,15 +78,21 @@ Andrea Rizzi, Paolo Carloni, Michele Parrinello. *Multimap targeted free energy 
 
 [1] Papamakarios G, Pavlakou T, Murray I. Masked autoregressive flow for density estimation. In Advances in Neural
     Information Processing Systems (2017).
+
 [2] Germain M, Gregor K, Murray I, Larochelle H. Made: Masked autoencoder for distribution estimation. In International
     Conference on Machine Learning (2015).
+
 [3] Durkan C, Bekasov A, Murray I, Papamakarios G. Neural spline flows. Advances in Neural Information Processing
     Systems (2019).
+
 [4] Rezende DJ, Papamakarios G, Racaniere S, Albergo M, Kanwar G, Shanahan P, Cranmer K. Normalizing flows on tori and
     spheres. In International Conference on Machine Learning (2020).
+
 [5] Jaini P, Selby KA, Yu Y. Sum-of-squares polynomial flow. In International Conference on Machine Learning (2019).
+
 [6] Chen RT, Rubanova Y, Bettencourt J, Duvenaud DK. Neural ordinary differential equations. Advances in Neural
     Information Processing Systems (2018).
+
 [7] Garcia Satorras V, Hoogeboom E, Fuchs F, Posner I, Welling M. E(n) Equivariant Normalizing Flows. Advances in
     Neural Information Processing Systems. (2021).
 
