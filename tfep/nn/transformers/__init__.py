@@ -10,7 +10,9 @@ of the input plus the log determinant of the Jacobian.
 """
 
 from tfep.nn.transformers.affine import (
-    AffineTransformer, affine_transformer, affine_transformer_inverse)
+    AffineTransformer, affine_transformer, affine_transformer_inverse,
+    VolumePreservingShiftTransformer, volume_preserving_shift_transformer, volume_preserving_shift_transformer_inverse,
+)
 from tfep.nn.transformers.mobius import (
     MobiusTransformer, MobiusTransformerFunc, mobius_transformer, unit_cube_to_inscribed_sphere)
 from tfep.nn.transformers.sos import (

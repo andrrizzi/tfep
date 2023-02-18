@@ -20,9 +20,10 @@ import torch
 import torch.autograd
 
 from tfep.nn.transformers.mobius import mobius_transformer, unit_cube_to_inscribed_sphere
-from ..utils import create_random_input, reference_log_det_J
+from ..utils import create_random_input
 
 from tfep.nn.utils import generate_block_sizes
+from tfep.utils.math import batch_autograd_log_abs_det_J
 
 
 # =============================================================================
@@ -195,8 +196,8 @@ def test_mobius_transformer_reference(batch_size, n_features, blocks):
     assert np.allclose(ref_x_norm, ref_y_norm)
 
     # Compute the reference log_det_J also with autograd and numpy.
-    ref_log_det_J2 = reference_log_det_J(x, torch_y)
-    assert np.allclose(ref_log_det_J2, torch_log_det_J.detach().numpy())
+    ref_log_det_J2 = batch_autograd_log_abs_det_J(x, torch_y)
+    assert torch.allclose(ref_log_det_J2, torch_log_det_J)
 
 
 @pytest.mark.parametrize('batch_size', [2, 5])

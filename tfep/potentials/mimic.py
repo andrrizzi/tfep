@@ -12,6 +12,15 @@ The code interfaces with the molecular dynamics software through the command lin
 
 """
 
+import warnings
+warnings.warn('The potential interface for MiMiC is still experimental and under heavy development.')
+
+# TODO: THE FORCES OF THE QM REGION ATOMS ARE OK BUT CPMD CHANGES THE ORDER OF THE OTHER ATOMS AS WELL WHICH NEED RE-SORTING
+# TODO: UNDERSTAND KINETIC ENERGY PRINTING IN WAVEFUNCTION OPTIMIZATION
+# TODO: THE PV CONTRIBUTION IS NOT COMPUTED! THE RETURNED ENERGY IS NOT THE REDUCED POTENTIAL.
+# TODO: USE logging MODULE INSTEAD OF print()
+# TODO: CHANGE CELL -> 3 BY 3 DIMENSIONS
+
 
 # =============================================================================
 # GLOBAL IMPORTS
@@ -19,16 +28,19 @@ The code interfaces with the molecular dynamics software through the command lin
 
 import copy
 import functools
+import glob
 import os
+import re
 import shutil
+import subprocess
 
 import numpy as np
 import pint
 import torch
 
 from tfep.utils.cli import Launcher, CLITool, KeyValueOption
-from tfep.utils.geometry import flattened_to_standard
-from tfep.utils.misc import temporary_cd, energies_array_to_tensor, forces_array_to_tensor
+from tfep.utils.misc import (
+    flattened_to_atom, energies_array_to_tensor, forces_array_to_tensor, temporary_cd)
 from tfep.utils.parallel import SerialStrategy
 
 
@@ -245,6 +257,28 @@ class PotentialMiMiC(torch.nn.Module):
         automatically determined based on ``working_dir_path``).
     grompp_launcher_kwargs : Dict, optional
         Other kwargs for ``grompp_launcher``.
+    n_attempts : int, optional
+        Number of times MiMiC is restarted before raising a ``RuntimeError`` when
+        MiMiC crashes without creating an error report in the ``LocalError-X-X-X.log``
+        file.
+    on_unconverged : str, optional
+        Specifies how to handle the case in which the self-consistent calculation
+        did not converge. It can have the following values:
+        - ``'raise'``: Raises a ``RuntimeError`` and halts the execution.
+        - ``'success'``: Treat the calculation as converged and return the latest
+                         energy and force values.
+        - ``'nan'``: Return ``float('nan')`` energy and zero forces.
+
+        If this is set to anything other than ``'success'``, the ``stdout``
+        keyword argument must be included in ``launcher_kwargs`` and set to
+        ``subprocess.PIPE`` so that Python can intercept and parse the output
+        to detect the convergence warning message.
+    on_local_error : str, optional
+        Specifies how to handle the case in which the calculation ends with an
+        error and CPMD creates an error report in the ``LocalError-X-X-X.log``
+        file. It can have the following values:
+        - ``'raise'``: Raises a ``RuntimeError`` and halts the execution.
+        - ``'nan'``: Return ``float('nan')`` energy and zero forces.
 
     See Also
     --------
@@ -266,12 +300,15 @@ class PotentialMiMiC(torch.nn.Module):
             cleanup_working_dir=False,
             parallelization_strategy=None,
             launcher_kwargs=None,
-            grompp_launcher_kwargs=None
+            grompp_launcher_kwargs=None,
+            n_attempts=1,
+            on_unconverged='raise',
+            on_local_error='raise',
     ):
         super().__init__()
 
         self.cpmd_cmd = cpmd_cmd
-        self.mdrun_cmd = mdrun_cmd,
+        self.mdrun_cmd = mdrun_cmd
         self.grompp_cmd = grompp_cmd
         self.launcher = launcher
         self.grompp_launcher = grompp_launcher
@@ -283,8 +320,11 @@ class PotentialMiMiC(torch.nn.Module):
         self.parallelization_strategy = parallelization_strategy
         self.launcher_kwargs = launcher_kwargs
         self.grompp_launcher_kwargs = grompp_launcher_kwargs
+        self.n_attempts = n_attempts
+        self.on_unconverged = on_unconverged
+        self.on_local_error = on_local_error
 
-    def forward(self, batch_positions, batch_box_vectors):
+    def forward(self, batch_positions, batch_cell):
         """Compute a differential potential energy for a batch of configurations.
 
         Parameters
@@ -298,7 +338,7 @@ class PotentialMiMiC(torch.nn.Module):
             input files, not the one used internally by CPMD (which always puts the
             QM atoms first). The atom map used to match them is based on the CPMD
             input script option ``&MIMIC.OVERLAPS``.
-        batch_box_vectors : torch.Tensor, optional
+        batch_cell : torch.Tensor, optional
             An tensor of box vectors with shape ``(batch_size, 3)`` defining the
             orthorhombic box side lengths (the only one currently supported in MiMiC)
             in units of ``self.positions_units`` (or MiMiC units is ``positions_units``
@@ -308,14 +348,14 @@ class PotentialMiMiC(torch.nn.Module):
         -------
         potential_energy : torch.Tensor
             ``potential_energy[i]`` is the potential energy of configuration
-            ``batch_positions[i]`` and ``batch_box_vectors[i]`` in units of
+            ``batch_positions[i]`` and ``batch_cell[i]`` in units of
             ``self.energy_unit`` (or MiMiC units if ``energy_unit`` is not
             provided).
 
         """
         return potential_energy_mimic(
             batch_positions=batch_positions,
-            batch_box_vectors=batch_box_vectors,
+            batch_cell=batch_cell,
             cpmd_cmd=self.cpmd_cmd,
             mdrun_cmd=self.mdrun_cmd,
             grompp_cmd=self.grompp_cmd,
@@ -328,10 +368,13 @@ class PotentialMiMiC(torch.nn.Module):
             cleanup_working_dir=self.cleanup_working_dir,
             parallelization_strategy=self.parallelization_strategy,
             launcher_kwargs=self.launcher_kwargs,
-            grompp_launcher_kwargs=self.grompp_launcher_kwargs
+            grompp_launcher_kwargs=self.grompp_launcher_kwargs,
+            n_attempts=self.n_attempts,
+            on_unconverged=self.on_unconverged,
+            on_local_error=self.on_local_error,
         )
 
-    def energy(self, batch_positions, batch_box_vectors):
+    def energy(self, batch_positions, batch_cell):
         """Compute a the potential energy of a batch of configurations.
 
         Parameters
@@ -346,7 +389,7 @@ class PotentialMiMiC(torch.nn.Module):
             input files, not the one used internally by CPMD (which always puts the
             QM atoms first). The atom map used to match them is based on the CPMD
             input script option ``&MIMIC.OVERLAPS``.
-        batch_box_vectors : pint.Quantity, optional
+        batch_cell : pint.Quantity, optional
             An array of box vectors with units and shape: ``(batch_size, 3)`` or
             ``(3,)`` defining the orthorhombic box side lengths (the only one currently
             supported in MiMiC). If no units are attached to the array, it is
@@ -357,18 +400,18 @@ class PotentialMiMiC(torch.nn.Module):
         -------
         potential_energies : pint.Quantity
             ``potential_energies[i]`` is the potential energy of configuration
-            ``batch_positions[i]`` and ``batch_box_vectors[i]``.
+            ``batch_positions[i]`` and ``batch_cell[i]``.
 
         """
         # Add units.
         batch_positions = self._ensure_positions_has_units(batch_positions)
-        batch_box_vectors = self._ensure_positions_has_units(batch_box_vectors)
+        batch_cell = self._ensure_positions_has_units(batch_cell)
         return _run_mimic(
             self.cpmd_cmd,
             self.mdrun_cmd,
             grompp_cmd=self.grompp_cmd,
             batch_positions=batch_positions,
-            batch_box_vectors=batch_box_vectors,
+            batch_cell=batch_cell,
             launcher=self.launcher,
             grompp_launcher=self.grompp_launcher,
             return_energy=True,
@@ -379,9 +422,12 @@ class PotentialMiMiC(torch.nn.Module):
             parallelization_strategy=self.parallelization_strategy,
             launcher_kwargs=self.launcher_kwargs,
             grompp_launcher_kwargs=self.grompp_launcher_kwargs,
+            n_attempts=self.n_attempts,
+            on_unconverged=self.on_unconverged,
+            on_local_error=self.on_local_error,
         )
 
-    def force(self, batch_positions, batch_box_vectors):
+    def force(self, batch_positions, batch_cell):
         """Compute the force for a batch of configurations.
 
         Parameters
@@ -396,7 +442,7 @@ class PotentialMiMiC(torch.nn.Module):
             input files, not the one used internally by CPMD (which always puts the
             QM atoms first). The atom map used to match them is based on the CPMD
             input script option ``&MIMIC.OVERLAPS``.
-        batch_box_vectors : pint.Quantity, optional
+        batch_cell : pint.Quantity, optional
             An array of box vectors with units and shape: ``(batch_size, 3)`` or
             ``(3,)`` defining the orthorhombic box side lengths (the only one currently
             supported in MiMiC). If no units are attached to the array, it is
@@ -407,18 +453,18 @@ class PotentialMiMiC(torch.nn.Module):
         -------
         forces : pint.Quantity
             ``forces[i]`` is the force of configuration ``batch_positions[i]``
-            and ``batch_box_vectors[i]``.
+            and ``batch_cell[i]``.
 
         """
         # Add units.
         batch_positions = self._ensure_positions_has_units(batch_positions)
-        batch_box_vectors = self._ensure_positions_has_units(batch_box_vectors)
+        batch_cell = self._ensure_positions_has_units(batch_cell)
         return _run_mimic(
             self.cpmd_cmd,
             self.mdrun_cmd,
             grompp_cmd=self.grompp_cmd,
             batch_positions=batch_positions,
-            batch_box_vectors=batch_box_vectors,
+            batch_cell=batch_cell,
             launcher=self.launcher,
             grompp_launcher=self.grompp_launcher,
             return_energy=False,
@@ -429,6 +475,9 @@ class PotentialMiMiC(torch.nn.Module):
             parallelization_strategy=self.parallelization_strategy,
             launcher_kwargs=self.launcher_kwargs,
             grompp_launcher_kwargs=self.grompp_launcher_kwargs,
+            n_attempts=self.n_attempts,
+            on_unconverged=self.on_unconverged,
+            on_local_error=self.on_local_error,
         )
 
     def _ensure_positions_has_units(self, batch_positions):
@@ -498,6 +547,15 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
     directory to safely support batch parallelization schemes through
     :class:``tfep.utils.parallel.ParallelizationStrategy`` objects.
 
+    Sometimes the communication between GROMACS and CPMD can fail causing a crash.
+    In this case, the MiMiC execution is attempted ``n_attempts`` times before
+    raising a ``RuntimeError``.
+
+    It is possible to handle in different ways the cases when the calculation
+    does not converge the wavefunction within the number of SCF steps specified
+    or when MiMiC terminates with an error, depending on whether the user wants
+    to halt the program or continue with a NaN potential energy value.
+
     Parameters
     ----------
     ctx : torch.autograd.function._ContextMethodMixin
@@ -510,7 +568,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
         input files, not the one used internally by CPMD (which always puts the
         QM atoms first). The atom map used to match them is based on the CPMD
         input script option ``&MIMIC.OVERLAPS``.
-    batch_box_vectors : pint.Quantity, optional
+    batch_cell : pint.Quantity, optional
         An tensor of box vectors with shape ``(batch_size, 3)`` defining the
         orthorhombic box side lengths (the only one currently supported in MiMiC).
     cpmd_cmd : tfep.potentials.mimic.Cpmd
@@ -567,6 +625,28 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
         automatically determined based on ``working_dir_path``).
     grompp_launcher_kwargs : Dict, optional
         Other kwargs for ``grompp_launcher``.
+    n_attempts : int, optional
+        Number of times MiMiC is restarted before raising a ``RuntimeError`` when
+        MiMiC crashes without creating an error report in the ``LocalError-X-X-X.log``
+        file.
+    on_unconverged : str, optional
+        Specifies how to handle the case in which the self-consistent calculation
+        did not converge. It can have the following values:
+        - ``'raise'``: Raises a ``RuntimeError`` and halts the execution.
+        - ``'success'``: Treat the calculation as converged and return the latest
+                         energy and force values.
+        - ``'nan'``: Return ``float('nan')`` energy and zero forces.
+
+        If this is set to anything other than ``'success'``, the ``stdout``
+        keyword argument must be included in ``launcher_kwargs`` and set to
+        ``subprocess.PIPE`` so that Python can intercept and parse the output
+        to detect the convergence warning message.
+    on_local_error : str, optional
+        Specifies how to handle the case in which the calculation ends with an
+        error and CPMD creates an error report in the ``LocalError-X-X-X.log``
+        file. It can have the following values:
+        - ``'raise'``: Raises a ``RuntimeError`` and halts the execution.
+        - ``'nan'``: Return ``float('nan')`` energy and zero forces.
 
     Returns
     -------
@@ -585,7 +665,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
     def forward(
             ctx,
             batch_positions,
-            batch_box_vectors,
+            batch_cell,
             cpmd_cmd,
             mdrun_cmd,
             grompp_cmd,
@@ -598,7 +678,10 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
             cleanup_working_dir=False,
             parallelization_strategy=None,
             launcher_kwargs=None,
-            grompp_launcher_kwargs=None
+            grompp_launcher_kwargs=None,
+            n_attempts=1,
+            on_unconverged='raise',
+            on_local_error='raise',
     ):
         """Compute the potential energy of the molecule with MiMiC."""
         # Check for unit registry.
@@ -614,14 +697,14 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
         if positions_unit is None:
             positions_unit = unit_registry.bohr
 
-        batch_positions_arr = flattened_to_standard(batch_positions.detach().numpy())
+        batch_positions_arr = flattened_to_atom(batch_positions.detach().numpy())
         batch_positions_arr *= positions_unit
 
-        if batch_box_vectors is None:
-            batch_box_vectors_arr = None
+        if batch_cell is None:
+            batch_cell_arr = None
         else:
-            batch_box_vectors_arr = batch_box_vectors.detach().numpy()
-            batch_box_vectors_arr *= positions_unit
+            batch_cell_arr = batch_cell.detach().numpy()
+            batch_cell_arr *= positions_unit
 
         # Determine whether we need forces.
         if precompute_gradient:
@@ -635,7 +718,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
             mdrun_cmd,
             grompp_cmd,
             batch_positions=batch_positions_arr,
-            batch_box_vectors=batch_box_vectors_arr,
+            batch_cell=batch_cell_arr,
             launcher=launcher,
             grompp_launcher=grompp_launcher,
             return_energy=True,
@@ -645,7 +728,10 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
             cleanup_working_dir=cleanup_working_dir,
             parallelization_strategy=parallelization_strategy,
             launcher_kwargs=launcher_kwargs,
-            grompp_launcher_kwargs=grompp_launcher_kwargs
+            grompp_launcher_kwargs=grompp_launcher_kwargs,
+            n_attempts=n_attempts,
+            on_unconverged=on_unconverged,
+            on_local_error=on_local_error,
         )
 
         if not precompute_gradient:
@@ -667,7 +753,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
         """Compute the gradient of the potential energy."""
         # We still need to return a None gradient for each
         # input of forward() beside batch_positions.
-        n_input_args = 15
+        n_input_args = 18
         grad_input = [None for _ in range(n_input_args)]
 
         # Compute gradient w.r.t. batch_positions.
@@ -687,7 +773,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
 
 def potential_energy_mimic(
         batch_positions,
-        batch_box_vectors,
+        batch_cell,
         cpmd_cmd,
         mdrun_cmd,
         grompp_cmd,
@@ -701,6 +787,9 @@ def potential_energy_mimic(
         parallelization_strategy=None,
         launcher_kwargs=None,
         grompp_launcher_kwargs=None,
+        n_attempts=1,
+        on_unconverged='raise',
+        on_local_error='raise',
 ):
     """PyTorch-differentiable QM/MM potential energy using MiMIC.
 
@@ -717,7 +806,7 @@ def potential_energy_mimic(
     # apply() does not accept keyword arguments.
     return PotentialEnergyMiMiCFunc.apply(
         batch_positions,
-        batch_box_vectors,
+        batch_cell,
         cpmd_cmd,
         mdrun_cmd,
         grompp_cmd,
@@ -731,6 +820,9 @@ def potential_energy_mimic(
         parallelization_strategy,
         launcher_kwargs,
         grompp_launcher_kwargs,
+        n_attempts,
+        on_unconverged,
+        on_local_error,
     )
 
 
@@ -743,7 +835,7 @@ def _run_mimic(
         mdrun_cmd,
         grompp_cmd=None,
         batch_positions=None,
-        batch_box_vectors=None,
+        batch_cell=None,
         launcher=None,
         grompp_launcher=None,
         return_energy=False,
@@ -754,6 +846,9 @@ def _run_mimic(
         parallelization_strategy=None,
         launcher_kwargs=None,
         grompp_launcher_kwargs=None,
+        n_attempts=1,
+        on_unconverged='raise',
+        on_local_error='raise',
 ):
     """Run MiMiC.
 
@@ -808,14 +903,15 @@ def _run_mimic(
         input files, not the one used internally by CPMD (which always puts the
         QM atoms first). The atom map used to match them is based on the CPMD
         input script option ``&MIMIC.OVERLAPS``.
-    batch_box_vectors : pint.Quantity, optional
+    batch_cell : pint.Quantity, optional
         An array of box vectors with units and shape: ``(batch_size, 3)`` or
         ``(3,)`` defining the orthorhombic box side lengths (the only one currently
         supported in MiMiC). If ``None``, the box vectors in the input files are
         evaluated.
-    launcher : tfep.utils.cli.Launcher, optional
+    launcher : tfep.utils.cli.Launcher or List[tfep.utils.cli.Launcher], optional
         The ``Launcher`` to use to run the ``cpmd_cmd`` and ``mdrun_cmd``. If
-        not passed, a new :class:`tfep.utils.cli.Launcher` is created.
+        a ``list``, it must have one launcher for each batch. If not passed, a
+        new instance of :class:`tfep.utils.cli.Launcher` is used.
     grompp_launcher : tfep.utils.cli.Launcher, optional
         The ``Launcher`` to use to run the ``grompp_cmd`` command. If not passed,
         a new :class:`tfep.utils.cli.Launcher` is created.
@@ -844,6 +940,28 @@ def _run_mimic(
         automatically determined based on ``working_dir_path``).
     grompp_launcher_kwargs : Dict, optional
         Other kwargs for ``grompp_launcher``.
+    n_attempts : int, optional
+        Number of times MiMiC is restarted before raising a ``RuntimeError`` when
+        MiMiC crashes without creating an error report in the ``LocalError-X-X-X.log``
+        file.
+    on_unconverged : str, optional
+        Specifies how to handle the case in which the self-consistent calculation
+        did not converge. It can have the following values:
+        - ``'raise'``: Raises a ``RuntimeError`` and halts the execution.
+        - ``'success'``: Treat the calculation as converged and return the latest
+                         energy and force values.
+        - ``'nan'``: Return ``float('nan')`` energy and zero forces.
+
+        If this is set to anything other than ``'success'``, the ``stdout``
+        keyword argument must be included in ``launcher_kwargs`` and set to
+        ``subprocess.PIPE`` so that Python can intercept and parse the output
+        to detect the convergence warning message.
+    on_local_error : str, optional
+        Specifies how to handle the case in which the calculation ends with an
+        error and CPMD creates an error report in the ``LocalError-X-X-X.log``
+        file. It can have the following values:
+        - ``'raise'``: Raises a ``RuntimeError`` and halts the execution.
+        - ``'nan'``: Return ``float('nan')`` energy and zero forces.
 
     Returns
     -------
@@ -881,25 +999,29 @@ def _run_mimic(
     is_batch = (batch_positions is not None) and (len(batch_positions.shape) >= 3)
     if not is_batch:
         batch_positions = [batch_positions]
-        batch_box_vectors = [batch_box_vectors]
-    elif batch_box_vectors is None:
-        # batch_box_vectors still needs to be in batch format.
-        batch_box_vectors = [batch_box_vectors] * batch_positions.shape[0]
+        batch_cell = [batch_cell]
+    elif batch_cell is None:
+        # batch_cell still needs to be in batch format.
+        batch_cell = [batch_cell] * batch_positions.shape[0]
 
-    # Make sure working_dir_path is in batch format.
+    # Make sure working_dir_path and launcher are in batch format.
     n_configurations = len(batch_positions)
     if working_dir_path is None or isinstance(working_dir_path, str):
         working_dir_path = [working_dir_path] * n_configurations
     else:
         working_dir_path = [os.path.realpath(p) for p in working_dir_path]
+    try:
+        iter(launcher)
+    except TypeError:
+        launcher = [launcher] * n_configurations
 
     # Run the command.
     task = functools.partial(
-        _run_mimic_task, cpmd_cmd, mdrun_cmd, grompp_cmd, launcher, grompp_launcher,
+        _run_mimic_task, cpmd_cmd, mdrun_cmd, grompp_cmd, grompp_launcher,
         return_energy, return_force, cleanup_working_dir, launcher_kwargs,
-        grompp_launcher_kwargs
+        grompp_launcher_kwargs, n_attempts, on_unconverged, on_local_error,
     )
-    distributed_args = zip(batch_positions, batch_box_vectors, working_dir_path)
+    distributed_args = zip(batch_positions, batch_cell, launcher, working_dir_path)
     returned_values = parallelization_strategy.run(task, distributed_args)
 
     # Convert from a list of shape (batch_size, 2) to (2, batch_size).
@@ -924,15 +1046,18 @@ def _run_mimic_task(
         cpmd_cmd,
         mdrun_cmd,
         grompp_cmd,
-        launcher,
         grompp_launcher,
         return_energy,
         return_force,
         cleanup_working_dir,
         launcher_kwargs,
         grompp_launcher_kwargs,
+        n_attempts,
+        on_unconverged,
+        on_local_error,
         positions,
         box_vectors,
+        launcher,
         working_dir_path,
 ):
     """This is the task passed to the ``ParallelizationStrategy`` to run MiMiC.
@@ -950,6 +1075,13 @@ def _run_mimic_task(
         launcher_kwargs = {}
     if grompp_launcher_kwargs is None:
         grompp_launcher_kwargs = {}
+
+    # If we need to check for unconverged self-consistent calculation,
+    # we need to capture the output so that we can parse it.
+    check_convergence = on_unconverged != 'success'
+    if check_convergence and (launcher_kwargs.get('stdout', None) != subprocess.PIPE):
+        raise ValueError(f"If on_unconverged={on_unconverged}, then 'launcher_kwargs'"
+                         " must include stdout=subprocess.PIPE")
 
     # If no working directory was specified, this is executed in the current one.
     if working_dir_path is None:
@@ -971,16 +1103,71 @@ def _run_mimic_task(
     # Run MiMiC.
     if launcher is None:
         launcher = Launcher()
-    launcher.run(cpmd_cmd, mdrun_cmd, cwd=working_dir_path, **launcher_kwargs)
 
-    # Read the energy/force from the trajectory files.
-    returned_values = []
-    if return_energy:
-        energy = _read_first_energy(working_dir_path)
-        returned_values.append(energy)
-    if return_force:
-        force = _read_first_force(working_dir_path, gromacs_to_cpmd_atom_map)
-        returned_values.append(force)
+    # Flag checking whether a LocalError-X-X-X.log file was produced.
+    has_local_error = False
+
+    # The communication mechanism is a bit fragile. If MiMIC crashes, it won't
+    # save the ENERGIES file and cause a FileNotFoundError. We attempt several
+    # times before giving up.
+    for attempt_idx in range(n_attempts):
+        # This is where we store energy and/or force.
+        returned_values = []
+
+        try:
+            result = launcher.run(cpmd_cmd, mdrun_cmd, cwd=working_dir_path, **launcher_kwargs)
+
+            # Check if it is unconverged.
+            if check_convergence:
+                is_unconverged = re.search(b'DENSITY NOT CONVERGED', result[0].stdout) is not None
+            else:
+                is_unconverged = False
+
+            # Read the energy/force from the trajectory files.
+            if not is_unconverged:
+                if return_energy:
+                    energy = _read_first_energy(working_dir_path)
+                    returned_values.append(energy)
+                if return_force:
+                    force = _read_first_force(working_dir_path, gromacs_to_cpmd_atom_map)
+                    returned_values.append(force)
+
+            # Stop the attempts if the calculation was successful or if is_unconverged is True.
+            break
+
+        except FileNotFoundError:
+            # Check for LocalError file.
+            local_error_file_paths = list(glob.glob(os.path.join(working_dir_path, 'LocalError-*.log')))
+            if len(local_error_file_paths) > 0:
+                print('Local error detected: Found these files:', local_error_file_paths, flush=True)
+                has_local_error = True
+                break
+
+            # The MiMiC calculation crashed before ENERGIES and/or FTRAJECTORY was written.
+            print('Attempt {}/{} failed'.format(attempt_idx+1, n_attempts), flush=True)
+            if attempt_idx == n_attempts-1:
+                raise RuntimeError('Cannot run MiMiC.')
+
+    # Handle errors.
+    if is_unconverged or has_local_error:
+        # Log the full stdout.
+        if result[0].stdout is not None:
+            print(result[0].stdout.decode('utf-8'), flush=True)
+
+        # Return nan if requested.
+        if ((is_unconverged and on_unconverged == 'nan') or
+                (has_local_error and on_local_error == 'nan')):
+            if return_energy:
+                returned_values.append(np.nan)
+            if return_force:
+                returned_values.append(np.zeros_like(positions))
+        elif is_unconverged and on_unconverged == 'raise':
+            raise RuntimeError('The self consistent calculation did not converge.')
+        elif has_local_error and on_local_error == 'raise':
+            raise RuntimeError('Detected LocalError-X-X-X.log file.')
+        else:
+            raise ValueError(("'on_unconverged' can be 'success', 'raise', or 'nan'"
+                              " while 'on_local_error' can be 'raise' or 'nan'."))
 
     # Clean up directory.
     if cleanup_working_dir:
@@ -1347,9 +1534,10 @@ def _read_first_energy(cpmd_dir_path):
     energies_traj_file_path = os.path.join(cpmd_dir_path, 'ENERGIES')
     with open(energies_traj_file_path, 'r') as f:
         for line in f:
-            line = line.split()
-            if int(line[0]) == 1:
-                return float(line[3])
+            step = int(line[:10])
+            if step == 1:
+                energy = float(line[31:49])
+                return energy
 
 
 def _read_first_force(cpmd_dir_path, gromacs_to_cpmd_atom_map):

@@ -51,9 +51,12 @@ class TrajectoryDataset(torch.utils.data.Dataset):
 
     - ``"positions"``: The coordinates of the system in MDAnalysis units as a
           ``torch.Tensor`` of shape ``(batch_size, n_atoms * 3)``.
-    - ``"index"`` (optional): The index in the dataset if ``return_batch_index``
-          is ``True``. This is useful to match the frame index when the dataset
-          is shuffled.
+    - ``"dataset_sample_index"`` (optional): The index in the dataset if
+          ``return_dataset_sample_index`` is ``True``. This is useful to match
+          the frame index when the dataset is shuffled.
+    - ``"trajectory_sample_index"`` (optional): The index in the trajectory if
+          ``return_trajectory_sample_index`` is ``True``. This is useful to match
+          the data point to the trajectory frame index.
     - ``"aux1"`` (optional): The name of eventual auxiliary information found
           in the ``universe.trajectory.aux`` dictionary.
     - ``"aux2"`` ...
@@ -63,16 +66,23 @@ class TrajectoryDataset(torch.utils.data.Dataset):
     universe : MDAnalysis.Universe
         An MDAnalysis ``Universe`` object encapsulating both the topology and
         the trajectory.
-    return_batch_index : bool, optional
-        If ``True``, the keyword ``"index"`` is included in the batch sample
-        when iterating over the dataset.
+    return_dataset_sample_index : bool, optional
+        If ``True``, the keyword ``"dataset_sample_index"`` is included in the
+        batch sample when iterating over the dataset.
+    return_trajectory_sample_index : bool, optional
+        If ``True``, the keyword ``"trajectory_sample_index"`` is included in
+        the batch sample when iterating over the dataset.
 
     Attributes
     ----------
     universe : MDAnalysis.Universe
         The MDAnalysis ``Universe`` object encapsulated by the dataset.
-    return_batch_index : bool, optional
-        Whether to return the keyword ``"index"`` in the batch sample.
+    return_dataset_sample_index : bool, optional
+        Whether to return the keyword ``"dataset_sample_index"`` in the batch
+        sample.
+    return_trajectory_sample_index : bool, optional
+        Whether to return the keyword ``"trajectory_sample_index"`` in the batch
+        sample.
 
     Examples
     --------
@@ -83,7 +93,7 @@ class TrajectoryDataset(torch.utils.data.Dataset):
 
     >>> import os
     >>> import MDAnalysis
-    >>> test_data_dir_path = os.path.join(os.path.dirname(__file__), 'tests', 'data')
+    >>> test_data_dir_path = os.path.join(os.path.dirname(__file__), '..', '..', 'tests', 'data')
     >>> pdb_file_path = os.path.join(test_data_dir_path, 'chloro-fluoromethane.pdb')
     >>> universe = MDAnalysis.Universe(pdb_file_path, dt=5)  # ps
 
@@ -137,15 +147,17 @@ class TrajectoryDataset(torch.utils.data.Dataset):
     def __init__(
             self,
             universe,
-            return_batch_index=False,
+            return_dataset_sample_index=True,
+            return_trajectory_sample_index=True,
     ):
         super().__init__()
 
         self.universe = universe
-        self.return_batch_index = return_batch_index
+        self.return_dataset_sample_index = return_dataset_sample_index
+        self.return_trajectory_sample_index = return_trajectory_sample_index
 
         # The indexes of the selected trajectory frames. None means all frames.
-        self._subsampled_frame_indices = None
+        self.trajectory_sample_indices = None
 
         # The MDAnalysis.core.groups.AtomGroup object encapsulating the atom
         # selection. None means all atoms.
@@ -159,8 +171,12 @@ class TrajectoryDataset(torch.utils.data.Dataset):
         return self._selected_atom_group.n_atoms
 
     def __copy__(self):
-        copied_dataset = self.__class__(self.universe.copy(), self.return_batch_index)
-        copied_dataset._subsampled_frame_indices = copy.copy(self._subsampled_frame_indices)
+        copied_dataset = self.__class__(
+            self.universe.copy(),
+            self.return_dataset_sample_index,
+            self.return_trajectory_sample_index,
+        )
+        copied_dataset.trajectory_sample_indices = copy.copy(self.trajectory_sample_indices)
         copied_dataset._selected_atom_group = copy.copy(self._selected_atom_group)
         return copied_dataset
 
@@ -174,7 +190,7 @@ class TrajectoryDataset(torch.utils.data.Dataset):
             between ``0`` and ``len(TrajectoryDataset)``. Note that the
             dataset might contain a smaller of frames than the full trajectory
             if a subset of frames was selected (for example, with
-            :func:`~dataset.TrajectoryDataset.subsample`).
+            :func:`~tfep.io.dataset.TrajectoryDataset.subsample`).
 
         Returns
         -------
@@ -185,29 +201,37 @@ class TrajectoryDataset(torch.utils.data.Dataset):
 
         """
         ts = self.get_timestep(idx)
+        sample = {}
 
         # MDAnalysis loads coordinates with np.float32 dtype. We convert
         # it to the default torch dtype and return them in flattened shape.
-        positions =  torch.tensor(np.ravel(ts.positions),
-                                  dtype=torch.get_default_dtype())
+        sample['positions'] =  torch.tensor(np.ravel(ts.positions),
+                                            dtype=torch.get_default_dtype())
+        if ts.dimensions is not None:
+            sample['dimensions'] = torch.tensor(ts.dimensions, dtype=torch.get_default_dtype())
 
         # Return the configurations and the auxiliary information. If an
         # atom group is selected, this may have lost the auxiliary information
         # so we go back to reading the main Trajectory Timestep for this.
-        sample = {'positions': positions}
         for aux_name, aux_info in self.universe.trajectory.ts.aux.items():
             sample[aux_name] = torch.tensor(aux_info)
 
-        # Return the index itself if requested.
-        if self.return_batch_index:
-            sample['index'] = idx
+        # Return the requested indices.
+        if self.return_dataset_sample_index:
+            sample['dataset_sample_index'] = idx
+        if self.return_trajectory_sample_index:
+            if self.trajectory_sample_indices is None:
+                # We have selected all frames. Trajectory and dataset indices are the same.
+                sample['trajectory_sample_index'] = idx
+            else:
+                sample['trajectory_sample_index'] = self.trajectory_sample_indices[idx]
         return sample
 
     def __len__(self):
         """Number of samples in the dataset (i.e., selected trajectory frames)."""
-        if self._subsampled_frame_indices is None:
+        if self.trajectory_sample_indices is None:
             return len(self.universe.trajectory)
-        return len(self._subsampled_frame_indices)
+        return len(self.trajectory_sample_indices)
 
     def get_timestep(self, idx):
         """Return the MDAnalysis ``Timestep`` object for the given index.
@@ -219,23 +243,23 @@ class TrajectoryDataset(torch.utils.data.Dataset):
             between ``0`` and ``len(TrajectoryDataset)``. Note that the
             dataset might contain a smaller of frames than the full trajectory
             if a subset of frames was selected (for example, with
-            :func:`~dataset.TrajectoryDataset.subsample`).
+            :func:`~tfep.io.dataset.TrajectoryDataset.subsample`).
 
         Returns
         -------
         ts : MDAnalysis.coordinates.base.Timestep
             The MDAnalysis ``Timestep`` object with coordinate information of
             the ``index``-th frame. If a subset of atoms was selected (for
-            example with :func:`~dataset.TrajectoryDataset.select_atoms`) only
-            the coordinates of those atoms are returned.
+            example with :func:`~tfep.io.dataset.TrajectoryDataset.select_atoms`)
+            only the coordinates of those atoms are returned.
 
         """
         # First check if index refers to a subset of selected trajectory frames
         # or to the full trajectory.
-        if self._subsampled_frame_indices is None:
+        if self.trajectory_sample_indices is None:
             ts = self.universe.trajectory[idx]
         else:
-            ts = self.universe.trajectory[self._subsampled_frame_indices[idx]]
+            ts = self.universe.trajectory[self.trajectory_sample_indices[idx]]
 
         # If a subset of atoms was selected. Return the Timestep only for those.
         if self._selected_atom_group is None:
@@ -308,30 +332,42 @@ class TrajectoryDataset(torch.utils.data.Dataset):
             ends at the last frame in the trajectory.
         step : int or pint.Quantity, optional
             The step used for subsampling specified either as a frame index or
-            or in simulation time. Strictly one between ``step`` and ``n_frames``
-            must be passed.
+            or in simulation time. Only one between ``step`` and ``n_frames``
+            may be passed.
         n_frames : int, optional
             The total number of frames to include in the dataset. If this is
             passed, the ``step`` will automatically be determined to satisfy this
             requirement. Note that in this case the obtained samples in the
             dataset might not be equally spaced if ``n_frames`` is not an exact
-            divisor of the number of frames. Strictly one between ``step`` and
-            ``n_frames`` must be passed.
+            divisor of the number of frames. Only one between ``step`` and
+            ``n_frames`` may be passed.
 
         """
+        # If all are None, there's no need to subsample.
+        if all([x is None for x in [start, stop, step, n_frames]]):
+            return
+
+        # Handle default arguments. step and n_frames are handled by get_subsampled_indices.
+        if start is None:
+            start = 0
+        if stop is None:
+            # Stop is the last index included in the subsampled trajectory.
+            stop = len(self.universe.trajectory)-1
+
         # Look for a compatible unit registry, if given.
         ureg = None
         for quantity in [start, stop, step]:
             if isinstance(quantity, pint.Quantity):
                 ureg = quantity._REGISTRY
+                break
         if ureg is None:
             ureg = pint.UnitRegistry()
 
         # All time quantities in MDAnalysis are in picoseconds.
         ps = ureg.picoseconds
-        self._subsampled_frame_indices = get_subsampled_indices(
+        self.trajectory_sample_indices = get_subsampled_indices(
             dt=self.universe.trajectory.dt * ps,
-            start=start, stop=stop, step=step, n_frames=n_frames,
+            stop=stop, start=start, step=step, n_frames=n_frames,
             t0=self.universe.trajectory[0].time * ps)
 
 
@@ -368,7 +404,7 @@ class TrajectorySubset:
 
     >>> import os
     >>> import MDAnalysis
-    >>> test_data_dir_path = os.path.join(os.path.dirname(__file__), 'tests', 'data')
+    >>> test_data_dir_path = os.path.join(os.path.dirname(__file__), '..', '..', 'tests', 'data')
     >>> pdb_file_path = os.path.join(test_data_dir_path, 'chloro-fluoromethane.pdb')
     >>> universe = MDAnalysis.Universe(pdb_file_path, dt=5)  # ps
     >>> trajectory_dataset = TrajectoryDataset(universe)
@@ -440,23 +476,38 @@ class TrajectorySubset:
         return self.dataset.universe
 
     @property
-    def return_batch_index(self):
-        """Whether to return the keyword ``"index"`` in the batch sample."""
-        return self.dataset.return_batch_index
+    def return_dataset_sample_index(self):
+        """Whether to return the keyword ``"dataset_sample_index"`` in the batch sample."""
+        return self.dataset.return_dataset_sample_index
+
+    @property
+    def return_trajectory_sample_index(self):
+        """Whether to return the keyword ``"trajectory_sample_index"`` in the batch sample."""
+        return self.dataset.return_trajectory_sample_index
 
     @property
     def n_atoms(self):
         """Number of selected atoms in the dataset."""
         return self.dataset.n_atoms
 
+    @property
+    def trajectory_sample_indices(self):
+        """Indices of the dataset semples in the trajectory (before subsampling).
+
+        ``trajectory_sample_indices[i]`` is the index of the ``i``-th sample in
+        ``self.dataset.trajectory``.
+        """
+        trajectory_sample_indices = self.dataset.trajectory_sample_indices
+        return trajectory_sample_indices[self.indices]
+
     def __getitem__(self, idx):
         """Implement the ``__getitem__()`` method required for a PyTorch dataset."""
         sample = self.dataset[self.indices[idx]]
 
-        # Update the index if return_batch_index is True, which is
-        # otherwise set to the Trajectory subsample index.
-        if self.return_batch_index:
-            sample['index'] = idx
+        # Update the index if return_dataset_sample_index is True.
+        # The trajectory index should already be correct.
+        if self.return_dataset_sample_index:
+            sample['dataset_sample_index'] = idx
 
         return sample
 
@@ -493,8 +544,8 @@ class TrajectorySubset:
 
 def get_subsampled_indices(
         dt,
-        start,
         stop,
+        start=0,
         step=None,
         n_frames=None,
         t0=0.0,
@@ -519,19 +570,18 @@ def get_subsampled_indices(
         starts from the first frame in the trajectory.
     stop : int or pint.Quantity
         The last frame to include in the dataset specified either as a
-        frame index or in simulation time. If not provided, the subsampling
-        ends at the last frame in the trajectory.
+        frame index or in simulation time.
     step : int or pint.Quantity, optional
         The step used for subsampling specified either as a frame index or
-        or in simulation time. Strictly one between ``step`` and ``n_frames``
-        must be passed.
+        or in simulation time. Only one between ``step`` and ``n_frames`` may
+        be passed.
     n_frames : int, optional
         The total number of frames to include in the dataset. If this is
         passed, the ``step`` will automatically be determined to satisfy this
         requirement. Note that in this case the obtained samples in the
         dataset might not be equally spaced if ``n_frames`` is not an exact
-        divisor of the number of frames. Strictly one between ``step`` and
-        ``n_frames`` must be passed.
+        divisor of the number of frames. Only one between ``step`` and ``n_frames``
+        may be passed.
     t0 : pint.Quantity, optional
         The time of the first frame in the trajectory to subsamples. This might
         not be 0.0 if, for example, the simulation was resumed.
@@ -543,11 +593,12 @@ def get_subsampled_indices(
 
     """
     # Check that only one between step and n_frames is given.
-    if (step is None) == (n_frames is None):
-        raise ValueError("One and only one between 'step' and 'n_frames' must be passed.")
+    if (step is not None) and (n_frames is not None):
+        raise ValueError("Only one between 'step' and 'n_frames' may be passed.")
 
     # Make time quantities unitless.
-    unit = 'ps'
+    ureg = dt._REGISTRY
+    unit = ureg.picoseconds
     dt = dt.to(unit).magnitude
     if t0 is None:
         t0 = 0.0
@@ -558,10 +609,18 @@ def get_subsampled_indices(
     times = [start, stop, step]
     for i, (t, label) in enumerate(zip(times, ['start', 'stop', 'step'])):
         if isinstance(t, pint.Quantity):
-            t = (t.to(unit).magnitude - t0) / dt
-            if not np.isclose(t, np.round(t)):
-                raise ValueError(f'The time step {dt} is not compatible with {label} time {t}')
-            times[i] = int(round(t))
+            if label == 'step':
+                # No need to subtract t0.
+                frame_idx = t.to(unit).magnitude / dt
+            else:
+                frame_idx = (t.to(unit).magnitude - t0) / dt
+
+            if not np.isclose(frame_idx, np.round(frame_idx)):
+                closest_times = dt * np.array([np.floor(frame_idx), np.ceil(frame_idx)]) * unit
+                raise ValueError(f'The time step {dt} is not compatible with {label} time {t}. '
+                                 f'The closest possible start times are {closest_times[0]} or '
+                                 f'{closest_times[1]}')
+            times[i] = int(round(frame_idx))
     start, stop, step = times
 
     # Check if the step must be instead determined by the number of frames.
@@ -576,5 +635,7 @@ def get_subsampled_indices(
         return np.linspace(start, stop, n_frames).astype(int)
 
     # Create the frames with a constant step. We include "stop" in the dataset.
+    if (step is None) and (n_frames is None):
+        step = 1
     return np.arange(start, stop+1, step, dtype=int)
 

@@ -176,19 +176,8 @@ class Launcher:
 
             # Now wait for the end and collect all outputs.
             results = []
-            for process in processes:
-                try:
-                    stdout, stderr = process.communicate(timeout=timeout)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    stdout, stderr = process.communicate()
-                    raise subprocess.TimeoutExpired(
-                        process.args, timeout, output=stdout, stderr=stderr)
-                except:
-                    process.kill()
-                    process.wait()
-                    raise
-                retcode = process.poll()
+            for process_idx, process in enumerate(processes):
+                stdout, stderr, retcode = self._handle_process(process, timeout, cwd[process_idx])
                 if check and retcode:
                     raise subprocess.CalledProcessError(
                         retcode, process.args, output=stdout, stderr=stderr)
@@ -199,6 +188,25 @@ class Launcher:
             return results[0]
         return results
 
+    def _handle_process(self, process, timeout, cwd):
+        """Handle the process and returns stdout, stderr and return code."""
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exception:
+            self._on_timeout_expired(process, exception)
+        except:
+            process.kill()
+            process.wait()
+            raise
+        retcode = process.poll()
+        return stdout, stderr, retcode
+
+    def _on_timeout_expired(self, process, exception):
+        """Terminate the process and raises a TimeoutExpired error."""
+        process.kill()
+        exception.stdout, exception.stderr = process.communicate()
+        raise exception
+
 
 # =============================================================================
 # LAUNCH WITH SLURM SRUN
@@ -207,10 +215,12 @@ class Launcher:
 class SRunTool(CLITool):
     """SLURM srun command line utility."""
     EXECUTABLE_PATH = 'srun'
+    time = KeyValueOption('--time')
     n_nodes = KeyValueOption('--nodes')
     n_tasks = KeyValueOption('--ntasks')
     n_tasks_per_node = KeyValueOption('--ntasks-per-node')
     n_cpus_per_task = KeyValueOption('--cpus-per-task')
+    relative_node_idx = KeyValueOption('--relative')
     multiprog_config_file_path = KeyValueOption('--multi-prog')
 
     def to_subprocess(self):
@@ -240,6 +250,9 @@ class SRunLauncher(Launcher):
 
     Parameters
     ----------
+    time : str or None
+        The maximum time before the job step is terminated as a string in the same
+        format used by SLURM (e.g., ``'1-00:06:00'``).
     n_nodes : int or List[int], optional
         The number of nodes to pass to ``srun``. If multiple commands are executed
         in parallel, it is possible to specify the number of nodes for each command
@@ -257,6 +270,11 @@ class SRunLauncher(Launcher):
         The number of cpus per task to pass to ``srun``. If multiple commands
         are executed in parallel, it is possible to specify the number of cpus
         per task for each command as a list.
+    relative_node_idx : int or List[int], optional
+        Run a job step relative the ``relative_node_idx``-th node (starting from
+        node 0) of the current allocation. If multiple commands are executed in
+        parallel, it is possible to specify one relative node for each command
+        as a list.
     multiprog : bool, optional
         If ``True`` multiple commands are run in parallel using the ``--multi-prog``
         argument. In this case, ``srun`` is invoked only once, and thus ``n_nodes``
@@ -267,6 +285,8 @@ class SRunLauncher(Launcher):
 
     Attributes
     ----------
+    time : str or None
+        The maximum time before the job step is terminated.
     n_nodes : int or List[int] or None
         The number of nodes to pass to ``srun`` for each command.
     n_tasks : int or List[int] or None
@@ -318,13 +338,15 @@ class SRunLauncher(Launcher):
 
     """
 
-    def __init__(self, n_nodes=None, n_tasks=None, n_tasks_per_node=None, n_cpus_per_task=None,
-                 multiprog=False, multiprog_config_file_path='srun-job.conf'):
+    def __init__(self, time=None, n_nodes=None, n_tasks=None, n_tasks_per_node=None, n_cpus_per_task=None,
+                 relative_node_idx=None, multiprog=False, multiprog_config_file_path='srun-job.conf'):
         super().__init__()
+        self.time = time
         self.n_nodes = n_nodes
         self.n_tasks = n_tasks
         self.n_tasks_per_node = n_tasks_per_node
         self.n_cpus_per_task = n_cpus_per_task
+        self.relative_node_idx = relative_node_idx
         self.multiprog = multiprog
         self.multiprog_config_file_path = multiprog_config_file_path
 
@@ -362,15 +384,15 @@ class SRunLauncher(Launcher):
         # is ignored.
         run_with_multiprog = n_commands > 1 and self.multiprog
         if run_with_multiprog:
-            if isinstance(self.n_nodes, list) or isinstance(self.n_cpus_per_task, list):
-                raise ValueError('With multiprog execution, "n_nodes" and '
-                                 '"n_cpus_per_task" must be integers.')
+            for attr_name in ['n_nodes', 'n_cpus_per_task', 'relative_node_idx']:
+                if isinstance(getattr(self, attr_name), list):
+                    raise ValueError(f'With multiprog execution, "{attr_name}" must be an integer.')
 
         # List options (one value for each command) must have the right length.
-        for attr_name in ['n_nodes', 'n_tasks', 'n_tasks_per_node', 'n_cpus_per_task']:
+        for attr_name in ['n_nodes', 'n_tasks', 'n_tasks_per_node', 'n_cpus_per_task', 'relative_node_idx']:
             attr_val = getattr(self, attr_name)
             if isinstance(attr_val, list) and len(attr_val) != n_commands:
-                raise ValueError(f'Passed {n_commands} commands but only '
+                raise ValueError(f'Passed {n_commands} commands but '
                                  f'{len(attr_val)} {attr_name}: {attr_val}')
 
         # Prepend srun to all commands.
@@ -383,7 +405,7 @@ class SRunLauncher(Launcher):
             with temporary_cd(kwargs.get('cwd', None)):
                 self._create_multiprog_config_file(commands)
 
-        super().run(*srun_commands, **kwargs)
+        return super().run(*srun_commands, **kwargs)
 
     def _create_srun_commands(self, commands):
         """Return the commands in list format with 'srun [options]' prepended."""
@@ -401,18 +423,22 @@ class SRunLauncher(Launcher):
         ``commands`` must already be a list of commands in list format (not CLITool).
         """
         # Convert arguments to list format.
-        n_nodes, n_tasks, n_tasks_per_node, n_cpus_per_task = _ensure_lists(
-            len(commands), [self.n_nodes, self.n_tasks, self.n_tasks_per_node, self.n_cpus_per_task])
+        n_nodes, n_tasks, n_tasks_per_node, n_cpus_per_task, relative_node_idx = _ensure_lists(
+            len(commands),
+            [self.n_nodes, self.n_tasks, self.n_tasks_per_node, self.n_cpus_per_task, self.relative_node_idx]
+        )
 
         # Prepend srun to all commands.
         srun_commands = []
         for cmd_idx, cmd in enumerate(commands):
             # Create srun execution
             srun = SRunTool(
+                time=self.time,
                 n_nodes=n_nodes[cmd_idx],
                 n_tasks=n_tasks[cmd_idx],
                 n_tasks_per_node=n_tasks_per_node[cmd_idx],
-                n_cpus_per_task=n_cpus_per_task[cmd_idx]
+                n_cpus_per_task=n_cpus_per_task[cmd_idx],
+                relative_node_idx=relative_node_idx[cmd_idx],
             )
 
             # Prepend the srun command.
@@ -429,10 +455,12 @@ class SRunLauncher(Launcher):
         # the sum of the number of tasks assigned to each command.
         # We also ignore n_tasks_per_node since it's overwritten by n_tasks.
         srun = SRunTool(
+            time=self.time,
             n_nodes=self.n_nodes,
             n_tasks=sum(n_tasks),
             n_cpus_per_task=self.n_cpus_per_task,
-            multiprog_config_file_path=self.multiprog_config_file_path
+            relative_node_idx=self.relative_node_idx,
+            multiprog_config_file_path=self.multiprog_config_file_path,
         )
         return [srun.to_subprocess()]
 

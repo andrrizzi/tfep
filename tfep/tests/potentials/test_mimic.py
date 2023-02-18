@@ -136,13 +136,13 @@ def mimic_srun_commands(parallel_strategy=False):
 
     # Load batch positions and box vectors.
     batch_positions = np.empty((batch_size, EXPECTED_N_ATOMS, 3), dtype=float)
-    batch_box_vectors = np.empty((batch_size, 3), dtype=float)
+    batch_cell = np.empty((batch_size, 3), dtype=float)
     for i, file_name in enumerate(['equilibrated.gro', 'mimic.pdb']):
         universe = MDAnalysis.Universe(os.path.join(MIMIC_INPUT_DIR_PATH, file_name))
         batch_positions[i] = universe.atoms.positions
-        batch_box_vectors[i] = universe.dimensions[:3]
+        batch_cell[i] = universe.dimensions[:3]
     batch_positions = batch_positions * _UREG.angstrom
-    batch_box_vectors = batch_box_vectors * _UREG.angstrom
+    batch_cell = batch_cell * _UREG.angstrom
 
     # Read SLURM job configuration.
     if use_dummy_launcher:
@@ -191,7 +191,7 @@ def mimic_srun_commands(parallel_strategy=False):
         n_max_warnings=1,
     )
 
-    return cpmd, mdrun, grompp, srun_launcher, grompp_launcher, batch_positions, batch_box_vectors
+    return cpmd, mdrun, grompp, srun_launcher, grompp_launcher, batch_positions, batch_cell
 
 
 # =============================================================================
@@ -289,7 +289,7 @@ def test_prepare_mdrun_command(template_structure_file_name):
     """
     import subprocess
 
-    _, mdrun_cmd, grompp_cmd, _, _, batch_positions, batch_box_vectors = mimic_srun_commands()
+    _, mdrun_cmd, grompp_cmd, _, _, batch_positions, batch_cell = mimic_srun_commands()
 
     with tempfile.TemporaryDirectory() as tmp_dir_path:
         # Fix template.
@@ -299,7 +299,7 @@ def test_prepare_mdrun_command(template_structure_file_name):
         # Run the tested function
         new_mdrun_cmd = _prepare_mdrun_command(
             mdrun_cmd, grompp_cmd, working_dir_path=tmp_dir_path,
-            positions=batch_positions[0], box_vectors=batch_box_vectors[0],
+            positions=batch_positions[0], box_vectors=batch_cell[0],
         )
 
         # Check that the new mdrun was copied to not modify the original cmd.
@@ -343,9 +343,10 @@ def test_prepare_mdrun_command(template_structure_file_name):
 
         # The positions and box vectors should be identical.
         assert np.allclose(out_positions, batch_positions[0].to('nm').magnitude)
-        assert np.allclose(np.diagonal(out_box_vectors), batch_box_vectors[0].to('nm').magnitude)
+        assert np.allclose(np.diagonal(out_box_vectors), batch_cell[0].to('nm').magnitude)
 
 
+@pytest.mark.skipif(shutil.which(CPMD_EXECUTABLE) is None, reason='requires MiMiC to be installed')
 @pytest.mark.parametrize('config', [
     (None, False),
     (1, False),
@@ -360,20 +361,17 @@ def test_run_mimic(config):
     """
     batch_size, parallel = config
     (cpmd_cmd, mdrun_cmd, grompp_cmd, launcher, grompp_launcher,
-     batch_positions, batch_box_vectors) = mimic_srun_commands(parallel)
+     batch_positions, batch_cell) = mimic_srun_commands(parallel)
 
     with tempfile.TemporaryDirectory() as tmp_dir_path:
-        # TODO: THIS MUST BE DE-COMMENTED ON JURECA
-        # tmp_dir_path = os.path.realpath('tmp')
-        # os.makedirs(tmp_dir_path)
 
         # Configure batch positions, box vectors, and working directories.
         if batch_size is None:
-            batch_positions, batch_box_vectors = None, None
+            batch_positions, batch_cell = None, None
             working_dir_path = os.path.join(tmp_dir_path, 'conf0')
         elif batch_size == 1:
             batch_positions = batch_positions[0]
-            batch_box_vectors = batch_box_vectors[0]
+            batch_cell = batch_cell[0]
             working_dir_path = os.path.join(tmp_dir_path, 'conf0')
         else:
             working_dir_path = [os.path.join(tmp_dir_path, 'conf'+str(i)) for i in range(batch_size)]
@@ -397,11 +395,12 @@ def test_run_mimic(config):
             # Run tested function.
             energies, forces = _run_mimic(
                 cpmd_cmd, mdrun_cmd, grompp_cmd,
-                batch_positions=batch_positions, batch_box_vectors=batch_box_vectors,
+                batch_positions=batch_positions, batch_cell=batch_cell,
                 launcher=launcher, grompp_launcher=grompp_launcher,
                 return_energy=True, return_force=True,
                 working_dir_path=working_dir_path, cleanup_working_dir=True,
                 parallelization_strategy=parallelization_strategy,
+                on_unconverged='success',
             )
         finally:
             if pool is not None:
@@ -456,7 +455,7 @@ def test_potential_energy_mimic_gradcheck():
     n_mapped_atoms = 2
 
     (cpmd_cmd, mdrun_cmd, grompp_cmd, launcher, grompp_launcher,
-     batch_positions, batch_box_vectors) = mimic_srun_commands(parallel_strategy=True)
+     batch_positions, batch_cell) = mimic_srun_commands(parallel_strategy=True)
     batch_size, n_atoms, _ = batch_positions.shape
     positions_unit = _UREG.nanometer
     energy_unit = _UREG.kJ / _UREG.mol
@@ -466,9 +465,6 @@ def test_potential_energy_mimic_gradcheck():
         parallelization_strategy = ProcessPoolStrategy(p)
 
         with tempfile.TemporaryDirectory() as tmp_dir_path:
-            # TODO: THIS MUST BE DE-COMMENTED ON JURECA
-            # tmp_dir_path = os.path.realpath('tmp')
-            # os.makedirs(tmp_dir_path)
 
             # Run a first calculation to create a restart file to speedup gradcheck.
             restart_dir_paths = [os.path.join(tmp_dir_path, 'restart'+str(i)) for i in range(batch_size)]
@@ -477,11 +473,12 @@ def test_potential_energy_mimic_gradcheck():
 
             _run_mimic(
                 cpmd_cmd, mdrun_cmd, grompp_cmd,
-                batch_positions=batch_positions, batch_box_vectors=batch_box_vectors,
+                batch_positions=batch_positions, batch_cell=batch_cell,
                 launcher=launcher, grompp_launcher=grompp_launcher,
                 return_energy=False, return_force=False,
                 working_dir_path=restart_dir_paths, cleanup_working_dir=False,
                 parallelization_strategy=parallelization_strategy,
+                on_unconverged='success',
             )
 
             # Create a template CPMD input file with the RESTART directive.
@@ -504,7 +501,7 @@ def test_potential_energy_mimic_gradcheck():
             batch_positions = np.reshape(batch_positions.to(positions_unit).magnitude,
                                          (batch_size, n_atoms*3))
             batch_positions = torch.tensor(batch_positions, requires_grad=False, dtype=torch.double)
-            batch_box_vectors = torch.tensor(batch_box_vectors.to(positions_unit).magnitude,
+            batch_cell = torch.tensor(batch_cell.to(positions_unit).magnitude,
                                              requires_grad=False, dtype=torch.double)
 
             # Run gradcheck only on a subset of the DOFs.
@@ -515,7 +512,7 @@ def test_potential_energy_mimic_gradcheck():
             torch.autograd.gradcheck(
                 func=func,
                 inputs=[batch_positions,
-                        batch_box_vectors,
+                        batch_cell,
                         cpmd_cmd,
                         mdrun_cmd,
                         grompp_cmd,
@@ -529,6 +526,9 @@ def test_potential_energy_mimic_gradcheck():
                         parallelization_strategy,
                         None,  # launcher_kwargs
                         None,  # grompp_launcher_kwargs
+                        1,  # n_attempts
+                        'success',  # on_unconverged
+                        'raise',  # on_local_error
                         ],
                 atol=0.5
             )

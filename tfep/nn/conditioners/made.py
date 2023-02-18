@@ -17,13 +17,42 @@ Masked Autoregressive layer for Density Estimation (MADE) module for PyTorch.
 import numpy as np
 import torch
 
-from tfep.nn.modules import masked
+from tfep.nn import masked
 from tfep.nn.utils import generate_block_sizes
 
 
 # =============================================================================
 # LAYERS
 # =============================================================================
+
+def degrees_in_from_str(degrees_in, n_blocks):
+    """Helper function to create an array degrees_in from string representation.
+
+    Parameters
+    ----------
+    degrees_in : str or numpy.ndarray
+        Either ``'input'`` or ``'reversed'``, which assigns a increasing/decreasing
+        degree to the input nodes. If an array, this is returned as it is.
+    n_blocks : int
+        The number of blocks in the input. ``degrees_in`` is created to assign
+        all degrees from 0 to ``n_blocks-1``.
+
+    Returns
+    -------
+    degrees_in : numpy.ndarray
+        Return the input degrees for each block.
+
+    """
+    if isinstance(degrees_in, str):
+        if degrees_in == 'input':
+            degrees_in = list(range(n_blocks))
+        elif degrees_in == 'reversed':
+            degrees_in = list(range(n_blocks-1, -1, -1))
+        else:
+            raise ValueError("Accepted string values for 'degrees_in' "
+                             "are 'input' and 'reversed'.")
+    return degrees_in
+
 
 class MADE(torch.nn.Module):
     """
@@ -96,6 +125,13 @@ class MADE(torch.nn.Module):
         a round-robin fashion. If not given, they are assigned in the
         same order used for the input nodes. This must be at least as
         large as the dimension of the smallest hidden layer.
+    degrees_per_out : numpy.ndarray, optional
+        The degrees of the output nodes for each ``out_per_dimension``. Note
+        that this can be different from ``degrees_in``. For example, if
+        ``degrees_per_out=[1, 2, 0]`` and ``out_per_dimension=2`` will result
+        in an output of dimension 6 using a scrambled order of degrees even if
+        ``degrees_in=[0, 0, 1, 2]``. By default this is set equal to
+        ``self.degrees_in``, which automatically accounts for block sizes.
     weight_norm : bool, optional
         If True, weight normalization is applied to the masked linear
         modules.
@@ -133,6 +169,7 @@ class MADE(torch.nn.Module):
         conditioning_indices=None,
         degrees_in='input',
         degrees_hidden_motif=None,
+        degrees_per_out=None,
         weight_norm=False,
         blocks=1,
         shorten_last_block=False
@@ -163,6 +200,12 @@ class MADE(torch.nn.Module):
         conditioning_indices_set = set(conditioning_indices)
         mapped_indices = [i for i in range(dimension_in) if i not in conditioning_indices_set]
 
+        # Verify output layer configuration.
+        if degrees_per_out is None:
+            degrees_per_out = self.degrees_in[mapped_indices]
+        else:
+            self._check_degrees(degrees_per_out, check_len=False, name='degrees_per_out')
+
         # Create a sequence of MaskedLinear + nonlinearity layers.
         layers = []
         degrees_previous = self.degrees_in
@@ -172,7 +215,7 @@ class MADE(torch.nn.Module):
             # Determine the degrees of the layer's nodes.
             if is_output_layer:
                 # The output layer doesn't have the conditioning features.
-                degrees_current = np.tile(self.degrees_in[mapped_indices], out_per_dimension)
+                degrees_current = np.tile(degrees_per_out, out_per_dimension)
             else:
                 n_round_robin, n_remaining = divmod(dimensions_hidden[layer_idx], len(self.degrees_hidden_motif))
                 if n_round_robin == 0:
@@ -186,7 +229,10 @@ class MADE(torch.nn.Module):
                 if n_remaining != 0:
                     degrees_current = np.concatenate([degrees_current, self.degrees_hidden_motif[:n_remaining]])
 
-            mask = self.create_mask(degrees_previous, degrees_current, is_output_layer)
+            # We transpose the mask from shape (in, out) to (out, in) because
+            # the mask must have the same shape of the weights in MaskedLinear.
+            mask = masked.create_autoregressive_mask(degrees_previous, degrees_current,
+                                                     strictly_less=is_output_layer, transpose=True)
 
             # Add the linear layer with or without weight normalization.
             masked_linear = masked.MaskedLinear(
@@ -215,7 +261,7 @@ class MADE(torch.nn.Module):
 
     @property
     def dimension_out(self):
-        "int: Dimension of the output vector (excluding the conditioning dimentions)."
+        "int: Dimension of the output vector (excluding the conditioning dimensions)."
         return self.layers[-1].out_features
 
     @property
@@ -264,51 +310,6 @@ class MADE(torch.nn.Module):
 
     def forward(self, x):
         return self.layers(x)
-
-    @staticmethod
-    def create_mask(degrees_previous, degrees_next, is_output_layer, dtype=None):
-        """Create a mask following the MADE prescription for the current layer.
-
-        ``mask[i][j]`` is 1 if the j-th input is connected to th i-th output.
-        The output nodes of the output layers are connected to input nodes with
-        a strictly smaller degree. In all other layers, the output nodes are
-        connected to inputs with degree equal or smaller.
-
-        Parameters
-        ----------
-        degrees_previous : numpy.ndarray[int]
-            degrees_previous[k] is the integer degree assigned to the
-            k-th unit of the previous hidden layer (i.e. in the MADE
-            paper :math:`m^{l-1}(k)`).
-        degrees_next : numpy.ndarray[int]
-            degrees_next[k] is the integer degree assigned to the
-            k-th unit of the next hidden layer (i.e. in the MADE
-            paper :math:`m^l(k)`).
-        is_output_layer : bool
-            ``True`` if the current layer is the output layer of the
-            MADE module, ``False`` otherwise.
-        dtype : torch.dtype, optional
-            The data type of the returned mask.
-
-        Returns
-        -------
-        mask : torch.Tensor
-            The mask of shape ``(len(degrees_next), len(degrees_previous))``
-            for the weight matrix in the current layer (i.e., in the
-            MADE paper :math:`W^l`.
-
-        """
-        # If this is the last layer, the inequality is strict
-        # (see Eq. 13 in the MADE paper).
-        if is_output_layer:
-            mask = degrees_next[:, None] > degrees_previous[None, :]
-        else:
-            mask = degrees_next[:, None] >= degrees_previous[None, :]
-
-        # Convert to tensor of default type before returning.
-        if dtype is None:
-            dtype = torch.get_default_dtype()
-        return torch.tensor(mask, dtype=dtype)
 
     @staticmethod
     def _get_dimensions(
@@ -362,6 +363,21 @@ class MADE(torch.nn.Module):
 
         return len(dimensions_hidden), dimensions_hidden, expanded_blocks
 
+    def _check_degrees(self, degrees, check_len, name):
+        """Check that degrees_in/degrees_per_out passed as arrays are configured correctly."""
+        n_blocks = len(self.blocks)
+
+        err_msg = (" When 'blocks' is not explicitly passed. The number of "
+                   "blocks corresponds to the number of non-conditioning "
+                   "dimensions (dimension_in - len(conditioning_indices))")
+        if len(degrees) != n_blocks:
+            raise ValueError('len('+name+') must be equal to the number '
+                             'of blocks.' + err_msg)
+        if set(degrees) != set(range(n_blocks)):
+            raise ValueError(name + ' must contain all degrees between '
+                             '0 and the number of blocks minus 1.' + err_msg)
+
+
     def _assign_degrees_in(self, dimension_in, conditioning_indices, degrees_in):
         """Assign the degrees of all input nodes.
 
@@ -376,28 +392,11 @@ class MADE(torch.nn.Module):
         # Shortcut for the number of (non-conditioning) blocks.
         n_blocks = len(self.blocks)
 
-        # If degrees need to be assigned in the input/reversed order, we
-        # create a general degrees_in list of degrees for each blocks
-        # so that we treat it with the general case.
-        if isinstance(degrees_in, str):
-            if degrees_in == 'input':
-                degrees_in = list(range(n_blocks))
-            elif degrees_in == 'reversed':
-                degrees_in = list(range(n_blocks-1, -1, -1))
-            else:
-                raise ValueError("Accepted string values for 'degrees_in' "
-                                 "are 'input' and 'reversed'.")
+        # Eventually convert "input/reversed" to an array of degrees.
+        degrees_in = degrees_in_from_str(degrees_in, n_blocks)
 
         # Verify that the parameters are consistent.
-        err_msg = (" When 'blocks' is not explicitly passed. The number of "
-                   "blocks corresponds to the number of non-conditioning "
-                   "dimensions (dimension_in - len(conditioning_indices))")
-        if len(degrees_in) != n_blocks:
-            raise ValueError('len(degrees_in) must be equal to the number '
-                             'of blocks.' + err_msg)
-        if set(degrees_in) != set(range(n_blocks)):
-            raise ValueError('degrees_in must contain all degrees between '
-                             '0 and the number of blocks minus 1.' + err_msg)
+        self._check_degrees(degrees_in, check_len=True, name='degrees_in')
 
         # Initialize the return value.
         assigned_degrees_in = np.empty(dimension_in)

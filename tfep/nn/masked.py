@@ -30,6 +30,85 @@ from torch.nn.utils.weight_norm import WeightNorm
 
 
 # =============================================================================
+# CREATE AUTOREGRESSIVE MASKS
+# =============================================================================
+
+def create_autoregressive_mask(
+        degrees_in,
+        degrees_out,
+        strictly_less=True,
+        transpose=False,
+        dtype=None
+):
+    """Create an autoregressive mask between input and output connections.
+
+    ``mask[i][j]`` is ``1`` if the i-th input is connected to th j-th output.
+    The output nodes are connected to input nodes with a strictly less degree
+    unless ``strictly_less`` is ``False``, in which case output nodes are connected
+    to all input nodes with less or equal degree.
+
+    This function can be used to implement masks as proposed in the MADE
+    paper [1] by setting ``strictly_less=False`` for hidden layers and ``True``
+    for the output layer (see Eq. 13 in the MADE paper).
+
+    Parameters
+    ----------
+    degrees_in : numpy.ndarray[int] or torch.Tensor[int]
+        Shape ``(n_input_nodes,)``. ``degrees_in[k]`` is the integer degree
+        assigned to the ``k``-th input node (i.e., :math:`m^{l-1}(k)` in the
+        MADE paper).
+    degrees_out : numpy.ndarray[int] or torch.Tensor[int]
+        Shape ``(n_output_nodes,)``. ``degrees_out[k]`` is the integer degree
+        assigned to the ``k``-th output node (i.e., :math:`m^l(k)` in the MADE
+        paper).
+    strictly_less : bool, optional
+        ``True`` if the output nodes must be connected to input node with a strictly
+        less degree. Otherwise, nodes are connected if they have a less or equal
+        degree.
+    transpose : bool, optional
+        If ``True``, the returned mask is transposed and input/output node indices
+        are swapped.
+    dtype : torch.dtype, optional
+        The data type of the returned mask. By default, the default PyTorch type
+        is used.
+
+    Returns
+    -------
+    mask : torch.Tensor
+        If ``transpose`` is ``False``, this has shape ``(n_input_nodes, n_output_nodes)``,
+        otherwise ``(n_output_nodes, n_input_nodes)``. In the first(latter) case, ``mask[i][j]``
+        is ``1`` if the i-th input(output) is connected to th j-th output(input).
+        This corresponds to the :math:`W^l`, in the MADE paper.
+
+    References
+    ----------
+    [1] Germain M, Gregor K, Murray I, Larochelle H. Made: Masked autoencoder
+        for distribution estimation. In International Conference on Machine
+        Learning 2015 Jun 1 (pp. 881-889).
+
+    """
+    if transpose:
+        if strictly_less:
+            mask = degrees_out[:, None] > degrees_in[None, :]
+        else:
+            mask = degrees_out[:, None] >= degrees_in[None, :]
+    else:
+        if strictly_less:
+            mask = degrees_out[None, :] > degrees_in[:, None]
+        else:
+            mask = degrees_out[None, :] >= degrees_in[:, None]
+
+    # Convert to tensor of default type before returning.
+    if not torch.is_tensor(mask):
+        mask = torch.from_numpy(mask)
+    if dtype is None:
+        dtype = torch.get_default_dtype()
+    if mask.dtype != dtype:
+        mask = mask.type(dtype)
+    return mask
+
+
+# =============================================================================
 # MASKED LINEAR MODULE API
 # =============================================================================
 

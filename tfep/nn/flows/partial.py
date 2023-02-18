@@ -22,12 +22,12 @@ import torch
 # =============================================================================
 
 class PartialFlow(torch.nn.Module):
-    """A sequence of normalizing flows.
+    """A normalizing flows mapping only a subset of the degrees of freedom.
 
-    The layer wraps a sequence of normalizing flows and passes to them only a
-    subset of the degrees of freedom (DOF) while maintaining the other constants.
-    Note that the constant DOFs are not even seen by the wrapped flow and so they
-    cannot condition the output.
+    The layer wraps a normalizing flows and passes to it only a subset of the
+    degrees of freedom (DOF) while maintaining the other constants. Note that the
+    constant DOFs are not even seen by the wrapped flow and so they cannot
+    condition the output.
 
     The wrapped flow must be configured correctly to take as input the subset
     of the DOFs that are not constant.
@@ -36,15 +36,30 @@ class PartialFlow(torch.nn.Module):
     ----------
     flow : torch.nn.Module
         The wrapped normalizing flows mapping the non-constant degrees of freedom.
-    fixed_indices : List[int], optional
+    fixed_indices : array-like of int, optional
         The indices of the degrees of freedom that must be kept constant.
+    return_partial : bool, optional
+        If ``True``, only the propagated indices are returned.
+
+    Attributes
+    ----------
+    return_partial : bool
+        If ``True``, only the propagated indices are returned.
 
     """
 
-    def __init__(self, flow, fixed_indices):
+    def __init__(self, flow, fixed_indices, return_partial=False):
         super().__init__()
         self.flow = flow
-        self._fixed_indices = fixed_indices
+
+        # Make sure we store the fixed_indices as a list as we'll later transform
+        # it into a set and we need to make sure it's a set of integers rather
+        # than a set of tensors.
+        try:
+            self._fixed_indices = fixed_indices.tolist()
+        except AttributeError:
+            self._fixed_indices = fixed_indices
+        self.return_partial = return_partial
 
         # We also need the indices that we are not factoring out.
         # This is initialized lazily in self._pass() because we
@@ -53,12 +68,7 @@ class PartialFlow(torch.nn.Module):
 
     def n_parameters(self):
         """int: The total number of parameters that can be optimized."""
-        try:
-            return self.flow.n_parameters()
-        except AttributeError:
-            # Handle the case in which the flows have been encapsulated
-            # in a Sequential module.
-            return sum(f.n_parameters() for f in self.flow)
+        return self.flow.n_parameters()
 
     def forward(self, x):
         return self._pass(x, inverse=False)
@@ -86,6 +96,9 @@ class PartialFlow(torch.nn.Module):
             x, log_det_J = self.flow.inverse(x)
         else:
             x, log_det_J = self.flow(x)
+
+        if self.return_partial:
+            return x, log_det_J
 
         # Add to the factored out dimensions.
         y[:, self._propagated_indices] = x

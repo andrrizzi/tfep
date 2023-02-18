@@ -17,8 +17,8 @@ Mobius transformation for autoregressive normalizing flows.
 import torch
 import torch.autograd
 
-from tfep.nn.math import batchwise_outer
 from tfep.nn.utils import generate_block_sizes
+from tfep.utils.math import batchwise_outer
 
 
 # =============================================================================
