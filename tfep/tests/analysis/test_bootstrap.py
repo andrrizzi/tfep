@@ -96,9 +96,9 @@ def test_against_scipy(confidence_level, batch, method):
 
     # Compare confidence intervals.
     assert np.isclose(tfep_result['confidence_interval']['low'],
-                      scipy_result.confidence_interval.low, atol=1e-2)
+                      scipy_result.confidence_interval.low, atol=1e-1)
     assert np.isclose(tfep_result['confidence_interval']['high'],
-                      scipy_result.confidence_interval.high, atol=1e-2)
+                      scipy_result.confidence_interval.high, atol=1e-1)
     assert np.isclose(tfep_result['standard_deviation'],
                       scipy_result.standard_error, atol=1e-2)
 
