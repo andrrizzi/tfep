@@ -19,9 +19,9 @@ The library includes implementations for the following flows:
 - ``Centroid`` and ``Oriented`` flows, which can be used to fix the reference system before the map.
 - A ``PCA`` flow to perform the transformation in uncorrelated coordinates.
 
-The library also include several utilities:
+The library also includes several utilities:
 
-- PyTorch wrappers for [psi4](https://psicode.org/) and the Atomistic Simulation Environment (https://wiki.fysik.dtu.dk/ase/)
+- PyTorch wrappers for [psi4](https://psicode.org/) and the [Atomistic Simulation Environment](https://wiki.fysik.dtu.dk/ase/)
   to evaluate potential energies and forces with multiple molecular simulation engines.
 - A PyTorch ``Dataset`` that can wrap an MDAnalysis ``Universe`` to train on molecular simulation trajectories.
 - A PyTorch-accelerated (T)FEP estimator.
@@ -57,7 +57,7 @@ conda activate tfepenv
 # Optional dependency using pip.
 pip install ase
 
-# Install package in editable mode.
+# Install the package in editable mode.
 git clone https://github.com/andrrizzi/tfep.git
 cd tfep
 pip install .
