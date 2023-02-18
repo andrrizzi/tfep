@@ -93,7 +93,7 @@ class TrajectoryDataset(torch.utils.data.Dataset):
 
     >>> import os
     >>> import MDAnalysis
-    >>> test_data_dir_path = os.path.join(os.path.dirname(__file__), 'tests', 'data')
+    >>> test_data_dir_path = os.path.join(os.path.dirname(__file__), '..', '..', 'tests', 'data')
     >>> pdb_file_path = os.path.join(test_data_dir_path, 'chloro-fluoromethane.pdb')
     >>> universe = MDAnalysis.Universe(pdb_file_path, dt=5)  # ps
 
@@ -404,7 +404,7 @@ class TrajectorySubset:
 
     >>> import os
     >>> import MDAnalysis
-    >>> test_data_dir_path = os.path.join(os.path.dirname(__file__), 'tests', 'data')
+    >>> test_data_dir_path = os.path.join(os.path.dirname(__file__), '..', '..', 'tests', 'data')
     >>> pdb_file_path = os.path.join(test_data_dir_path, 'chloro-fluoromethane.pdb')
     >>> universe = MDAnalysis.Universe(pdb_file_path, dt=5)  # ps
     >>> trajectory_dataset = TrajectoryDataset(universe)
