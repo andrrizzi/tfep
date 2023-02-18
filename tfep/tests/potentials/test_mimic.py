@@ -346,6 +346,7 @@ def test_prepare_mdrun_command(template_structure_file_name):
         assert np.allclose(np.diagonal(out_box_vectors), batch_cell[0].to('nm').magnitude)
 
 
+@pytest.mark.skipif(shutil.which(CPMD_EXECUTABLE) is None, reason='requires MiMiC to be installed')
 @pytest.mark.parametrize('config', [
     (None, False),
     (1, False),
@@ -363,9 +364,6 @@ def test_run_mimic(config):
      batch_positions, batch_cell) = mimic_srun_commands(parallel)
 
     with tempfile.TemporaryDirectory() as tmp_dir_path:
-        # TODO: THIS MUST BE DE-COMMENTED ON JURECA
-        # tmp_dir_path = os.path.realpath('tmp')
-        # os.makedirs(tmp_dir_path)
 
         # Configure batch positions, box vectors, and working directories.
         if batch_size is None:
@@ -467,9 +465,6 @@ def test_potential_energy_mimic_gradcheck():
         parallelization_strategy = ProcessPoolStrategy(p)
 
         with tempfile.TemporaryDirectory() as tmp_dir_path:
-            # TODO: THIS MUST BE DE-COMMENTED ON JURECA
-            # tmp_dir_path = os.path.realpath('tmp')
-            # os.makedirs(tmp_dir_path)
 
             # Run a first calculation to create a restart file to speedup gradcheck.
             restart_dir_paths = [os.path.join(tmp_dir_path, 'restart'+str(i)) for i in range(batch_size)]
