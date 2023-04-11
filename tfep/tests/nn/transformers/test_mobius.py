@@ -27,6 +27,22 @@ from tfep.utils.math import batch_autograd_log_abs_det_J
 
 
 # =============================================================================
+# TEST MODULE CONFIGURATION
+# =============================================================================
+
+_old_default_dtype = None
+
+def setup_module(module):
+    global _old_default_dtype
+    _old_default_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.double)
+
+
+def teardown_module(module):
+    torch.set_default_dtype(_old_default_dtype)
+
+
+# =============================================================================
 # REFERENCE IMPLEMENTATIONS
 # =============================================================================
 
@@ -133,7 +149,7 @@ def test_unit_cube_to_inscribed_sphere(n_features, blocks):
     batch_size = 256
     generator = torch.Generator()
     generator.manual_seed(0)
-    w = radius - 2 * radius * torch.rand(batch_size, n_features, generator=generator, dtype=torch.double)
+    w = radius - 2 * radius * torch.rand(batch_size, n_features, generator=generator)
 
     # In the last two batches we set two cube vertices.
     w[-1] = radius * torch.ones_like(w[-1])
@@ -211,7 +227,7 @@ def test_mobius_transformer_reference(batch_size, n_features, blocks):
 ])
 def test_mobius_transformer_gradcheck(batch_size, n_features, blocks):
     """Run autograd.gradcheck on the Mobius transformer."""
-    x, w = create_random_input(batch_size, n_features, dtype=torch.double,
+    x, w = create_random_input(batch_size, n_features,
                                n_parameters=1, seed=0, par_func=torch.rand)
     w = 1 - 2 * w[:, 0]
 
