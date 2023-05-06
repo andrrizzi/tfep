@@ -174,7 +174,7 @@ def test_unit_cube_to_inscribed_sphere(n_features, blocks):
         # those are always outside the sphere.
         if block_size > 1:
             assert (norms[0][:-2] > radius).any()
-        assert (norms[1] <= radius).all()
+        assert (norms[1][:-2] <= radius).all()
 
         # The cube vertices should be mapped exactly on the sphere surface.
         assert torch.allclose(norms[1][-2:], radius * torch.ones_like(norms[1][-2:]))
