@@ -20,8 +20,8 @@ dependencies:
   - numpy
   - pint
 
-    # Psi4 tests are very expensive. We need to flag some as "slow" before turning them on.
-  #- psi4  # Currently requires psi4 conda channel.
+    # Optional packages.
+  - psi4
 
     # Pip-only installs optional dependencies
   - pip:
