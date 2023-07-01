@@ -1,6 +1,7 @@
 name: test
 
 channels:
+  - conda-forge/label/libint_dev  # required for conda-forge/psi4
   - conda-forge
   - defaults
 
