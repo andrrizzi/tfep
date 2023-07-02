@@ -445,6 +445,7 @@ def test_potential_energy_psi4_gradcheck(name):
                 None,  # parallelization strategy
             ],
             atol=0.5,
+            rtol=1e-3,
         )
 
 
