@@ -23,6 +23,7 @@ dependencies:
 
     # Optional packages.
   - psi4
+  - pydantic <2.0.0  # On Jul 3, 2023 pydantic released its 2.0 version which is incompatible with psi4. Remove when this is not a problem anymore.
 
     # Pip-only installs optional dependencies
   - pip:
