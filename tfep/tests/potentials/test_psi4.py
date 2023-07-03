@@ -349,7 +349,7 @@ def test_run_psi4_on_unconverged(on_unconverged, return_force, return_wfn):
         on_unconverged=on_unconverged,
     )
 
-    # Global psi4 options. We restor maxiter at the end of the test.
+    # Global psi4 options. We restore maxiter at the end of the test.
     option_stash = OptionsState(['MAXITER'])
     psi4_global_options = dict(basis='sto-3g', reference='RHF', maxiter=1)
 
@@ -394,6 +394,10 @@ def test_run_psi4_on_unconverged(on_unconverged, return_force, return_wfn):
 
     # Restore MAXITER.
     option_stash.restore()
+
+    # TODO: REMOVE THIS WHEN issue #3000 ON PSI4 GITHUB TRACKER IS FIXED
+    # Seems that when the calculation doesn't converge, the options are not restored properly.
+    psi4.core.clean_options()
 
 
 @pytest.mark.skipif(not PSI4_INSTALLED, reason='requires a Python installation of Psi4')
@@ -445,7 +449,6 @@ def test_potential_energy_psi4_gradcheck(name):
                 None,  # parallelization strategy
             ],
             atol=0.5,
-            rtol=1e-2,
         )
 
 
