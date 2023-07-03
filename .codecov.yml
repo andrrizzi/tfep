@@ -13,4 +13,4 @@ comment:
   flags: null
   paths: null
 ignore:
-  - "tfep/tests/potentials/test_mimic.py"  # MiMiC tests require a license of CPMD.
+  - "tfep/potentials/mimic.py"  # MiMiC tests require a license of CPMD.
