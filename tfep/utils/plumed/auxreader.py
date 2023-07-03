@@ -67,6 +67,8 @@ class PLUMEDAuxReader(MDAnalysis.auxiliary.XVG.XVGReader):
 
     """
 
+    format = "COLVAR"
+
     def __init__(self, file_path, col_names=None, units=None, **kwargs):
         self._auxdata = os.path.abspath(file_path)
 
