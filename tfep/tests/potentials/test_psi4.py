@@ -115,7 +115,8 @@ def parallelization_strategy(strategy_name, psi4_config):
         yield SerialStrategy()
     else:
         # Keep the pool of processes open until the contextmanager has left.
-        with torch.multiprocessing.Pool(2, pool_process_initializer, initargs=[psi4_config]) as p:
+        mp_context = torch.multiprocessing.get_context('forkserver')
+        with mp_context.Pool(2, pool_process_initializer, initargs=[psi4_config]) as p:
             yield ProcessPoolStrategy(p)
 
 
