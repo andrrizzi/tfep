@@ -18,7 +18,7 @@ import os
 
 import MDAnalysis
 
-from .io import read_table
+from .io import read_table_field_names, read_table
 
 
 # =============================================================================
@@ -71,7 +71,9 @@ class PLUMEDAuxReader(MDAnalysis.auxiliary.XVG.XVGReader):
         self._auxdata = os.path.abspath(file_path)
 
         # If col_names is None, all of them are read, including 'time'.
-        if col_names is not None:
+        if col_names is None:
+            col_names = read_table_field_names(file_path)
+        else:
             # We always read the 'time' column as it's necessary for the
             # AuxReader to work.
             if 'time' not in col_names:

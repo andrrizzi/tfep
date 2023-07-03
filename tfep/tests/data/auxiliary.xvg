@@ -1,4 +1,4 @@
-# time col1 col2
+#! FIELDS time col1 col2
 0.0 1.0 25.5
 1.0 2.0 24.5
 2.0 3.0 23.5
