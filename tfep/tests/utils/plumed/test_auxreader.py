@@ -76,7 +76,7 @@ def test_plumed_auxreader(dt, col_names, expected_col_indices, units, expected_u
         col_names=col_names,
         units=units,
     )
-    universe.trajectory.add_auxiliary(auxname='plumed', auxdata=aux_reader)
+    universe.trajectory.add_auxiliary('plumed', auxdata=aux_reader)
 
     # Re-order expected data. 'time' is always read and it's always in the first position.
     if col_names is not None:
@@ -91,8 +91,3 @@ def test_plumed_auxreader(dt, col_names, expected_col_indices, units, expected_u
     # CHLOROMETHANE_PDB_FILE_PATH has only 5 frames and that what we should obtain.
     for ts_idx, ts in enumerate(universe.trajectory):
         assert np.allclose(ts.aux['plumed'], expected_data[ts_idx])
-
-
-# Only some columns.
-# Columns with different order.
-# Different units.
