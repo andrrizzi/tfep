@@ -387,7 +387,7 @@ def test_run_mimic(config):
         try:
             # Check wheter we need to run using a parallel pool.
             if parallel:
-                pool = torch.multiprocessing.Pool(batch_size)
+                pool = torch.multiprocessing.get_context('forkserver').Pool(batch_size)
                 parallelization_strategy = ProcessPoolStrategy(pool)
             else:
                 parallelization_strategy = None
