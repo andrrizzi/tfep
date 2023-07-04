@@ -18,7 +18,7 @@ import os
 
 import MDAnalysis
 
-from .io import read_table
+from .io import read_table_field_names, read_table
 
 
 # =============================================================================
@@ -67,11 +67,15 @@ class PLUMEDAuxReader(MDAnalysis.auxiliary.XVG.XVGReader):
 
     """
 
+    format = "COLVAR"
+
     def __init__(self, file_path, col_names=None, units=None, **kwargs):
         self._auxdata = os.path.abspath(file_path)
 
         # If col_names is None, all of them are read, including 'time'.
-        if col_names is not None:
+        if col_names is None:
+            col_names = read_table_field_names(file_path)
+        else:
             # We always read the 'time' column as it's necessary for the
             # AuxReader to work.
             if 'time' not in col_names:
@@ -90,8 +94,9 @@ class PLUMEDAuxReader(MDAnalysis.auxiliary.XVG.XVGReader):
         self._auxdata_values = read_table(file_path, col_names=col_names, as_array=True, remove_duplicates=True)
 
         # Convert units.
+        self.units = units
         if units is not None:
-            self._convert_units(col_names, units)
+            self._convert_units()
 
         self._n_steps = len(self._auxdata_values)
 
@@ -100,9 +105,9 @@ class PLUMEDAuxReader(MDAnalysis.auxiliary.XVG.XVGReader):
         # parent class.
         super(MDAnalysis.auxiliary.XVG.XVGReader, self).__init__(**kwargs)
 
-    def _convert_units(self, col_names, units):
+    def _convert_units(self):
         """Convert all values in _auxdata_values to internal coordinate system."""
-        for col_name, plumed_unit_name in units.items():
+        for col_name, plumed_unit_name in self.units.items():
             conversion_factor = None
             # Try all possible conversion factors exposed by MDAnalysis.
             for unit_type, conversion_factors in MDAnalysis.units.conversion_factor.items():
@@ -114,9 +119,18 @@ class PLUMEDAuxReader(MDAnalysis.auxiliary.XVG.XVGReader):
             if conversion_factor is None:
                 raise ValueError(f'Cannot find a conversion factor for units {plumed_unit_name}')
 
-            col_idx = col_names.index(col_name)
+            col_idx = self.col_names.index(col_name)
             self._auxdata_values[:,col_idx] = self._auxdata_values[:,col_idx] / conversion_factor
 
     def get_column_idx(self, col_name):
         """Return the column index associated to the column name."""
         return self.col_names.index(col_name)
+
+    def get_description(self):
+        """Override MDAnalysis method to duplicate the reader."""
+        description = super().get_description()
+        description.update({
+            'col_names': self.col_names,
+            'units': self.units,
+        })
+        return description

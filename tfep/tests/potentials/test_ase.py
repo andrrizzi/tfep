@@ -139,7 +139,8 @@ def parallelization_strategy(strategy_name, tmp_dir):
         yield SerialStrategy()
     else:
         # Keep the pool of processes open until the contextmanager has left.
-        with torch.multiprocessing.Pool(2, pool_process_initializer, initargs=[tmp_dir]) as p:
+        mp_context = torch.multiprocessing.get_context('forkserver')
+        with mp_context.Pool(2, pool_process_initializer, initargs=[tmp_dir]) as p:
             yield ProcessPoolStrategy(p)
 
 

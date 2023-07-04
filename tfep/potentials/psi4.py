@@ -1011,7 +1011,7 @@ def _run_psi4(
     use_ref_wfn = not all([x is None] for x in ref_wfn)
     use_restart_file = not all([x is None] for x in restart_file)
     if use_ref_wfn and use_restart_file:
-            raise ValueError('Cannot pass both ref_wfn and restart_file.')
+        raise ValueError('Cannot pass both ref_wfn and restart_file.')
 
     # Run all batches with the provided parallelization strategy.
     # We use functools.partial to encode the arguments that are common to all tasks.
@@ -1081,10 +1081,10 @@ def _run_psi4_task(func, molecule, name, return_energy, return_force, return_wfn
         result = func(name=name, return_wfn=needs_wfn, ref_wfn=ref_wfn,
                       write_orbitals=write_orbitals, **kwargs, **more_kwargs)
     except psi4.ConvergenceError as e:
-        result = []
         if on_unconverged == 'raise':
             raise
         else:  # on_unconverged == 'nan':
+            result = []
             if return_energy:
                 result.append(float('nan'))
             if return_force:
