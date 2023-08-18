@@ -6,7 +6,7 @@
 # =============================================================================
 
 """
-Math and geometry utility functions to manipulate coordinates.
+Math utility functions to manipulate coordinates.
 """
 
 
