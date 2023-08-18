@@ -6,7 +6,7 @@
 # =============================================================================
 
 """
-Test objects and function in tfep.nn.transformers.mobius.
+Test objects and function in tfep.nn.transformers.moebius.
 """
 
 
@@ -19,7 +19,7 @@ import pytest
 import torch
 import torch.autograd
 
-from tfep.nn.transformers.mobius import mobius_transformer, unit_cube_to_inscribed_sphere
+from tfep.nn.transformers.moebius import moebius_transformer, unit_cube_to_inscribed_sphere
 from ..utils import create_random_input
 
 from tfep.nn.utils import generate_block_sizes
@@ -46,8 +46,8 @@ def teardown_module(module):
 # REFERENCE IMPLEMENTATIONS
 # =============================================================================
 
-def reference_mobius_transformer(x, w, blocks):
-    """Reference implementation of MobiusTransformer for testing."""
+def reference_moebius_transformer(x, w, blocks):
+    """Reference implementation of MoebiusTransformer for testing."""
     x = x.detach().numpy()
     w = w.detach().numpy()
     batch_size, n_features = x.shape
@@ -195,15 +195,15 @@ def test_unit_cube_to_inscribed_sphere(n_features, blocks):
     (7, [3, 2, 2]),
     (8, [3, 2, 2, 1])
 ])
-def test_mobius_transformer_reference(batch_size, n_features, blocks):
+def test_moebius_transformer_reference(batch_size, n_features, blocks):
     """Compare PyTorch and reference implementation of sum-of-squares transformer."""
     x, w = create_random_input(batch_size, n_features,
                                n_parameters=1, seed=0, par_func=torch.rand)
     w = 1 - 2 * w[:, 0]
 
     # Compare PyTorch and reference.
-    ref_y, ref_log_det_J, ref_x_norm, ref_y_norm = reference_mobius_transformer(x, w, blocks)
-    torch_y, torch_log_det_J = mobius_transformer(x, w, blocks)
+    ref_y, ref_log_det_J, ref_x_norm, ref_y_norm = reference_moebius_transformer(x, w, blocks)
+    torch_y, torch_log_det_J = moebius_transformer(x, w, blocks)
 
     assert np.allclose(ref_y, torch_y.detach().numpy())
     assert np.allclose(ref_log_det_J, torch_log_det_J.detach().numpy())
@@ -225,15 +225,15 @@ def test_mobius_transformer_reference(batch_size, n_features, blocks):
     (7, [3, 2, 2]),
     (8, [3, 2, 2, 1])
 ])
-def test_mobius_transformer_gradcheck(batch_size, n_features, blocks):
-    """Run autograd.gradcheck on the Mobius transformer."""
+def test_moebius_transformer_gradcheck(batch_size, n_features, blocks):
+    """Run autograd.gradcheck on the Moebius transformer."""
     x, w = create_random_input(batch_size, n_features,
                                n_parameters=1, seed=0, par_func=torch.rand)
     w = 1 - 2 * w[:, 0]
 
     # With a None mask, the module should fall back to the native implementation.
     result = torch.autograd.gradcheck(
-        func=mobius_transformer,
+        func=moebius_transformer,
         inputs=[x, w, blocks]
     )
     assert result

@@ -13,8 +13,8 @@ from tfep.nn.transformers.affine import (
     AffineTransformer, affine_transformer, affine_transformer_inverse,
     VolumePreservingShiftTransformer, volume_preserving_shift_transformer, volume_preserving_shift_transformer_inverse,
 )
-from tfep.nn.transformers.mobius import (
-    MobiusTransformer, MobiusTransformerFunc, mobius_transformer, unit_cube_to_inscribed_sphere)
+from tfep.nn.transformers.moebius import (
+    MoebiusTransformer, MoebiusTransformerFunc, moebius_transformer, unit_cube_to_inscribed_sphere)
 from tfep.nn.transformers.sos import (
     SOSPolynomialTransformer, SOSPolynomialTransformerFunc, sos_polynomial_transformer)
 from tfep.nn.transformers.spline import (

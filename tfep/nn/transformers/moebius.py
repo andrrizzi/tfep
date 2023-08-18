@@ -6,7 +6,7 @@
 # =============================================================================
 
 """
-Mobius transformation for autoregressive normalizing flows.
+Moebius transformation for autoregressive normalizing flows.
 """
 
 
@@ -22,11 +22,11 @@ from tfep.utils.math import batchwise_outer
 
 
 # =============================================================================
-# MOBIUS TRANSFORMER
+# MOEBIUS TRANSFORMER
 # =============================================================================
 
-class MobiusTransformer(torch.nn.Module):
-    """Mobius transformer module for autoregressive normalizing flows.
+class MoebiusTransformer(torch.nn.Module):
+    """Moebius transformer module for autoregressive normalizing flows.
 
     This is a variant of the transformation proposed in [1], and used
     in [2] to create flows on tori and spheres manifolds. The difference
@@ -37,7 +37,7 @@ class MobiusTransformer(torch.nn.Module):
     transformation contracts points close to the parameter vector rather
     than expanding it.
 
-    The transformer applies the Mobius transformation in "blocks". Blocks
+    The transformer applies the Moebius transformation in "blocks". Blocks
     of size up to 3 are supported so that the transformation can be used to
     transform the positions of atoms (which have a 3-dimensional position)
     without changing their distance to the center of the unit sphere.
@@ -56,11 +56,11 @@ class MobiusTransformer(torch.nn.Module):
 
     See Also
     --------
-    nets.functions.transformer.mobius_transformer
+    nets.functions.transformer.moebius_transformer
 
     References
     ----------
-    [1] Kato S, McCullagh P. Mobius transformation and a Cauchy family
+    [1] Kato S, McCullagh P. Moebius transformation and a Cauchy family
         on the sphere. arXiv preprint arXiv:1510.07679. 2015 Oct 26.
     [2] Rezende DJ, Papamakarios G, Racanière S, Albergo MS, Kanwar G,
         Shanahan PE, Cranmer K. Normalizing Flows on Tori and Spheres.
@@ -94,7 +94,7 @@ class MobiusTransformer(torch.nn.Module):
 
         """
         w = self._map_to_sphere(w)
-        return mobius_transformer(x, w, self.blocks, self.shorten_last_block)
+        return moebius_transformer(x, w, self.blocks, self.shorten_last_block)
 
     def inverse(self, y, w):
         """Reverse the affine transformation.
@@ -115,7 +115,7 @@ class MobiusTransformer(torch.nn.Module):
 
         """
         w = self._map_to_sphere(w)
-        return mobius_transformer(y, -w, self.blocks, self.shorten_last_block)
+        return moebius_transformer(y, -w, self.blocks, self.shorten_last_block)
 
     def get_identity_parameters(self, dimension_out):
         """Return the value of the parameters that makes this the identity function.
@@ -132,7 +132,7 @@ class MobiusTransformer(torch.nn.Module):
         -------
         w : torch.Tensor
             A tensor of shape ``(n_features,)`` representing the parameter
-            vector to perform the identity function with a Mobius transformer.
+            vector to perform the identity function with a Moebius transformer.
 
         """
         return torch.zeros(size=(self.n_parameters_per_input, dimension_out))
@@ -151,10 +151,10 @@ class MobiusTransformer(torch.nn.Module):
 # FUNCTIONAL API
 # =============================================================================
 
-class MobiusTransformerFunc(torch.autograd.Function):
-    r"""Implement the Mobius transformation.
+class MoebiusTransformerFunc(torch.autograd.Function):
+    r"""Implement the Moebius transformation.
 
-    This provide a function API to the ``MobiusTransformer`` layer. It is
+    This provide a function API to the ``MoebiusTransformer`` layer. It is
     a variant of the transformation proposed in [1], and used in [2] to
     create flows on tori and spheres manifolds. The difference with [1],
     is that we always project the input vector on the unit sphere before
@@ -163,7 +163,7 @@ class MobiusTransformerFunc(torch.autograd.Function):
     the origin). The difference with [2] is that the transformation contracts
     points close to the parameter vector rather than expanding it.
 
-    The transformer applies the Mobius transformation in "blocks". Blocks
+    The transformer applies the Moebius transformation in "blocks". Blocks
     of size up to 3 are supported so that the transformation can be used to
     transform the positions of atoms (which have a 3-dimensional position)
     without changing their distance to the center of the unit sphere.
@@ -193,7 +193,7 @@ class MobiusTransformerFunc(torch.autograd.Function):
 
     References
     ----------
-    [1] Kato S, McCullagh P. Mobius transformation and a Cauchy family
+    [1] Kato S, McCullagh P. Moebius transformation and a Cauchy family
         on the sphere. arXiv preprint arXiv:1510.07679. 2015 Oct 26.
     [2] Rezende DJ, Papamakarios G, Racanière S, Albergo MS, Kanwar G,
         Shanahan PE, Cranmer K. Normalizing Flows on Tori and Spheres.
@@ -343,7 +343,7 @@ class MobiusTransformerFunc(torch.autograd.Function):
         return grad_x, grad_w, grad_blocks, grad_shorten_last_block
 
 # Functional notation.
-mobius_transformer = MobiusTransformerFunc.apply
+moebius_transformer = MoebiusTransformerFunc.apply
 
 
 # =============================================================================

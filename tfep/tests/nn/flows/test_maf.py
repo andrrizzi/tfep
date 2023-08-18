@@ -21,7 +21,7 @@ import torch
 from tfep.nn.utils import generate_block_sizes
 from tfep.nn.transformers import (
     AffineTransformer, SOSPolynomialTransformer,
-    NeuralSplineTransformer, MobiusTransformer
+    NeuralSplineTransformer, MoebiusTransformer
 )
 from tfep.nn.flows.maf import MAF, _LiftPeriodic
 from ..utils import create_random_input
@@ -182,7 +182,7 @@ def test_periodic_blocks_and_conditioning_MAF(conditioning_indices, periodic_ind
     SOSPolynomialTransformer(2),
     SOSPolynomialTransformer(3),
     NeuralSplineTransformer(x0=torch.tensor(-2), xf=torch.tensor(2), n_bins=3),
-    MobiusTransformer(blocks=3, shorten_last_block=True)
+    MoebiusTransformer(blocks=3, shorten_last_block=True)
 ])
 def test_identity_initialization_MAF(dimensions_hidden, conditioning_indices, periodic_indices, degrees_in,
                                      weight_norm, split_conditioner, transformer):
@@ -242,7 +242,7 @@ def test_identity_initialization_MAF(dimensions_hidden, conditioning_indices, pe
 @pytest.mark.parametrize('split_conditioner', [True, False])
 @pytest.mark.parametrize('transformer', [
     AffineTransformer(),
-    MobiusTransformer(blocks=3, shorten_last_block=True)
+    MoebiusTransformer(blocks=3, shorten_last_block=True)
 ])
 @pytest.mark.parametrize('weight_norm', [False, True])
 def test_round_trip_MAF(conditioning_indices, periodic_indices, degrees_in, weight_norm, split_conditioner, transformer):
@@ -253,12 +253,12 @@ def test_round_trip_MAF(conditioning_indices, periodic_indices, degrees_in, weig
     n_conditioning_dofs = len(conditioning_indices)
     limits = (0., 2.)
 
-    # Currently we don't support Mobius transformer.
-    if periodic_indices is not None and isinstance(transformer, MobiusTransformer):
-        pytest.skip('Customized blocks (and thus MobiusTransformers) are not supported with periodic DOFs.')
+    # Currently we don't support Moebius transformer.
+    if periodic_indices is not None and isinstance(transformer, MoebiusTransformer):
+        pytest.skip('Customized blocks (and thus MoebiusTransformers) are not supported with periodic DOFs.')
 
-    # With the Mobius transformer, we need block dependencies.
-    if isinstance(transformer, MobiusTransformer):
+    # With the Moebius transformer, we need block dependencies.
+    if isinstance(transformer, MoebiusTransformer):
         blocks = generate_block_sizes(dimension-n_conditioning_dofs, transformer.blocks,
                                       transformer.shorten_last_block)
         shorten_last_block = transformer.shorten_last_block
