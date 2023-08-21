@@ -45,24 +45,23 @@ def batchwise_dot(x1, x2, keepdim=False):
 
 
 def batchwise_outer(x1, x2):
-    """Batchwise outer product between two 2D tensors.
+    """Batchwise outer product.
 
     Parameters
     ----------
     x1 : torch.Tensor
-        A tensor of shape ``(batch_size, N)``.
+        A tensor of shape ``(*, N)``.
     x2 : torch.Tensor
-        A tensor of shape ``(batch_size, N)``.
+        A tensor of shape ``(*, N)``.
 
     Returns
     -------
     result : torch.Tensor
-        A tensor shape ``(batch_size, N, N)``, where ``result[b][i][j]`` is the
-        outer product between ``x1[b][i]`` and ``x2[b][j]``.
+        A tensor shape ``(*, N, N)``, where ``result[..., i, j]`` is the
+        outer product between ``x1[..., i]`` and ``x2[..., j]``.
 
     """
-    # return torch.einsum('bi,bj->bij', x1, x2)
-    return torch.matmul(x1[:, :, None], x2[:, None, :])
+    return torch.einsum("...i, ...j -> ...ij", x1, x2)
 
 
 def cov(x, ddof=1, dim_sample=0, inplace=False, return_mean=False):
