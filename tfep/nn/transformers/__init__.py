@@ -14,7 +14,7 @@ from tfep.nn.transformers.affine import (
     VolumePreservingShiftTransformer, volume_preserving_shift_transformer, volume_preserving_shift_transformer_inverse,
 )
 from tfep.nn.transformers.moebius import (
-    MoebiusTransformer, MoebiusTransformerFunc, moebius_transformer, unit_cube_to_inscribed_sphere)
+    MoebiusTransformer, moebius_transformer)
 from tfep.nn.transformers.sos import (
     SOSPolynomialTransformer, SOSPolynomialTransformerFunc, sos_polynomial_transformer)
 from tfep.nn.transformers.spline import (
