@@ -48,7 +48,7 @@ def teardown_module(module):
 def reference_moebius_transformer(x, w, dimension):
     """Reference implementation of MoebiusTransformer for testing.
 
-    See tfep.nn.transformers.moebius_transformer for the docum
+    See tfep.nn.transformers.moebius_transformer for the documentation.
 
     References
     ----------
@@ -170,3 +170,30 @@ def test_moebius_transformer_identity(batch_size, n_features, dimension, unit_sp
     y, log_det_J = transformer(x, w)
     assert torch.allclose(x, y)
     assert torch.allclose(log_det_J, torch.zeros_like(log_det_J))
+
+
+@pytest.mark.parametrize('batch_size', [1, 3, 100])
+@pytest.mark.parametrize('n_features,dimension', [
+    (3, 3),
+    (6, 3),
+    (6, 2),
+    (4, 4),
+    (8, 4),
+])
+@pytest.mark.parametrize('unit_sphere', [True, False])
+def test_moebius_transformer_inverse(batch_size, n_features, dimension, unit_sphere):
+    """Compare PyTorch and reference implementation of MoebiusTransformer."""
+    x, w = create_random_input(batch_size, n_features, n_parameters=1, seed=0, par_func=torch.randn)
+
+    # Map the points on the unit sphere.
+    if unit_sphere:
+        x = x.reshape(batch_size, -1, dimension)
+        x = x / torch.linalg.norm(x, dim=-1, keepdim=True)
+        x = x.reshape(batch_size, -1)
+
+    # Composing forward and inverse must yield the identity function.
+    transformer = MoebiusTransformer(dimension=dimension, unit_sphere=unit_sphere)
+    y, log_det_J = transformer(x, w)
+    x_inv, log_det_J_inv = transformer.inverse(y, w)
+    assert torch.allclose(x, x_inv)
+    assert torch.allclose(log_det_J + log_det_J_inv, torch.zeros_like(log_det_J))
