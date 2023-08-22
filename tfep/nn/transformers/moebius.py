@@ -45,13 +45,6 @@ class MoebiusTransformer(torch.nn.Module):
 
     Parameters
     ----------
-    x : torch.Tensor
-        Shape ``(batch_size, n_vectors*dimension)``. Contiguous elements of ``x``
-        are interpreted as vectors (i.e., the first and second input vectors are
-        ``x[:dimension]`` and ``x[dimension:2*dimension]``.
-    w : torch.Tensor
-        Shape ``(batch_size, n_vectors*dimension)``. The transformation parameters.
-        These parameter vectors are automatically rescaled so that ``|w| < |x|``.
     dimension : int
         The dimensionality of the ``x`` and ``w``.
     max_radius : float
@@ -60,14 +53,6 @@ class MoebiusTransformer(torch.nn.Module):
     unit_sphere : bool
         If ``True``, the input vectors ``x`` are assumed to be on the unit sphere,
         which makes the implementation slightly faster.
-
-    Returns
-    -------
-    y : torch.Tensor
-        Shape ``(batch_size, n_vectors*dimension)``. The transformed vectors.
-    log_det_J : torch.Tensor
-        Shape ``(batch_size,)``. The logarithm of the absolute value of the Jacobian
-        determinant ``dy / dx``.
 
     References
     ----------
@@ -82,6 +67,7 @@ class MoebiusTransformer(torch.nn.Module):
     n_parameters_per_input = 1
 
     def __init__(self, dimension, max_radius=0.99, unit_sphere=False):
+        """Constructor."""
         super().__init__()
         self.dimension = dimension
         self.max_radius = max_radius

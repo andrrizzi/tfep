@@ -182,7 +182,7 @@ def test_periodic_blocks_and_conditioning_MAF(conditioning_indices, periodic_ind
     SOSPolynomialTransformer(2),
     SOSPolynomialTransformer(3),
     NeuralSplineTransformer(x0=torch.tensor(-2), xf=torch.tensor(2), n_bins=3),
-    MoebiusTransformer(blocks=3, shorten_last_block=True)
+    MoebiusTransformer(dimension=3)
 ])
 def test_identity_initialization_MAF(dimensions_hidden, conditioning_indices, periodic_indices, degrees_in,
                                      weight_norm, split_conditioner, transformer):
@@ -196,6 +196,11 @@ def test_identity_initialization_MAF(dimensions_hidden, conditioning_indices, pe
     batch_size = 2
     # Makes this equal to the NeuralSplineTransformer limits.
     limits = [-2., 2.]
+
+    # With the MoebiusTransformer, the output must be vectors of the same size.
+    if isinstance(transformer, MoebiusTransformer):
+        extra_dim = transformer.dimension - (dimension - len(conditioning_indices)) % transformer.dimension
+        dimension = dimension + extra_dim
 
     maf = MAF(
         dimension,
@@ -242,7 +247,7 @@ def test_identity_initialization_MAF(dimensions_hidden, conditioning_indices, pe
 @pytest.mark.parametrize('split_conditioner', [True, False])
 @pytest.mark.parametrize('transformer', [
     AffineTransformer(),
-    MoebiusTransformer(blocks=3, shorten_last_block=True)
+    MoebiusTransformer(dimension=3)
 ])
 @pytest.mark.parametrize('weight_norm', [False, True])
 def test_round_trip_MAF(conditioning_indices, periodic_indices, degrees_in, weight_norm, split_conditioner, transformer):
@@ -253,20 +258,19 @@ def test_round_trip_MAF(conditioning_indices, periodic_indices, degrees_in, weig
     n_conditioning_dofs = len(conditioning_indices)
     limits = (0., 2.)
 
+    # With the MoebiusTransformer, the output must be vectors of the same size.
+    if isinstance(transformer, MoebiusTransformer):
+        extra_dim = transformer.dimension - (dimension - len(conditioning_indices)) % transformer.dimension
+        dimension = dimension + extra_dim
+        blocks = transformer.dimension
+        n_blocks = dimension // blocks
+    else:
+        blocks = 1
+        n_blocks = dimension - n_conditioning_dofs
+
     # Currently we don't support Moebius transformer.
     if periodic_indices is not None and isinstance(transformer, MoebiusTransformer):
         pytest.skip('Customized blocks (and thus MoebiusTransformers) are not supported with periodic DOFs.')
-
-    # With the Moebius transformer, we need block dependencies.
-    if isinstance(transformer, MoebiusTransformer):
-        blocks = generate_block_sizes(dimension-n_conditioning_dofs, transformer.blocks,
-                                      transformer.shorten_last_block)
-        shorten_last_block = transformer.shorten_last_block
-        n_blocks = len(blocks)
-    else:
-        blocks = 1
-        shorten_last_block = False
-        n_blocks = dimension - n_conditioning_dofs
 
     # Make sure the permutation is reproducible.
     if degrees_in == 'random':
@@ -282,7 +286,6 @@ def test_round_trip_MAF(conditioning_indices, periodic_indices, degrees_in, weig
         degrees_in=degrees_in,
         weight_norm=weight_norm,
         blocks=blocks,
-        shorten_last_block=shorten_last_block,
         split_conditioner=split_conditioner,
         transformer=transformer,
         initialize_identity=False
