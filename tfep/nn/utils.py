@@ -6,7 +6,7 @@
 # =============================================================================
 
 """
-Utility functions for the nets package.
+Utility functions for the nn package.
 """
 
 

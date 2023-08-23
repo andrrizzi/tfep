@@ -14,7 +14,7 @@ The library includes implementations for the following flows:
   - Affine
   - (Circular) neural spline [3, 4]
   - Sum-of-squares polynomial [5]
-  - Mobius (based on that proposed in [4])
+  - Moebius (based on that proposed in [4])
 - Continuous normalizing flows [6] with a dynamics layer based on Equivariant graph neural networks [7].
 - ``Centroid`` and ``Oriented`` flows, which can be used to fix the reference system before the map.
 - A ``PCA`` flow to perform the transformation in uncorrelated coordinates.
