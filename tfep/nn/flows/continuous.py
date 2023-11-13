@@ -81,7 +81,7 @@ class ContinuousFlow(torch.nn.Module):
         Free-form continuous dynamics for scalable reversible generative models.
         arXiv preprint arXiv:1810.01367. 2018 Oct 2.
     [3] Finlay C, Jacobsen JH, Nurbekyan L, Oberman A. How to train your neural
-        ODE: the world of Jacobian and kinetic regularization. InInternational
+        ODE: the world of Jacobian and kinetic regularization. In International
         Conference on Machine Learning 2020 Nov 21 (pp. 3154-3164). PMLR.
 
     """
