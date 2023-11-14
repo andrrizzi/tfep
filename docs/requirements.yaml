@@ -14,3 +14,7 @@ dependencies:
   - mdanalysis >=2.0
   - numpy
   - pint
+
+    # Sphinx
+  - sphinx
+  - sphinx-rtd-theme
