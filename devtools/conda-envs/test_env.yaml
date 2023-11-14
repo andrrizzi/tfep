@@ -1,13 +1,12 @@
 name: test
 
 channels:
-  - conda-forge/label/libint_dev  # required for conda-forge/psi4
   - conda-forge
   - defaults
 
 dependencies:
     # Base depends
-  - python >=3.8
+  - python >=3.9
   - pip
 
     # Testing
