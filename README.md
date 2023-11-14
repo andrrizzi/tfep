@@ -3,6 +3,7 @@ TFEP
 [//]: # (Badges)
 [![GitHub Actions Build Status](https://github.com/andrrizzi/tfep/workflows/CI/badge.svg)](https://github.com/andrrizzi/tfep/actions?query=workflow%3ACI)
 [![codecov](https://codecov.io/gh/andrrizzi/tfep/branch/master/graph/badge.svg)](https://codecov.io/gh/andrrizzi/tfep/branch/master)
+[![Documentation Status](https://readthedocs.org/projects/tfep/badge/?version=latest)](https://tfep.readthedocs.io/en/latest/?badge=latest)
 
 A Python utility library to perform (multimap) targeted free energy perturbation.
 
