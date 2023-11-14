@@ -1,0 +1,20 @@
+name: docs
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+    # Base depends
+  - python >=3.9
+  - pip
+
+    # External packages.
+  - pytorch >=1.11
+  - mdanalysis >=2.0
+  - numpy
+  - pint
+
+    # Sphinx
+  - sphinx
+  - sphinx-rtd-theme
