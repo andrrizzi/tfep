@@ -5,8 +5,8 @@
 # MODULE DOCSTRING
 # =============================================================================
 
-"""
-Utility class to create a map-style PyTorch ``Dataset``s from a dictionary of tensors.
+r"""
+Utility class to create a map-style PyTorch ``Dataset``\ s from a dictionary of tensors.
 
 For usage examples see the documentation of :class:`.DictDataset`.
 
@@ -17,7 +17,7 @@ For usage examples see the documentation of :class:`.DictDataset`.
 # GLOBAL IMPORTS
 # =============================================================================
 
-import torch
+import torch.utils.data
 
 
 # =============================================================================
@@ -25,7 +25,17 @@ import torch
 # =============================================================================
 
 class DictDataset(torch.utils.data.Dataset):
-    """Utility class to create a map-style PyTorch ``Dataset``s from a dictionary of tensors."""
+    r"""Utility class to create a map-style PyTorch ``Dataset``\ s from a dictionary of tensors.
+
+    Examples
+    --------
+    >>> import torch
+    >>> data = {'a': torch.tensor([1.0, 2.0]), 'b': torch.tensor([3, 4])}
+    >>> dict_dataset = DictDataset(data)
+    >>> dict_dataset[1]
+    {'a': tensor(2.), 'b': tensor(4)}
+
+    """
 
     def __init__(self, tensor_dict : dict[str, torch.Tensor]):
         """Constructor.
@@ -39,7 +49,7 @@ class DictDataset(torch.utils.data.Dataset):
         self.tensor_dict = tensor_dict
 
     def __getitem__(self, item):
-        """Retrive a dataset sample.
+        """Retrieve a dataset sample.
 
         Parameters
         ----------

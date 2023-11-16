@@ -5,7 +5,7 @@
 # MODULE DOCSTRING
 # =============================================================================
 
-"""
+r"""
 Utility class to merge multiple PyTorch ``Dataset``\ s.
 
 For usage examples see the documentation of :class:`.MergedDataset`.
@@ -25,20 +25,33 @@ import torch.utils.data
 # =============================================================================
 
 class MergedDataset(torch.utils.data.Dataset):
-    """Dataset merging multiple ``Dataset``\ s.
+    r"""Dataset merging multiple ``Dataset``\ s.
 
     The dataset constructs a batch by merging batches from the wrapped datasets.
     Currently, it supports only map-style datasets that return samples in
     dictionary format.
 
-    Parameters
-    ----------
-    *datasets : torch.utils.data.Dataset
-        The map-style datasets to be merged. These must all have the same number
-        of samples and return samples in dictionary format.
+    Examples
+    --------
+    >>> import torch
+    >>> from tfep.io.dataset import DictDataset
+    >>> dataset1 = DictDataset({'a': torch.tensor([1., 2.])})
+    >>> dataset2 = DictDataset({'b': torch.tensor([3, 4])})
+    >>> merged = MergedDataset(dataset1, dataset2)
+    >>> merged[1]
+    {'a': tensor(2.), 'b': tensor(4)}
 
     """
     def __init__(self, *datasets):
+        """Constructor.
+
+        Parameters
+        ----------
+        *datasets : torch.utils.data.Dataset
+            The map-style datasets to be merged. These must all have the same
+            number of samples and return samples in dictionary format.
+
+        """
         super().__init__()
 
         # Check that the datasets all have the same number of samples.
