@@ -18,24 +18,8 @@ import pytest
 import torch
 import torch.utils.data
 
+from tfep.io.dataset.dict import DictDataset
 from tfep.io.dataset.merged import MergedDataset
-
-
-# =============================================================================
-# TEST UTILITY FUNCTIONS
-# =============================================================================
-
-class DictDataset(torch.utils.data.Dataset):
-    """Dataset to merge for the tests below."""
-    def __init__(self, tensor_dict):
-        self.tensor_dict = tensor_dict
-
-    def __getitem__(self, item):
-        return {k: v[item] for k, v in self.tensor_dict.items()}
-
-    def __len__(self):
-        for vals in self.tensor_dict.values():
-            return len(vals)
 
 
 # =============================================================================
