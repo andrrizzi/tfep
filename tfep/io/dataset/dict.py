@@ -21,7 +21,7 @@ import torch.utils.data
 
 
 # =============================================================================
-# MERGED DATASET
+# DICTIONARY DATASET
 # =============================================================================
 
 class DictDataset(torch.utils.data.Dataset):
@@ -46,7 +46,7 @@ class DictDataset(torch.utils.data.Dataset):
             A dictionary of named tensors.
 
         """
-        self.tensor_dict = tensor_dict
+        self._tensor_dict = tensor_dict
 
     def __getitem__(self, item):
         """Retrieve a dataset sample.
@@ -61,9 +61,9 @@ class DictDataset(torch.utils.data.Dataset):
         samples : dict[str, torch.Tensor]
             A dictionary of named tensor.
         """
-        return {k: v[item] for k, v in self.tensor_dict.items()}
+        return {k: v[item] for k, v in self._tensor_dict.items()}
 
     def __len__(self):
         """The number of samples in the dataset."""
-        for vals in self.tensor_dict.values():
+        for vals in self._tensor_dict.values():
             return len(vals)
