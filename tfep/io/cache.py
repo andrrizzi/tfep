@@ -28,7 +28,7 @@ import torch
 
 
 # =============================================================================
-# TRAJECTORY DATASET
+# TFEP CACHE
 # =============================================================================
 
 class TFEPCache:
@@ -39,7 +39,7 @@ class TFEPCache:
 
     .. warning::
 
-        Currently, this class does is not multi-process or thread safe.
+        Currently, this class is not multi-process or thread safe.
 
     Current database format
     -----------------------
@@ -65,21 +65,6 @@ class TFEPCache:
     Finally, a JSON file is used to store metadata about the experiment such as
     batch and epoch sizes.
 
-    Parameters
-    ----------
-    save_dir_path : str, optional
-        The main directory where to save the training and evaluation data. If not
-        given, it defaults to the current working directory.
-    data_loader : torch.utils.data.DataLoader, optional
-        The data loader used for training wrapping a :class:``tfep.io.dataset.TrajectoryDataset``.
-        This must be passed when a new cache is created as it is used to determine
-        epoch, batch, and trajectory dimensions. If ``save_dir_path`` points to
-        an existing cache, then this is ignored.
-    train_subdir_name : str, optional
-        The name of the subdirectory where the training data is stored.
-    eval_subdir_name : str, optional
-        The name of the subdirectory where the evaluation data is stored.
-
     """
 
     VERSION = '0.1'
@@ -94,6 +79,24 @@ class TFEPCache:
             train_subdir_name='train',
             eval_subdir_name='eval',
     ):
+        """Constructor.
+
+        Parameters
+        ----------
+        save_dir_path : str, optional
+            The main directory where to save the training and evaluation data.
+            If not given, it defaults to the current working directory.
+        data_loader : torch.utils.data.DataLoader, optional
+            The data loader used for training wrapping a :class:``tfep.io.dataset.TrajectoryDataset``.
+            This must be passed when a new cache is created as it is used to
+            determine epoch, batch, and trajectory dimensions. If ``save_dir_path``
+            points to an existing cache, then this is ignored.
+        train_subdir_name : str, optional
+            The name of the subdirectory where the training data is stored.
+        eval_subdir_name : str, optional
+            The name of the subdirectory where the evaluation data is stored.
+
+        """
         self._save_dir_path = os.path.realpath(save_dir_path)
         self._train_dir_path = os.path.join(save_dir_path, train_subdir_name)
         self._eval_dir_path = os.path.join(save_dir_path, eval_subdir_name)
