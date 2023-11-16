@@ -33,10 +33,9 @@ class MergedDataset(torch.utils.data.Dataset):
 
     Examples
     --------
-    >>> import torch
     >>> from tfep.io.dataset import DictDataset
-    >>> dataset1 = DictDataset({'a': torch.tensor([1., 2.])})
-    >>> dataset2 = DictDataset({'b': torch.tensor([3, 4])})
+    >>> dataset1 = DictDataset({'a': [1., 2.]})
+    >>> dataset2 = DictDataset({'b': [3, 4]})
     >>> merged = MergedDataset(dataset1, dataset2)
     >>> merged[1]
     {'a': tensor(2.), 'b': tensor(4)}
