@@ -6,7 +6,7 @@
 # =============================================================================
 
 """
-Utility class to merge multiple PyTorch ``Dataset``s.
+Utility class to merge multiple PyTorch ``Dataset``\ s.
 
 For usage examples see the documentation of :class:`.MergedDataset`.
 
@@ -25,7 +25,7 @@ import torch.utils.data
 # =============================================================================
 
 class MergedDataset(torch.utils.data.Dataset):
-    """Dataset merging multiple ``Dataset``s.
+    """Dataset merging multiple ``Dataset``\ s.
 
     The dataset constructs a batch by merging batches from the wrapped datasets.
     Currently, it supports only map-style datasets that return samples in
