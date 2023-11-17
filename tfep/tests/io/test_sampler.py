@@ -56,7 +56,7 @@ def test_shuffle(dataset_len5, shuffle):
 
     # Check the data order.
     x = next(iter(dataloader))['x']
-    sequential = torch.range(0, len(dataset_len5)-1, dtype=int)
+    sequential = torch.arange(0, len(dataset_len5), dtype=int)
     if shuffle:
         assert not torch.equal(x, sequential)
     else:

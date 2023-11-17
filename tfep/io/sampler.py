@@ -150,7 +150,7 @@ class StatefulBatchSampler(torch.utils.data.Sampler):
             generator.manual_seed(self._current_epoch_seed)
             epoch_indices = torch.randperm(len(self._dataset), generator=generator)
         else:  # Sequential.
-            epoch_indices = torch.range(0, len(self._dataset)-1, dtype=int)
+            epoch_indices = torch.arange(0, len(self._dataset), dtype=int)
 
         # Yield indices.
         for batch_idx in range(current_batch_idx, len(self)):
