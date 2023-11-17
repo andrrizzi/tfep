@@ -26,7 +26,7 @@ import torch
 # STATEFUL BATCH SAMPLER
 # =============================================================================
 
-class StatefulBatchSampler:
+class StatefulBatchSampler(torch.utils.data.Sampler):
     """A PyTorch stateful batch sampler to resume training mid-epoch.
 
     This class can be used with a PyTorch Lightning ``Trainer`` to implement
@@ -89,6 +89,8 @@ class StatefulBatchSampler:
             attribute.
 
         """
+        super().__init__()
+
         self._dataset = dataset
         self._batch_size = batch_size
         self._shuffle = shuffle
