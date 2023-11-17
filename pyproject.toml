@@ -25,6 +25,7 @@ dependencies = [
     "mdanalysis>=2.0",
     "numpy",
     "pint",
+    "lightning>=2.0",
 ]
 
 # Update the urls once the hosting is set up.
