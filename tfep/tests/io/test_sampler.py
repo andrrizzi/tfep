@@ -109,3 +109,13 @@ def test_resuming(dataset_len5):
     # In the second run, the first batch is not returned.
     assert len(samples2) == len(samples1) - 2
     assert samples2 == samples1[2:]
+
+
+def test_trainer_set(dataset_len5):
+    """An error is raised if the training is started without setting the trainer."""
+    trainer = MockTrainer()
+    sampler = StatefulBatchSampler(dataset_len5, shuffle=True, batch_size=2, drop_last=False)
+    dataloader = torch.utils.data.DataLoader(dataset_len5, batch_sampler=sampler)
+
+    with pytest.raises(RuntimeError, match='trainer must be set'):
+        next(iter(dataloader))
