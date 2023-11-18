@@ -20,6 +20,7 @@ dependencies:
   - mdanalysis >=2.0
   - numpy
   - pint
+  - lightning >=2.0
 
     # Optional packages.
   - psi4
