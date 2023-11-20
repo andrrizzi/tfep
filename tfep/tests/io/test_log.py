@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 import torch
 
-from tfep.io.logger import TFEPLogger
+from tfep.io.log import TFEPLogger
 
 
 # =============================================================================
