@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 import torch
 
-from tfep.io.cache import TFEPCache
+from tfep.io.log import TFEPLogger
 
 
 # =============================================================================
@@ -52,21 +52,21 @@ class DummyTrajectoryDataset(torch.utils.data.Dataset):
         return len(self.data)
 
 
-def check_all_and_named_train_tensors(cache, read_data, **kwargs):
+def check_all_and_named_train_tensors(logger, read_data, **kwargs):
     """
     Check whether reading all tensors or specific tensors results in the same behavior.
     Finally, assigns the read data to ``read_data``, which is a dict name -> tensor with
     shape (n_epochs, n_steps_per_epochs) of (n_epochs, n_batches_per_epochs) for metrics.
     """
     # Read all tensors at the same time.
-    data_all = cache.read_train_tensors(**kwargs)
-    metrics = cache.read_train_metrics(**kwargs)
+    data_all = logger.read_train_tensors(**kwargs)
+    metrics = logger.read_train_metrics(**kwargs)
     data_all.update(metrics)
     metrics = set(metrics.keys())
 
     # Find epoch/batch for assignment.
     if 'step_idx' in kwargs:
-        epoch_idx, batch_idx = divmod(kwargs['step_idx'], cache.n_batches_per_epoch)
+        epoch_idx, batch_idx = divmod(kwargs['step_idx'], logger.n_batches_per_epoch)
     else:
         epoch_idx = kwargs['epoch_idx']
         batch_idx = kwargs.get('batch_idx', None)
@@ -76,9 +76,9 @@ def check_all_and_named_train_tensors(cache, read_data, **kwargs):
         is_metric = name in metrics
 
         if is_metric:
-            data_single_tensor = cache.read_train_metrics(names=[name], **kwargs)
+            data_single_tensor = logger.read_train_metrics(names=[name], **kwargs)
         else:
-            data_single_tensor = cache.read_train_tensors(names=[name], **kwargs)
+            data_single_tensor = logger.read_train_tensors(names=[name], **kwargs)
         assert np.allclose(data_single_tensor[name], data_all[name])
 
         # Assign it to pre-allocated data array.
@@ -87,8 +87,8 @@ def check_all_and_named_train_tensors(cache, read_data, **kwargs):
         elif is_metric:
             read_data[name][epoch_idx, batch_idx] = data_single_tensor[name]
         else:
-            first = batch_idx * cache.batch_size
-            last = first + cache.batch_size
+            first = batch_idx * logger.batch_size
+            last = first + logger.batch_size
             read_data[name][epoch_idx, first:last] = data_single_tensor[name]
 
 
@@ -96,14 +96,14 @@ def check_all_and_named_train_tensors(cache, read_data, **kwargs):
 # TESTS
 # =============================================================================
 
-def test_tfep_cache_init_no_data_loader():
-    """An error is raised if a new TFEPCache is initialized without DataLoader."""
+def test_tfep_logger_init_no_data_loader():
+    """An error is raised if a new TFEPLogger is initialized without DataLoader."""
     with pytest.raises(ValueError, match='data_loader'):
-        TFEPCache(save_dir_path='tmp')
+        TFEPLogger(save_dir_path='tmp')
 
 
 @pytest.mark.parametrize('drop_last', [False, True])
-def test_tfep_cache_metadata(drop_last):
+def test_tfep_logger_metadata(drop_last):
     """Metadata is read from DataLoader and file correctly."""
     # Create data loader to test where n_frames is not divisible by batch_size.
     n_frames, batch_size = 9, 4
@@ -121,40 +121,40 @@ def test_tfep_cache_metadata(drop_last):
 
     with tempfile.TemporaryDirectory() as tmp_dir_path:
         # Test loading of metadata from DataLoader.
-        cache = TFEPCache(save_dir_path=tmp_dir_path, data_loader=data_loader)
-        assert cache.batch_size == batch_size
-        assert cache.n_samples_per_epoch == n_samples_per_epoch
+        logger = TFEPLogger(save_dir_path=tmp_dir_path, data_loader=data_loader)
+        assert logger.batch_size == batch_size
+        assert logger.n_samples_per_epoch == n_samples_per_epoch
 
         # Now load from disk.
-        cache = TFEPCache(save_dir_path=tmp_dir_path)
-        assert cache.batch_size == batch_size
-        assert cache.n_samples_per_epoch == n_samples_per_epoch
+        logger = TFEPLogger(save_dir_path=tmp_dir_path)
+        assert logger.batch_size == batch_size
+        assert logger.n_samples_per_epoch == n_samples_per_epoch
 
 
-def test_tfep_cache_save_tensors_no_indices():
+def test_tfep_logger_save_tensors_no_indices():
     """A warning is raised if samples indices are not passed to save_X_tensors."""
     with tempfile.TemporaryDirectory() as tmp_dir_path:
-        cache = TFEPCache(
+        logger = TFEPLogger(
             save_dir_path=tmp_dir_path,
             data_loader=torch.utils.data.DataLoader(DummyTrajectoryDataset())
         )
 
         # Training data.
         with pytest.warns(UserWarning, match='trajectory_sample_index'):
-            cache.save_train_tensors({'test': torch.randn(4, generator=GENERATOR)}, step_idx=0)
+            logger.save_train_tensors({'test': torch.randn(4, generator=GENERATOR)}, step_idx=0)
 
         # Evaluation data.
         with pytest.warns(UserWarning, match='trajectory_sample_index'):
-            cache.save_eval_tensors({'test': torch.randn(4, generator=GENERATOR)}, step_idx=0)
+            logger.save_eval_tensors({'test': torch.randn(4, generator=GENERATOR)}, step_idx=0)
 
 
 @pytest.mark.parametrize('n_frames,batch_size', [(9, 3), (9, 2)])
 @pytest.mark.parametrize('drop_last', [False, True])
 @pytest.mark.parametrize('resume_train', [False, True])
-def test_tfep_cache_save_read_train_tensors(n_frames, batch_size, drop_last, resume_train):
+def test_tfep_logger_save_read_train_tensors(n_frames, batch_size, drop_last, resume_train):
     """Simulate training for a few epochs, save and read everything.
 
-    If resume_train is True, the cache will be reinizialized in the midst
+    If resume_train is True, the logger will be reinizialized in the midst
     of the epoch (in each epoch) to simulate resuming training.
     """
     n_epochs = 2
@@ -163,16 +163,16 @@ def test_tfep_cache_save_read_train_tensors(n_frames, batch_size, drop_last, res
     data_loader = torch.utils.data.DataLoader(
         dataset, batch_size=batch_size, drop_last=drop_last, shuffle=True)
 
-    # The batch index at which to reinizialize the cache if resume_train is True.
+    # The batch index at which to reinizialize the logger if resume_train is True.
     reinit_batch_idx = len(data_loader) // 2
 
     with tempfile.TemporaryDirectory() as tmp_dir_path:
-        cache = TFEPCache(save_dir_path=tmp_dir_path, data_loader=data_loader)
+        logger = TFEPLogger(save_dir_path=tmp_dir_path, data_loader=data_loader)
 
         # This is the data we'll be writing.
-        ref_data = {k: torch.empty(n_epochs, cache.n_samples_per_epoch)
+        ref_data = {k: torch.empty(n_epochs, logger.n_samples_per_epoch)
                     for k in ['dataset_sample_index', 'mean']}
-        ref_data['metric'] = torch.empty(n_epochs, cache.n_batches_per_epoch)
+        ref_data['metric'] = torch.empty(n_epochs, logger.n_batches_per_epoch)
 
         # Simulate training for 2 epochs.
         for epoch_idx in range(n_epochs):
@@ -181,9 +181,9 @@ def test_tfep_cache_save_read_train_tensors(n_frames, batch_size, drop_last, res
                 batch_means = torch.mean(batch_data['positions'], dim=1) + epoch_idx
                 batch_metric = torch.std(batch_data['positions']) + epoch_idx
 
-                # Reinitialize the cache to test resuming.
+                # Reinitialize the logger to test resuming.
                 if resume_train and (batch_idx == reinit_batch_idx):
-                    cache = TFEPCache(save_dir_path=tmp_dir_path)
+                    logger = TFEPLogger(save_dir_path=tmp_dir_path)
 
                 # Store data using step.
                 step_idx = epoch_idx*len(data_loader) + batch_idx
@@ -191,8 +191,8 @@ def test_tfep_cache_save_read_train_tensors(n_frames, batch_size, drop_last, res
                     'dataset_sample_index': batch_data['dataset_sample_index'],
                     'mean': batch_means
                 }
-                cache.save_train_tensors(tensors=saved_tensors, step_idx=step_idx)
-                cache.save_train_metrics(tensors={'metric': batch_metric}, step_idx=step_idx)
+                logger.save_train_tensors(tensors=saved_tensors, step_idx=step_idx)
+                logger.save_train_metrics(tensors={'metric': batch_metric}, step_idx=step_idx)
 
                 # Keep track of the data for testing later.
                 first = batch_idx * batch_size
@@ -209,21 +209,21 @@ def test_tfep_cache_save_read_train_tensors(n_frames, batch_size, drop_last, res
         data_to_test = [{k: torch.empty_like(v) for k, v in ref_data.items()}]
         for epoch_idx in range(n_epochs):
             check_all_and_named_train_tensors(
-                cache, read_data=data_to_test[-1], epoch_idx=epoch_idx)
+                logger, read_data=data_to_test[-1], epoch_idx=epoch_idx)
 
         # Read one batch at a time.
         data_to_test.append({k: torch.empty_like(v) for k, v in ref_data.items()})
         for epoch_idx in range(n_epochs):
             for batch_idx in range(len(data_loader)):
                 check_all_and_named_train_tensors(
-                    cache, read_data=data_to_test[-1], epoch_idx=epoch_idx, batch_idx=batch_idx)
+                    logger, read_data=data_to_test[-1], epoch_idx=epoch_idx, batch_idx=batch_idx)
 
         # Read one step at a time.
         data_to_test.append({k: torch.empty_like(v) for k, v in ref_data.items()})
         n_steps = len(data_loader) * n_epochs
         for step_idx in range(n_steps):
             check_all_and_named_train_tensors(
-                cache, read_data=data_to_test[-1], step_idx=step_idx)
+                logger, read_data=data_to_test[-1], step_idx=step_idx)
 
         # Compare all reconstructed data with reference.
         for read_data in data_to_test:
@@ -231,15 +231,15 @@ def test_tfep_cache_save_read_train_tensors(n_frames, batch_size, drop_last, res
                 assert np.allclose(read_data[name], ref_tensor)
 
         # The returned type must be the same as those saved.
-        cache = TFEPCache(tmp_dir_path)
+        logger = TFEPLogger(tmp_dir_path)
         for epoch_idx in range(n_epochs):
-            read_data = cache.read_train_tensors(epoch_idx=0)
+            read_data = logger.read_train_tensors(epoch_idx=0)
             for name in read_data:
                 assert read_data[name].dtype == saved_tensors[name].dtype
 
 
-def test_tfep_cache_mask():
-    """When not all batch have been saved, reading the TFEPCache returns only the defined values."""
+def test_tfep_logger_mask():
+    """When not all batch have been saved, reading the TFEPLogger returns only the defined values."""
     dataset = DummyTrajectoryDataset(n_frames=6)
     data_loader = torch.utils.data.DataLoader(
         dataset, batch_size=2, drop_last=False, shuffle=True)
@@ -249,20 +249,20 @@ def test_tfep_cache_mask():
     metrics_data = torch.tensor([3., 6., 9.])
 
     with tempfile.TemporaryDirectory() as tmp_dir_path:
-        cache = TFEPCache(save_dir_path=tmp_dir_path, data_loader=data_loader)
+        logger = TFEPLogger(save_dir_path=tmp_dir_path, data_loader=data_loader)
 
         # Save the data for the last, the first, and the middle batch in this order.
         batch_order = [2, 0, 1]
         for write_idx, batch_idx in enumerate(batch_order):
             # Save tensor and metrics data.
-            cache.save_train_tensors({'dataset_sample_index': tensor_data[batch_idx]},
+            logger.save_train_tensors({'dataset_sample_index': tensor_data[batch_idx]},
                                      epoch_idx=1, batch_idx=batch_idx)
-            cache.save_train_metrics({'metric': metrics_data[batch_idx]},
+            logger.save_train_metrics({'metric': metrics_data[batch_idx]},
                                      epoch_idx=1, batch_idx=batch_idx)
 
             # Read the full data.
-            read_tensors = cache.read_train_tensors(epoch_idx=1)
-            read_metrics = cache.read_train_metrics(epoch_idx=1)
+            read_tensors = logger.read_train_tensors(epoch_idx=1)
+            read_metrics = logger.read_train_metrics(epoch_idx=1)
 
             # Expected tensor.
             expected_tensors = tensor_data[batch_order[:write_idx+1]].flatten().sort().values
@@ -274,12 +274,12 @@ def test_tfep_cache_mask():
 
 @pytest.mark.parametrize('func_type', ['train', 'eval'])
 def test_tfep_nans(func_type):
-    """TFEPCache can ignore NaNs of arbitrary quantities."""
+    """TFEPLogger can ignore NaNs of arbitrary quantities."""
     dataset = DummyTrajectoryDataset(n_frames=6)
     data_loader = torch.utils.data.DataLoader(
         dataset, batch_size=3, drop_last=False, shuffle=True)
 
-    # Data to store in the cache.
+    # Data to store in the logger.
     saved_tensors = {
         'dataset_sample_index': torch.tensor([4, 5, 8]),
         'quantity1': torch.tensor([1.0, float('nan'), 3.0]),
@@ -288,11 +288,11 @@ def test_tfep_nans(func_type):
 
     with tempfile.TemporaryDirectory() as tmp_dir_path:
         # Save some data for the last batch.
-        cache = TFEPCache(save_dir_path=tmp_dir_path, data_loader=data_loader)
-        getattr(cache, 'save_'+func_type+'_tensors')(saved_tensors, step_idx=0)
+        logger = TFEPLogger(save_dir_path=tmp_dir_path, data_loader=data_loader)
+        getattr(logger, 'save_'+func_type+'_tensors')(saved_tensors, step_idx=0)
 
-        # Now read the data with the current and a new cache.
-        for c in [cache, TFEPCache(tmp_dir_path)]:
+        # Now read the data with the current and a new logger.
+        for c in [logger, TFEPLogger(tmp_dir_path)]:
             read_func = 'read_'+func_type+'_tensors'
 
             # Without remove_nans, they are still there.
@@ -333,10 +333,10 @@ def test_tfep_nans(func_type):
 
 @pytest.mark.parametrize('n_frames,batch_size', [(9, 3), (9, 2)])
 @pytest.mark.parametrize('resume_eval', [False, True])
-def test_tfep_cache_save_read_eval_tensors(n_frames, batch_size, resume_eval):
+def test_tfep_logger_save_read_eval_tensors(n_frames, batch_size, resume_eval):
     """Simulate evaluating a model, save and read everything.
 
-    If resume_eval is True, the cache will be reinizialized in the midst
+    If resume_eval is True, the logger will be reinizialized in the midst
     of the epoch (in each epoch) to simulate resuming training.
     """
     # This can be a random number since it doesn't refer to a real model.
@@ -350,11 +350,11 @@ def test_tfep_cache_save_read_eval_tensors(n_frames, batch_size, resume_eval):
     data_loader = torch.utils.data.DataLoader(
         dataset, batch_size=batch_size, shuffle=True)
 
-    # The batch index at which to reinizialize the cache if resume_eval is True.
+    # The batch index at which to reinizialize the logger if resume_eval is True.
     reinit_batch_idx = len(data_loader) // 2
 
     with tempfile.TemporaryDirectory() as tmp_dir_path:
-        cache = TFEPCache(save_dir_path=tmp_dir_path, data_loader=data_loader)
+        logger = TFEPLogger(save_dir_path=tmp_dir_path, data_loader=data_loader)
 
         # Generate the reference data.
         ref_data = {
@@ -363,28 +363,28 @@ def test_tfep_cache_save_read_eval_tensors(n_frames, batch_size, resume_eval):
         }
 
         for batch_idx, batch_data in enumerate(data_loader):
-            # Reinitialize the cache to test resuming.
+            # Reinitialize the logger to test resuming.
             if resume_eval and (batch_idx == reinit_batch_idx):
-                cache = TFEPCache(save_dir_path=tmp_dir_path)
+                logger = TFEPLogger(save_dir_path=tmp_dir_path)
 
             # Generate some fake data to store.
             saved_tensors = {
                 'dataset_sample_index': batch_data['dataset_sample_index'],
                 'mean': torch.mean(batch_data['positions'], dim=1)
             }
-            cache.save_eval_tensors(
+            logger.save_eval_tensors(
                 tensors=saved_tensors,
                 step_idx=step_idx
             )
 
-        # Read the data from a file with the same cache and with a brand new one.
-        for cache in [cache, TFEPCache(save_dir_path=tmp_dir_path)]:
-            read_data = cache.read_eval_tensors(step_idx=step_idx, sort_by='dataset_sample_index')
+        # Read the data from a file with the same logger and with a brand new one.
+        for logger in [logger, TFEPLogger(save_dir_path=tmp_dir_path)]:
+            read_data = logger.read_eval_tensors(step_idx=step_idx, sort_by='dataset_sample_index')
 
             # Reading the data of named tensors should be identical.
             # Internally the data should be already sorted so no need to use sort_by again.
             for name in ref_data:
-                named_data = cache.read_eval_tensors(step_idx=step_idx)
+                named_data = logger.read_eval_tensors(step_idx=step_idx)
                 assert np.allclose(read_data[name], named_data[name])
                 assert np.allclose(read_data[name], ref_data[name])
                 # The returned type must be the same as those saved.
@@ -392,11 +392,11 @@ def test_tfep_cache_save_read_eval_tensors(n_frames, batch_size, resume_eval):
 
         # Now writing data with the same indices overwrite previous values.
         changed_indices = torch.Tensor(np.array([0, 3, 4]))
-        cache.save_eval_tensors(
+        logger.save_eval_tensors(
             tensors={'dataset_sample_index': changed_indices, 'mean': changed_indices},
             step_idx=step_idx, update=True
         )
 
-        read_data = TFEPCache(save_dir_path=tmp_dir_path).read_eval_tensors(step_idx=step_idx)
+        read_data = TFEPLogger(save_dir_path=tmp_dir_path).read_eval_tensors(step_idx=step_idx)
         assert np.allclose(read_data['dataset_sample_index'], ref_data['dataset_sample_index'])
         assert np.allclose(read_data['mean'][changed_indices.to(torch.int64)], changed_indices)

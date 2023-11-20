@@ -8,7 +8,7 @@
 """
 Utility classes to store potential energies and CVs necessary for TFEP.
 
-The module provides a class :class:`.TFEPCache` that provides an interface to
+The module provides a class :class:`.TFEPLogger` that provides an interface to
 store on/read from disk the potentials energies and CVs quantities that enter
 the TFEP equations.
 
@@ -28,10 +28,10 @@ import torch
 
 
 # =============================================================================
-# TFEP CACHE
+# TFEP LOGGER
 # =============================================================================
 
-class TFEPCache:
+class TFEPLogger:
     """Store and retrieve potential energies and CVs during training/evaluations.
 
     The user can use this to easily store and retrieve arbitrary per-sample
@@ -74,7 +74,7 @@ class TFEPCache:
 
     def __init__(
             self,
-            save_dir_path='tfep_cache',
+            save_dir_path='tfep_logs',
             data_loader=None,
             train_subdir_name='train',
             eval_subdir_name='eval',
@@ -85,12 +85,11 @@ class TFEPCache:
         ----------
         save_dir_path : str, optional
             The main directory where to save the training and evaluation data.
-            If not given, it defaults to the current working directory.
         data_loader : torch.utils.data.DataLoader, optional
             The data loader used for training wrapping a :class:``tfep.io.dataset.TrajectoryDataset``.
-            This must be passed when a new cache is created as it is used to
+            This must be passed when a new logger is created as it is used to
             determine epoch, batch, and trajectory dimensions. If ``save_dir_path``
-            points to an existing cache, then this is ignored.
+            points to an existing logger, then this is ignored.
         train_subdir_name : str, optional
             The name of the subdirectory where the training data is stored.
         eval_subdir_name : str, optional
@@ -109,7 +108,7 @@ class TFEPCache:
         self._loaded_eval_idx = None
         self._loaded_eval_data = None  # Dict[name, Tensor].
 
-        # Determine whether this is a new cache or we are resuming. The
+        # Determine whether this is a new logger or we are resuming. The
         # metadata file is the last file that is created in __init__().
         metadata_file_path = os.path.join(save_dir_path, self.METADATA_FILE_NAME)
         resume = os.path.isfile(metadata_file_path)
@@ -118,7 +117,7 @@ class TFEPCache:
         if resume:
             self._metadata_from_file(metadata_file_path)
         elif data_loader is None:
-            raise ValueError("When creating a new cache, 'data_loader' must be passed.")
+            raise ValueError("When creating a new logger, 'data_loader' must be passed.")
         else:
             self._metadata_from_data(data_loader)
 
@@ -375,7 +374,7 @@ class TFEPCache:
         update : bool, optional
             If ``True``, data points corresponding to already stored sample
             indices are updated (this slows down the method). If ``False``, this
-            check is not performed and all tensors are simply added to the cache.
+            check is not performed and all tensors are simply added to the logger.
 
         """
         # Warn the user about missing dataset_sample_index nor trajectory_sample_index.
@@ -441,7 +440,7 @@ class TFEPCache:
             else:
                 self._loaded_eval_data[name] = np.concatenate((current_arr, value))
 
-        # Update cached file on disk.
+        # Update file on disk.
         self._dump_data(data_type='eval')
 
     def save_train_tensors(self, tensors, step_idx=None, epoch_idx=None, batch_idx=None):
@@ -710,7 +709,7 @@ class TFEPCache:
                 saved_array[first:first+value_len] = value
                 mask[first:first+value_len] = True
 
-        # Update cached file on disk.
+        # Update file on disk.
         self._dump_data(data_type=data_type)
 
     def _save_metadata(self, file_path):
