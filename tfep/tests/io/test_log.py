@@ -6,7 +6,7 @@
 # =============================================================================
 
 """
-Test objects and function in the module ``tfep.io.cache``.
+Test objects and function in the module ``tfep.io.log``.
 """
 
 
