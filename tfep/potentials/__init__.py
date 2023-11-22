@@ -7,4 +7,4 @@
 
 """PyTorch-compatible potential energy functions."""
 
-__all__ = ['ase', 'psi4']
+__all__ = ['base', 'ase', 'psi4']

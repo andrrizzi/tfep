@@ -38,6 +38,7 @@ import numpy as np
 import pint
 import torch
 
+from tfep.potentials.base import PotentialBase
 from tfep.utils.cli import Launcher, CLITool, KeyValueOption
 from tfep.utils.misc import (
     flattened_to_atom, energies_array_to_tensor, forces_array_to_tensor, temporary_cd)
@@ -192,7 +193,7 @@ class GmxMdrun(CLITool):
 # TORCH MODULE API
 # =============================================================================
 
-class PotentialMiMiC(torch.nn.Module):
+class PotentialMiMiC(PotentialBase):
     """Potential energy and forces with MiMiC.
 
     This ``Module`` wraps :class:``.PotentialEnergyMiMiCFunc`` to provide a
@@ -201,91 +202,14 @@ class PotentialMiMiC(torch.nn.Module):
     ``numpy`` arrays in standard format (i.e., shape ``(n_atoms, 3)``) rather
     than flattened ``torch.Tensor``s (i.e., shape ``(n_atoms*3,)``).
 
-    Parameters
-    ----------
-    cpmd_cmd : tfep.potentials.mimic.Cpmd
-        The CPMD command to be run for MiMiC's execution that encapsulates the
-        path to the CPMD input script and options.
-
-        The ``&MIMIC.PATHS`` option and atomic coordinates can be placeholders
-        as they are automatically set by this function according to the
-        ``working_dir_path`` and ``batch_positions`` arguments. All other options
-        must be set correctly for the function to run successfully.
-    mdrun_cmd : tfep.potentials.mimic.GmxMdrun
-        The GMX mdrun command to be run for MiMiC's execution that encapsulates
-        the path to the GROMACS input script and running options.
-
-        The ``mdrun_cmd.tpr_input_file_path`` can be left unset since a new
-        ``.tpr`` file with the correct positions is automatically generated with
-        ``gromp_cmd``.
-    grompp_cmd : tfep.potentials.mimic.GmxGrompp, optional
-        This command is used to generate the the ``.tpr`` file with the correct
-        coordinates. To do so, the batch positions are first stored in a ``.trr``
-        file which is then passed to grompp. Thus, the ``GmxGrompp.tpr_output_file_path``
-        and ``GmxGrompp.trajectory_input_file_path`` options can be ``None``.
-    launcher : tfep.utils.cli.Launcher, optional
-        The ``Launcher`` to use to run the ``cpmd_cmd`` and ``mdrun_cmd``. If
-        not passed, a new :class:`tfep.utils.cli.Launcher` is created.
-    grompp_launcher : tfep.utils.cli.Launcher, optional
-        The ``Launcher`` to use to run the ``grompp_cmd`` command. If not passed,
-        a new :class:`tfep.utils.cli.Launcher` is created.
-    positions_unit : pint.Unit, optional
-        The unit of the positions passed. This is used to appropriately convert
-        ``batch_positions`` to the units used by MiMiC. If ``None``, no conversion
-        is performed, which assumes that the input positions are in Bohr.
-    energy_unit : pint.Unit, optional
-        The unit used for the returned energies (and as a consequence forces).
-        This is used to appropriately convert MiMiC energies into the desired
-        units. If ``None``, no conversion is performed, which means that energies
-        and forces will be in hartrees and hartrees/bohr respectively.
-    precompute_gradient : bool, optional
-        If ``False``, the ``FTRAJECTORY`` file is not read after executing MiMiC.
-        This might save a small amount of time if backpropagation is not needed.
-    working_dir_path : str or List[str], optional
-        The working directory to be used to run MiMiC and grompp. This must exist.
-        If a list, ``batch_positions[i]`` is evaluated in the directory
-        ``working_dir_path[i]``.
-    cleanup_working_dir : bool, optional
-        If ``True`` and ``working_dir_path`` is passed, all the files inside the
-        working directory are removed after executing MiMiC. The directory(s)
-        itself is not deleted.
-    parallelization_strategy : tfep.utils.parallel.ParallelizationStrategy, optional
-        The parallelization strategy used to distribute batches of energy and
-        gradient calculations. By default, these are executed serially.
-    launcher_kwargs : Dict, optional
-        Other kwargs for ``launcher`` (with the exception of ``cwd`` which is
-        automatically determined based on ``working_dir_path``).
-    grompp_launcher_kwargs : Dict, optional
-        Other kwargs for ``grompp_launcher``.
-    n_attempts : int, optional
-        Number of times MiMiC is restarted before raising a ``RuntimeError`` when
-        MiMiC crashes without creating an error report in the ``LocalError-X-X-X.log``
-        file.
-    on_unconverged : str, optional
-        Specifies how to handle the case in which the self-consistent calculation
-        did not converge. It can have the following values:
-        - ``'raise'``: Raises a ``RuntimeError`` and halts the execution.
-        - ``'success'``: Treat the calculation as converged and return the latest
-                         energy and force values.
-        - ``'nan'``: Return ``float('nan')`` energy and zero forces.
-
-        If this is set to anything other than ``'success'``, the ``stdout``
-        keyword argument must be included in ``launcher_kwargs`` and set to
-        ``subprocess.PIPE`` so that Python can intercept and parse the output
-        to detect the convergence warning message.
-    on_local_error : str, optional
-        Specifies how to handle the case in which the calculation ends with an
-        error and CPMD creates an error report in the ``LocalError-X-X-X.log``
-        file. It can have the following values:
-        - ``'raise'``: Raises a ``RuntimeError`` and halts the execution.
-        - ``'nan'``: Return ``float('nan')`` energy and zero forces.
-
-    See Also
-    --------
-    :class:`.PotentialEnergyMiMiCFunc`
-        More details on input parameters and implementation details.
-
     """
+
+    #: The default energy unit.
+    DEFAULT_ENERGY_UNIT : str = 'hartree'
+
+    #: The default position unit.
+    DEFAULT_POSITION_UNIT : str = 'bohr'
+
     def __init__(
             self,
             cpmd_cmd,
@@ -293,7 +217,7 @@ class PotentialMiMiC(torch.nn.Module):
             grompp_cmd,
             launcher=None,
             grompp_launcher=None,
-            positions_unit=None,
+            position_unit=None,
             energy_unit=None,
             precompute_gradient=True,
             working_dir_path=None,
@@ -305,15 +229,104 @@ class PotentialMiMiC(torch.nn.Module):
             on_unconverged='raise',
             on_local_error='raise',
     ):
-        super().__init__()
+        """Constructor.
+
+
+        Parameters
+        ----------
+        cpmd_cmd : tfep.potentials.mimic.Cpmd
+            The CPMD command to be run for MiMiC's execution that encapsulates
+            the path to the CPMD input script and options.
+
+            The ``&MIMIC.PATHS`` option and atomic coordinates can be placeholders
+            as they are automatically set by this function according to the
+            ``working_dir_path`` and ``batch_positions`` arguments. All other
+            options must be set correctly for the function to run successfully.
+        mdrun_cmd : tfep.potentials.mimic.GmxMdrun
+            The GMX mdrun command to be run for MiMiC's execution that encapsulates
+            the path to the GROMACS input script and running options.
+
+            The ``mdrun_cmd.tpr_input_file_path`` can be left unset since a new
+            ``.tpr`` file with the correct positions is automatically generated
+            with ``gromp_cmd``.
+        grompp_cmd : tfep.potentials.mimic.GmxGrompp, optional
+            This command is used to generate the the ``.tpr`` file with the correct
+            coordinates. To do so, the batch positions are first stored in a
+            ``.trr`` file which is then passed to grompp. Thus, the
+            ``GmxGrompp.tpr_output_file_path`` and ``GmxGrompp.trajectory_input_file_path``
+            options can be ``None``.
+        launcher : tfep.utils.cli.Launcher, optional
+            The ``Launcher`` to use to run the ``cpmd_cmd`` and ``mdrun_cmd``.
+            If not passed, a new :class:`tfep.utils.cli.Launcher` is created.
+        grompp_launcher : tfep.utils.cli.Launcher, optional
+            The ``Launcher`` to use to run the ``grompp_cmd`` command. If not
+            passed, a new :class:`tfep.utils.cli.Launcher` is created.
+        position_unit : pint.Unit, optional
+            The unit of the positions passed. This is used to appropriately convert
+            ``batch_positions`` to the units used by MiMiC. If ``None``, no
+            conversion is performed, which assumes that the input positions are
+            in Bohr.
+        energy_unit : pint.Unit, optional
+            The unit used for the returned energies (and as a consequence forces).
+            This is used to appropriately convert MiMiC energies into the desired
+            units. If ``None``, no conversion is performed, which means that
+            energies and forces will be in hartrees and hartrees/bohr respectively.
+        precompute_gradient : bool, optional
+            If ``False``, the ``FTRAJECTORY`` file is not read after executing
+            MiMiC. This might save a small amount of time if backpropagation is
+            not needed.
+        working_dir_path : str or List[str], optional
+            The working directory to be used to run MiMiC and grompp. This must
+            exist. If a list, ``batch_positions[i]`` is evaluated in the directory
+            ``working_dir_path[i]``.
+        cleanup_working_dir : bool, optional
+            If ``True`` and ``working_dir_path`` is passed, all the files inside
+            the working directory are removed after executing MiMiC. The directory(s)
+            itself is not deleted.
+        parallelization_strategy : tfep.utils.parallel.ParallelizationStrategy, optional
+            The parallelization strategy used to distribute batches of energy and
+            gradient calculations. By default, these are executed serially.
+        launcher_kwargs : Dict, optional
+            Other kwargs for ``launcher`` (with the exception of ``cwd`` which
+            is automatically determined based on ``working_dir_path``).
+        grompp_launcher_kwargs : Dict, optional
+            Other kwargs for ``grompp_launcher``.
+        n_attempts : int, optional
+            Number of times MiMiC is restarted before raising a ``RuntimeError``
+            when MiMiC crashes without creating an error report in the
+            ``LocalError-X-X-X.log`` file.
+        on_unconverged : str, optional
+            Specifies how to handle the case in which the self-consistent calculation
+            did not converge. It can have the following values:
+            - ``'raise'``: Raises a ``RuntimeError`` and halts the execution.
+            - ``'success'``: Treat the calculation as converged and return the
+                             latest energy and force values.
+            - ``'nan'``: Return ``float('nan')`` energy and zero forces.
+
+            If this is set to anything other than ``'success'``, the ``stdout``
+            keyword argument must be included in ``launcher_kwargs`` and set to
+            ``subprocess.PIPE`` so that Python can intercept and parse the output
+            to detect the convergence warning message.
+        on_local_error : str, optional
+            Specifies how to handle the case in which the calculation ends with
+            an error and CPMD creates an error report in the ``LocalError-X-X-X.log``
+            file. It can have the following values:
+            - ``'raise'``: Raises a ``RuntimeError`` and halts the execution.
+            - ``'nan'``: Return ``float('nan')`` energy and zero forces.
+
+        See Also
+        --------
+        :class:`.PotentialEnergyMiMiCFunc`
+            More details on input parameters and implementation details.
+
+        """
+        super().__init__(position_unit=position_unit, energy_unit=energy_unit)
 
         self.cpmd_cmd = cpmd_cmd
         self.mdrun_cmd = mdrun_cmd
         self.grompp_cmd = grompp_cmd
         self.launcher = launcher
         self.grompp_launcher = grompp_launcher
-        self.positions_unit = positions_unit
-        self.energy_unit = energy_unit
         self.precompute_gradient = precompute_gradient
         self.working_dir_path = working_dir_path
         self.cleanup_working_dir = cleanup_working_dir
@@ -331,8 +344,7 @@ class PotentialMiMiC(torch.nn.Module):
         ----------
         batch_positions : torch.Tensor
             A tensor of positions in flattened format (i.e., with shape
-            ``(batch_size, 3*n_atoms)``) in units of ``self.positions_units``
-            (or MiMiC units is ``positions_units`` was not provided).
+            ``(batch_size, 3*n_atoms)``) in units of ``self.position_unit``.
 
             Note that the order of the atoms is assumed to be that of the GROMACS
             input files, not the one used internally by CPMD (which always puts the
@@ -341,8 +353,7 @@ class PotentialMiMiC(torch.nn.Module):
         batch_cell : torch.Tensor, optional
             An tensor of box vectors with shape ``(batch_size, 3)`` defining the
             orthorhombic box side lengths (the only one currently supported in MiMiC)
-            in units of ``self.positions_units`` (or MiMiC units is ``positions_units``
-            was not provided).
+            in units of ``self.position_unit``.
 
         Returns
         -------
@@ -361,8 +372,8 @@ class PotentialMiMiC(torch.nn.Module):
             grompp_cmd=self.grompp_cmd,
             launcher=self.launcher,
             grompp_launcher=self.grompp_launcher,
-            positions_unit=self.positions_unit,
-            energy_unit=self.energy_unit,
+            position_unit=self._position_unit,
+            energy_unit=self._energy_unit,
             precompute_gradient=self.precompute_gradient,
             working_dir_path=self.working_dir_path,
             cleanup_working_dir=self.cleanup_working_dir,
@@ -485,15 +496,7 @@ class PotentialMiMiC(torch.nn.Module):
         try:
             batch_positions.units
         except AttributeError:
-            if self.position_unit is not None:
-                return batch_positions * self.position_unit
-            else:
-                # Find a unit registry.
-                if self.energy_unit is None:
-                    ureg = pint.UnitRegistry()
-                else:
-                    ureg = self.energy_unit._REGISTRY
-                return batch_positions * ureg.bohr
+            return batch_positions * self.position_unit
         return batch_positions
 
 
@@ -597,7 +600,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
     grompp_launcher : tfep.utils.cli.Launcher, optional
         The ``Launcher`` to use to run the ``grompp_cmd`` command. If not passed,
         a new :class:`tfep.utils.cli.Launcher` is created.
-    positions_unit : pint.Unit, optional
+    position_unit : pint.Unit, optional
         The unit of the positions passed. This is used to appropriately convert
         ``batch_positions`` to the units used by MiMiC. If ``None``, no conversion
         is performed, which assumes that the input positions are in Bohr.
@@ -671,7 +674,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
             grompp_cmd,
             launcher=None,
             grompp_launcher=None,
-            positions_unit=None,
+            position_unit=None,
             energy_unit=None,
             precompute_gradient=True,
             working_dir_path=None,
@@ -685,8 +688,8 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
     ):
         """Compute the potential energy of the molecule with MiMiC."""
         # Check for unit registry.
-        if positions_unit is not None:
-            unit_registry = positions_unit._REGISTRY
+        if position_unit is not None:
+            unit_registry = position_unit._REGISTRY
         elif energy_unit is not None:
             unit_registry = energy_unit._REGISTRY
         else:
@@ -694,17 +697,17 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
 
         # Convert flattened position tensor to numpy array of shape
         # (batch_size, n_atoms, 3) and attach units.
-        if positions_unit is None:
-            positions_unit = unit_registry.bohr
+        if position_unit is None:
+            position_unit = PotentialMiMiC.default_position_unit(unit_registry)
 
         batch_positions_arr = flattened_to_atom(batch_positions.detach().numpy())
-        batch_positions_arr *= positions_unit
+        batch_positions_arr *= position_unit
 
         if batch_cell is None:
             batch_cell_arr = None
         else:
             batch_cell_arr = batch_cell.detach().numpy()
-            batch_cell_arr *= positions_unit
+            batch_cell_arr *= position_unit
 
         # Determine whether we need forces.
         if precompute_gradient:
@@ -740,7 +743,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
             energies, forces = result
             # Convert the force to a flattened tensor before storing it in ctx.
             # to compute the gradient during backpropagation.
-            forces = forces_array_to_tensor(forces, positions_unit, energy_unit,
+            forces = forces_array_to_tensor(forces, position_unit, energy_unit,
                                             dtype=batch_positions.dtype)
             ctx.save_for_backward(forces)
 
@@ -779,7 +782,7 @@ def potential_energy_mimic(
         grompp_cmd,
         launcher=None,
         grompp_launcher=None,
-        positions_unit=None,
+        position_unit=None,
         energy_unit=None,
         precompute_gradient=True,
         working_dir_path=None,
@@ -812,7 +815,7 @@ def potential_energy_mimic(
         grompp_cmd,
         launcher,
         grompp_launcher,
-        positions_unit,
+        position_unit,
         energy_unit,
         precompute_gradient,
         working_dir_path,
@@ -1034,10 +1037,12 @@ def _run_mimic(
         returned_values = [res[0] for res in returned_values]
 
     # Add units.
+    default_energy_unit = PotentialMiMiC.default_energy_unit(unit_registry)
+    default_potential_unit = PotentialMiMiC.default_position_unit(unit_registry)
     if return_energy:
-        returned_values[0] = returned_values[0] * unit_registry.hartree
+        returned_values[0] = returned_values[0] * default_energy_unit
     if return_force:
-        returned_values[-1] = returned_values[-1] * unit_registry.hartree / unit_registry.bohr
+        returned_values[-1] = returned_values[-1] * default_energy_unit / default_potential_unit
 
     return returned_values
 
@@ -1248,13 +1253,13 @@ def _prepare_cpmd_command(cpmd_cmd, working_dir_path, positions=None, box_vector
     # Update the box vectors and positions.
     if positions is not None:
         if box_vectors is not None:
-            box_vectors_bohr = box_vectors.to('bohr').magnitude
+            box_vectors_bohr = box_vectors.to(PotentialMiMiC.DEFAULT_POSITION_UNIT).magnitude
             cpmd_file_lines[box_vectors_line_idx] = ' '.join([str(x) for x in box_vectors_bohr]) + '\n'
 
         # Cycle through all atoms and update their lines one by one.
         for gromacs_atom_idx, cpmd_atom_idx in gromacs_to_cpmd_atom_map.items():
             line_idx = cpmd_atom_to_line_idx[cpmd_atom_idx]
-            atom_position = positions[gromacs_atom_idx].to('bohr').magnitude
+            atom_position = positions[gromacs_atom_idx].to(PotentialMiMiC.DEFAULT_POSITION_UNIT).magnitude
             cpmd_file_lines[line_idx] = ' '.join([str(x) for x in atom_position]) + '\n'
 
     # Create a modified copy of the file and update the command to point to it.

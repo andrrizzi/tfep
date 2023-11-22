@@ -135,7 +135,9 @@ def pool_process_initializer(tmp_dir):
 @contextlib.contextmanager
 def parallelization_strategy(strategy_name, tmp_dir):
     """Context manager safely creating/destroying the parallelization strategy."""
-    if strategy_name == 'serial':
+    if strategy_name is None:
+        yield None  # Default parallelization strategy.
+    elif strategy_name == 'serial':
         yield SerialStrategy()
     else:
         # Keep the pool of processes open until the contextmanager has left.
@@ -177,7 +179,7 @@ def reference_energy_forces(atoms, batch_positions):
 
 @pytest.mark.skipif(not ASE_INSTALLED, reason='requires ASE to be installed')
 @pytest.mark.parametrize('batch_size', [1, 2])
-@pytest.mark.parametrize('strategy', ['serial', 'pool'])
+@pytest.mark.parametrize('strategy', [None, 'serial', 'pool'])
 @pytest.mark.parametrize('calculator', _CALCULATORS)
 def test_potential_ase_energy_force(batch_size, strategy, calculator):
     """Test the calculation of energies/forces with PotentialASE.

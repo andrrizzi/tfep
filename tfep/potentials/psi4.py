@@ -22,6 +22,7 @@ import numpy as np
 import pint
 import torch
 
+from tfep.potentials.base import PotentialBase
 from tfep.utils.misc import flattened_to_atom, energies_array_to_tensor, forces_array_to_tensor
 from tfep.utils.parallel import SerialStrategy
 
@@ -139,15 +140,11 @@ def configure_psi4(
         psi4.set_options(global_options)
 
 
-def _psi4_default_energy_units(ureg):
-    return ureg.hartree
-
-
 # =============================================================================
 # TORCH MODULE API
 # =============================================================================
 
-class PotentialPsi4(torch.nn.Module):
+class PotentialPsi4(PotentialBase):
     """Potential energy and forces with Psi4.
 
     This ``Module`` wraps :class:``.PotentialEnergyPsi4Func`` to provide a
@@ -166,6 +163,13 @@ class PotentialPsi4(torch.nn.Module):
         More information on the supported keyword arguments.
 
     """
+
+    #: The default energy unit.
+    DEFAULT_ENERGY_UNIT : str = 'hartree'
+
+    #: The default position unit.
+    DEFAULT_POSITION_UNIT : str = 'bohr'
+
     def __init__(
             self,
             name,
@@ -220,7 +224,7 @@ class PotentialPsi4(torch.nn.Module):
             ``psi4.energy``, and ``psi4.gradient``.
 
         """
-        super().__init__()
+        super().__init__(position_unit=position_unit, energy_unit=energy_unit)
 
         # Handle mutable default arguments.
         if parallelization_strategy is None:
@@ -228,26 +232,10 @@ class PotentialPsi4(torch.nn.Module):
 
         self.name = name
         self.molecule = molecule
-        self.position_unit = position_unit
-        self._energy_unit = energy_unit
         self.precompute_gradient = precompute_gradient
         self.parallelization_strategy = parallelization_strategy
         self.on_unconverged = on_unconverged
         self.kwargs = kwargs
-
-    @property
-    def energy_unit(self) -> pint.Quantity:
-        """The energy units of the returned potential."""
-        if self._energy_unit is None:
-            # Get a compatible unit registry.
-            if self.position_unit is None:
-                ureg = pint.UnitRegistry()
-            else:
-                ureg = self.position_unit._REGISTRY
-
-            # Return the default psi4 energy units.
-            return _psi4_default_energy_units(ureg)
-        return self._energy_unit
 
     def forward(self, batch_positions):
         """Compute a differential potential energy for a batch of configurations.
@@ -270,7 +258,7 @@ class PotentialPsi4(torch.nn.Module):
             batch_positions=batch_positions,
             name=self.name,
             molecule=self.molecule,
-            positions_unit=self.position_unit,
+            positions_unit=self._position_unit,
             energy_unit=self._energy_unit,
             precompute_gradient=self.precompute_gradient,
             parallelization_strategy=self.parallelization_strategy,
@@ -344,15 +332,7 @@ class PotentialPsi4(torch.nn.Module):
         try:
             batch_positions.units
         except AttributeError:
-            if self.position_unit is not None:
-                return batch_positions * self.position_unit
-            else:
-                # Find a unit registry.
-                if self._energy_unit is None:
-                    ureg = pint.UnitRegistry()
-                else:
-                    ureg = self._energy_unit._REGISTRY
-                return batch_positions * ureg.bohr
+            return batch_positions * self.position_unit
         return batch_positions
 
 
@@ -546,7 +526,7 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
         # Convert tensor to numpy array with shape (batch_size, n_atoms, 3) with attached units.
         batch_positions_arr = flattened_to_atom(batch_positions.detach().numpy())
         if positions_unit is None:
-            batch_positions_arr *= unit_registry.bohr
+            batch_positions_arr *= PotentialPsi4.default_position_unit(unit_registry)
         else:
             batch_positions_arr *= positions_unit
 
@@ -733,12 +713,13 @@ class _PotentialEnergyPsi4FuncBackward(torch.autograd.Function):
             # TODO: Make this a parameter?
             max_disp = 1e-3
             ureg = ctx.batch_positions_arr._REGISTRY
+            default_position_unit = PotentialPsi4.default_position_unit(ureg)
             if ctx.positions_unit is None:
-                positions_unit = ureg.bohr
+                positions_unit = default_position_unit
             else:
                 # batch_positions is not in bohr.
                 positions_unit = ctx.positions_unit
-                max_disp = (max_disp * ureg.bohr).to(positions_unit).magnitude
+                max_disp = (max_disp * default_position_unit).to(positions_unit).magnitude
 
             # epsilon[i] is the scalar multiplying the displacement for batch i.
             # shape: (batch_size, 1).
@@ -998,7 +979,7 @@ def _run_psi4(
         # Convert to a list to avoid code branching.
         batch_positions_bohr = [None]
     else:
-        batch_positions_bohr = batch_positions.to('bohr').magnitude
+        batch_positions_bohr = batch_positions.to(PotentialPsi4.position_unit).magnitude
         if len(batch_positions.shape) < 3:
             # Convert batch_positions to a unitless (in Psi4 units) numpy array
             # of shape (batch_size, n_atoms, 3).
@@ -1056,9 +1037,9 @@ def _run_psi4(
     # Prepare returned values and handle units.
     returned_values = []
     if return_energy:
-        returned_values.append(energies * _psi4_default_energy_units(unit_registry))
+        returned_values.append(energies * PotentialPsi4.default_energy_unit(unit_registry))
     if return_force:
-        returned_values.append(forces * _psi4_default_energy_units(unit_registry) / unit_registry.bohr)
+        returned_values.append(forces * PotentialPsi4.default_energy_unit(unit_registry) / PotentialPsi4.default_position_unit(unit_registry))
     if return_wfn:
         returned_values.append(wavefunctions)
 

@@ -33,13 +33,14 @@ from tfep.utils.misc import (
     energies_array_to_tensor, forces_array_to_tensor
 )
 from tfep.utils.parallel import SerialStrategy
+from tfep.potentials.base import PotentialBase
 
 
 # =============================================================================
 # TORCH MODULE API
 # =============================================================================
 
-class PotentialASE(torch.nn.Module):
+class PotentialASE(PotentialBase):
     """Potential energy and forces with ASE.
 
     This ``Module`` wraps :class:``.PotentialEnergyASEFunc`` to provide a
@@ -49,44 +50,14 @@ class PotentialASE(torch.nn.Module):
         Currently double-backpropagation is not supported, which means force
         matching cannot be performed during training.
 
-    Parameters
-    ----------
-    calculator : ase.calculators.calculator.Calculator
-        The ASE calculator used to compute energies and forces.
-    symbols : str or List[str]
-        The symbols of the atoms elements used to initialize the ``ase.Atoms``
-        object. It can be a string formula, a list of symbols, or a list of
-        ``ase.Atom`` objects.  Examples: ``'H2O'``, ``'COPt12'``, ``['H', 'H', 'O']``,
-        ``[Atom('Ne', (x, y, z)), ...]``.
-    numbers: List[int]
-        Atomic numbers (use only one between symbols and numbers).
-    pbc: bool or three bool
-        Periodic boundary conditions flags.  Examples: ``True``, ``False``, ``0``,
-        ``1``, ``(1, 1, 0)``, ``(True, False, False)``. Default value: ``False``.
-    positions_unit : pint.Unit, optional
-        The unit of the positions passed to the class methods. Since input
-        ``Tensor``s do not have units attached, this is used to appropriately
-        convert ``batch_positions`` to ASE units. If ``None``, no conversion is
-        performed, which assumes that the input positions are in the same units
-        used by ASE.
-    energy_unit : pint.Unit, optional
-        The unit used for the returned energies (and as a consequence forces).
-        Since ``Tensor``s do not have units attached, this is used to appropriately
-        convert ASE energies into the desired units. If ``None``, no conversion
-        is performed, which means that energies and forces will be returned in
-        ASE units.
-    parallelization_strategy : tfep.utils.parallel.ParallelizationStrategy, optional
-        The parallelization strategy used to distribute batches of energy and
-        gradient calculations. By default, these are executed serially.
-    **atoms_kwargs
-        Other keyword arguments for ``ase.Atoms``.
-
-    See Also
-    --------
-    :class:`.PotentialEnergyASEFunc`
-        More details on input parameters and implementation details.
-
     """
+
+    #: The default energy unit.
+    DEFAULT_ENERGY_UNIT : str = 'eV'
+
+    #: The default position unit.
+    DEFAULT_POSITION_UNIT : str = 'angstrom'
+
     def __init__(
             self,
             calculator,
@@ -98,9 +69,49 @@ class PotentialASE(torch.nn.Module):
             parallelization_strategy=None,
             **atoms_kwargs,
     ):
+        """Constructor.
+
+        Parameters
+        ----------
+        calculator : ase.calculators.calculator.Calculator
+            The ASE calculator used to compute energies and forces.
+        symbols : str or List[str]
+            The symbols of the atoms elements used to initialize the ``ase.Atoms``
+            object. It can be a string formula, a list of symbols, or a list of
+            ``ase.Atom`` objects.  Examples: ``'H2O'``, ``'COPt12'``, ``['H', 'H', 'O']``,
+            ``[Atom('Ne', (x, y, z)), ...]``.
+        numbers: List[int]
+            Atomic numbers (use only one between symbols and numbers).
+        pbc: bool or three bool
+            Periodic boundary conditions flags.  Examples: ``True``, ``False``,
+            ``0``, ``1``, ``(1, 1, 0)``, ``(True, False, False)``.
+        positions_unit : pint.Unit, optional
+            The unit of the positions passed to the class methods. Since input
+            ``Tensor``s do not have units attached, this is used to appropriately
+            convert ``batch_positions`` to ASE units. If ``None``, no conversion
+            is performed, which assumes that the input positions are in the same
+            units used by ASE.
+        energy_unit : pint.Unit, optional
+            The unit used for the returned energies (and as a consequence forces).
+            Since ``Tensor``s do not have units attached, this is used to
+            appropriately convert ASE energies into the desired units. If ``None``
+            is performed, which means that energies and forces will be returned
+            in ASE units.
+        parallelization_strategy : tfep.utils.parallel.ParallelizationStrategy, optional
+            The parallelization strategy used to distribute batches of energy and
+            gradient calculations. By default, these are executed serially.
+        **atoms_kwargs
+            Other keyword arguments for ``ase.Atoms``.
+
+        See Also
+        --------
+        :class:`.PotentialEnergyASEFunc`
+            More details on input parameters and implementation details.
+
+        """
         from ase import Atoms
 
-        super().__init__()
+        super().__init__(position_unit=position_unit, energy_unit=energy_unit)
 
         # Handle mutable default arguments.
         if parallelization_strategy is None:
@@ -113,8 +124,6 @@ class PotentialASE(torch.nn.Module):
             calculator=calculator,
             **atoms_kwargs,
         )
-        self.position_unit = position_unit
-        self.energy_unit = energy_unit
         self.parallelization_strategy = parallelization_strategy
 
     def forward(self, batch_positions, batch_cell=None):
@@ -124,15 +133,13 @@ class PotentialASE(torch.nn.Module):
         ----------
         batch_positions : torch.Tensor
             Shape ``(batch_size, 3*n_atoms)``. The atoms positions in units of
-            ``self.position_unit`` (or ASE units if ``self.position_unit`` is
-            not provided).
+            ``self.position_unit``.
         batch_cell : torch.Tensor, optional
             Shape ``(batch_size, 3, 3)`` or ``(batch_size, 3)`` or ``(batch_size, 6)``.
             Unit cell vectors.  Can also be given as just three numbers for
             orthorhombic cells, or 6 numbers, where first three are lengths of
-            unit cell vectors (in units of ``self.position_unit`` or ASE units
-            if ``self.position_unit`` is not provided), and the other three are
-            angles between them (in degrees), in following order:
+            unit cell vectors (in units of ``self.position_unit``, and the other
+            three are angles between them (in degrees), in following order:
             ``[len(a), len(b), len(c), angle(b,c), angle(a,c), angle(a,b)]``.
             First vector will lie in x-direction, second in xy-plane, and the
             third one in z-positive subspace.
@@ -141,16 +148,15 @@ class PotentialASE(torch.nn.Module):
         -------
         potential_energy : torch.Tensor
             ``potential_energy[i]`` is the potential energy of configuration
-            ``batch_positions[i]`` in units of ``self.energy_unit`` (or ASE
-            units if ``energy_unit`` is not provided).
+            ``batch_positions[i]`` in units of ``self.energy_unit``.
 
         """
         return potential_energy_ase(
             batch_positions,
             atoms=self.atoms,
             batch_cell=batch_cell,
-            positions_unit=self.position_unit,
-            energy_unit=self.energy_unit,
+            positions_unit=self._position_unit,
+            energy_unit=self._energy_unit,
             parallelization_strategy=self.parallelization_strategy,
         )
 
@@ -236,7 +242,7 @@ class PotentialEnergyASEFunc(torch.autograd.Function):
         # Convert tensor to numpy array with shape (batch_size, n_atoms, 3) and in ASE units (angstrom).
         batch_positions_arr_ang = flattened_to_atom(batch_positions.detach().numpy())
         if positions_unit is not None:
-            batch_positions_arr_ang = _to_angstrom(batch_positions_arr_ang, positions_unit)
+            batch_positions_arr_ang = _to_ase_units(batch_positions_arr_ang, positions_unit)
 
         # We need to convert also the cells in Angstroms.
         if batch_cell is not None:
@@ -244,10 +250,10 @@ class PotentialEnergyASEFunc(torch.autograd.Function):
             if positions_unit is not None:
                 if batch_cell.shape[1:] == (6,):
                     # The last 3 entires of each batch cell are angles, not lengths.
-                    batch_cell_arr_ang[:, :3] = _to_angstrom(batch_cell_arr_ang[:, :3], positions_unit)
+                    batch_cell_arr_ang[:, :3] = _to_ase_units(batch_cell_arr_ang[:, :3], positions_unit)
                 else:
                     # All entries of batch_cells are lengths.
-                    batch_cell_arr_ang = _to_angstrom(batch_cell_arr_ang, positions_unit)
+                    batch_cell_arr_ang = _to_ase_units(batch_cell_arr_ang, positions_unit)
 
         # We use functools.partial to encode the arguments that are common to all tasks.
         if batch_cell is None:
@@ -269,7 +275,7 @@ class PotentialEnergyASEFunc(torch.autograd.Function):
         if energy_unit is None:
             energies = torch.tensor(energies)
         else:
-            energies *= energy_unit._REGISTRY.eV
+            energies *= PotentialASE.default_energy_unit(energy_unit._REGISTRY)
             energies = energies_array_to_tensor(energies, energy_unit, batch_positions.dtype)
 
         # Save the Atoms objects with the results of the calculation (including
@@ -302,7 +308,9 @@ class PotentialEnergyASEFunc(torch.autograd.Function):
                 forces = torch.from_numpy(atom_to_flattened(forces))
             else:
                 ureg = ctx.energy_unit._REGISTRY
-                forces *= ureg.eV / ureg.angstrom
+                default_position_unit = PotentialASE.default_position_unit(ureg)
+                default_energy_unit = PotentialASE.default_energy_unit(ureg)
+                forces *= default_energy_unit / default_position_unit
                 forces = forces_array_to_tensor(forces, ctx.positions_unit,
                                                 ctx.energy_unit, dtype=ctx.dtype)
 
@@ -347,9 +355,10 @@ def potential_energy_ase(
 # RUNNING UTILITY FUNCTIONS
 # =============================================================================
 
-def _to_angstrom(x, positions_unit):
+def _to_ase_units(x, positions_unit):
     """Convert x from positions_unit to angstroms."""
-    return (x * positions_unit).to(positions_unit._REGISTRY.angstrom).magnitude
+    default_position_unit = PotentialASE.default_position_unit(positions_unit._REGISTRY)
+    return (x * positions_unit).to(default_position_unit).magnitude
 
 
 def _get_potential_energy_task(
