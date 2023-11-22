@@ -225,11 +225,25 @@ class PotentialPsi4(torch.nn.Module):
         self.name = name
         self.molecule = molecule
         self.position_unit = position_unit
-        self.energy_unit = energy_unit
+        self._energy_unit = energy_unit
         self.precompute_gradient = precompute_gradient
         self.parallelization_strategy = parallelization_strategy
         self.on_unconverged = on_unconverged
         self.kwargs = kwargs
+
+    @property
+    def energy_unit(self) -> pint.Quantity:
+        """The energy units of the returned potential."""
+        if self._energy_unit is None:
+            # Get a compatible unit registry.
+            if self.position_unit is None:
+                ureg = pint.UnitRegistry()
+            else:
+                ureg = self.position_unit._REGISTRY
+
+            # Return the default psi4 energy units.
+            return ureg.hartree
+        return self._energy_unit
 
     def forward(self, batch_positions):
         """Compute a differential potential energy for a batch of configurations.
@@ -245,8 +259,7 @@ class PotentialPsi4(torch.nn.Module):
         -------
         potential_energy : torch.Tensor
             ``potential_energy[i]`` is the potential energy of configuration
-            ``batch_positions[i]`` in units of ``self.energy_unit`` (or Psi4
-            units if ``energy_unit`` is not provided).
+            ``batch_positions[i]`` in units of ``self.energy_unit``.
 
         """
         return potential_energy_psi4(
@@ -254,7 +267,7 @@ class PotentialPsi4(torch.nn.Module):
             name=self.name,
             molecule=self.molecule,
             positions_unit=self.position_unit,
-            energy_unit=self.energy_unit,
+            energy_unit=self._energy_unit,
             precompute_gradient=self.precompute_gradient,
             parallelization_strategy=self.parallelization_strategy,
             on_unconverged=self.on_unconverged,
@@ -331,10 +344,10 @@ class PotentialPsi4(torch.nn.Module):
                 return batch_positions * self.position_unit
             else:
                 # Find a unit registry.
-                if self.energy_unit is None:
+                if self._energy_unit is None:
                     ureg = pint.UnitRegistry()
                 else:
-                    ureg = self.energy_unit._REGISTRY
+                    ureg = self._energy_unit._REGISTRY
                 return batch_positions * ureg.bohr
         return batch_positions
 
