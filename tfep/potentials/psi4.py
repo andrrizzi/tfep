@@ -139,6 +139,10 @@ def configure_psi4(
         psi4.set_options(global_options)
 
 
+def _psi4_default_energy_units(ureg):
+    return ureg.hartree
+
+
 # =============================================================================
 # TORCH MODULE API
 # =============================================================================
@@ -242,7 +246,7 @@ class PotentialPsi4(torch.nn.Module):
                 ureg = self.position_unit._REGISTRY
 
             # Return the default psi4 energy units.
-            return ureg.hartree
+            return _psi4_default_energy_units(ureg)
         return self._energy_unit
 
     def forward(self, batch_positions):
@@ -1052,9 +1056,9 @@ def _run_psi4(
     # Prepare returned values and handle units.
     returned_values = []
     if return_energy:
-        returned_values.append(energies * unit_registry.hartree)
+        returned_values.append(energies * _psi4_default_energy_units(unit_registry))
     if return_force:
-        returned_values.append(forces * unit_registry.hartree / unit_registry.bohr)
+        returned_values.append(forces * _psi4_default_energy_units(unit_registry) / unit_registry.bohr)
     if return_wfn:
         returned_values.append(wavefunctions)
 
