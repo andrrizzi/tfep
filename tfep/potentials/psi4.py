@@ -152,44 +152,6 @@ class PotentialPsi4(torch.nn.Module):
     ``numpy`` arrays in standard format (i.e., shape ``(n_atoms, 3)``) rather
     than flattened ``torch.Tensor``s (i.e., shape ``(n_atoms*3,)``).
 
-    Parameters
-    ----------
-    name : str
-        The name of the potential to pass to ``psi4.energy()``.
-    molecule : psi4.core.Molecule, optional
-        If not ``None``, this will be set as the currently activated molecule
-        in Psi4. Note that the old active molecule is not restored at the end
-        of the execution.
-    positions_unit : pint.Unit, optional
-        The unit of the positions passed to the class methods. Since ``Tensor``s
-        and positions returned by MDAnalysis normally do not have ``pint`` units
-        attached, this is used to appropriately convert ``batch_positions`` to
-        Psi4 units. If ``None``, no conversion is performed, which assumes that
-        the input positions are in the same units used by Psi4.
-    energy_unit : pint.Unit, optional
-        The unit used for the returned energies (and as a consequence forces).
-        Since ``Tensor``s and positions returned by MDAnalysis normally do not
-        have ``pint`` units attached, this is used to appropriately convert Psi4
-        energies into the desired units. If ``None``, no conversion is performed,
-        which means that energies and forces will be returned in Psi4 units.
-    precompute_gradient : bool, optional
-        If ``True``, the gradient is computed in the forward pass and saved to
-        be consumed during backward.
-    parallelization_strategy : tfep.utils.parallel.ParallelizationStrategy, optional
-        The parallelization strategy used to distribute batches of energy and
-        gradient calculations. By default, these are executed serially using
-        the thread-based parallelization native in psi4.
-    on_unconverged : str, optional
-        Specifies how to handle the case in which the calculation did not converge.
-        It can have the following values:
-        - ``'raise'``: Raise the Psi4 exception.
-        - ``'nan'``: Return ``float('nan')`` energy and zero forces.
-        To treat the calculation as converged and return the latest energy, force,
-        and/or wavefunction, simply set the psi4 global option ``'fail_on_maxiter'``.
-    **kwargs
-        Other keyword arguments to pass to :class:``.PotentialEnergyPsi4Func``,
-        ``psi4.energy``, and ``psi4.gradient``.
-
     See Also
     --------
     :class:`.PotentialEnergyPsi4Func`
@@ -211,6 +173,49 @@ class PotentialPsi4(torch.nn.Module):
             on_unconverged='raise',
             **kwargs
     ):
+        """Constructor
+
+        Parameters
+        ----------
+        name : str
+            The name of the potential to pass to ``psi4.energy()``.
+        molecule : psi4.core.Molecule, optional
+            If not ``None``, this will be set as the currently activated molecule
+            in Psi4. Note that the old active molecule is not restored at the end
+            of the execution.
+        positions_unit : pint.Unit, optional
+            The unit of the positions passed to the class methods. Since ``Tensor``s
+            and positions returned by MDAnalysis normally do not have ``pint``
+            units attached, this is used to appropriately convert ``batch_positions``
+            to Psi4 units. If ``None``, no conversion is performed, which assumes
+            that the input positions are in the same units used by Psi4.
+        energy_unit : pint.Unit, optional
+            The unit used for the returned energies (and as a consequence forces).
+            Since ``Tensor``s and positions returned by MDAnalysis normally do
+            not have ``pint`` units attached, this is used to appropriately convert
+            Psi4 energies into the desired units. If ``None``, no conversion is
+            performed, which means that energies and forces will be returned in
+            Psi4 units.
+        precompute_gradient : bool, optional
+            If ``True``, the gradient is computed in the forward pass and saved
+            to be consumed during backward.
+        parallelization_strategy : tfep.utils.parallel.ParallelizationStrategy, optional
+            The parallelization strategy used to distribute batches of energy and
+            gradient calculations. By default, these are executed serially using
+            the thread-based parallelization native in psi4.
+        on_unconverged : str, optional
+            Specifies how to handle the case in which the calculation did not
+            converge. It can have the following values:
+            - ``'raise'``: Raise the Psi4 exception.
+            - ``'nan'``: Return ``float('nan')`` energy and zero forces.
+            To treat the calculation as converged and return the latest energy,
+            force, and/or wavefunction, simply set the psi4 global option
+            ``'fail_on_maxiter'``.
+        **kwargs
+            Other keyword arguments to pass to :class:``.PotentialEnergyPsi4Func``,
+            ``psi4.energy``, and ``psi4.gradient``.
+
+        """
         super().__init__()
 
         # Handle mutable default arguments.
