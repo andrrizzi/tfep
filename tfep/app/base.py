@@ -122,7 +122,11 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         # Internally, rather than the temperature, save the (unitless) value of
         # kT, in the same units of energy returned by potential_energy_func.
         units = temperature._REGISTRY
-        self._kT = (temperature * units.molar_gas_constant).to(potential_energy_func.energy_unit).magnitude
+        try:
+            kT = (temperature * units.molar_gas_constant).to(potential_energy_func.energy_unit)
+        except pint.errors.DimensionalityError:
+            kT = (temperature * units.boltzmann_constant).to(potential_energy_func.energy_unit)
+        self._kT = kT.magnitude
 
         # KL divergence loss function.
         self._loss_func = tfep.loss.BoltzmannKLDivLoss()
