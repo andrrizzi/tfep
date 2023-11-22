@@ -254,12 +254,16 @@ class TrajectoryDataset(torch.utils.data.Dataset):
             only the coordinates of those atoms are returned.
 
         """
+        # Make sure this is a Python int and not tensor.
+        int_idx = int(idx)
+        assert idx == int_idx
+
         # First check if index refers to a subset of selected trajectory frames
         # or to the full trajectory.
         if self.trajectory_sample_indices is None:
-            ts = self.universe.trajectory[idx]
+            ts = self.universe.trajectory[int_idx]
         else:
-            ts = self.universe.trajectory[self.trajectory_sample_indices[idx]]
+            ts = self.universe.trajectory[self.trajectory_sample_indices[int_idx]]
 
         # If a subset of atoms was selected. Return the Timestep only for those.
         if self._selected_atom_group is None:
