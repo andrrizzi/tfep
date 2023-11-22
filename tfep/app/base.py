@@ -62,6 +62,22 @@ class TFEPMapBase(ABC, lightning.LightningModule):
     ...         return tfep.nn.flows.MAF(dimension_in=n_dofs)
     ...
 
+    After this, the TFEP calculation can be run using.
+
+    >>> from tfep.potentials.psi4 import PotentialPsi4
+    >>> units = pint.UnitRegistry()
+    >>> tfep_map = TFEPMap(
+    ...     potential_energy_func=PotentialPsi4(name='mp2'),
+    ...     topology_file_path='path/to/topology.psf',
+    ...     coordinates_file_path='path/to/trajectory.dcd',
+    ...     temperature=300*units.kelvin,
+    ...     batch_size=64,
+    ... )
+    >>>
+    >>> # Train the flow and save the potential energies.
+    >>> trainer = lightning.Trainer()
+    >>> trainer.fit(tfep_map)  # doctest: +SKIP
+
     """
 
     def __init__(
