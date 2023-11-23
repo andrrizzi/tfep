@@ -979,7 +979,7 @@ def _run_psi4(
         # Convert to a list to avoid code branching.
         batch_positions_bohr = [None]
     else:
-        batch_positions_bohr = batch_positions.to(PotentialPsi4.position_unit).magnitude
+        batch_positions_bohr = batch_positions.to(PotentialPsi4.DEFAULT_POSITION_UNIT).magnitude
         if len(batch_positions.shape) < 3:
             # Convert batch_positions to a unitless (in Psi4 units) numpy array
             # of shape (batch_size, n_atoms, 3).
