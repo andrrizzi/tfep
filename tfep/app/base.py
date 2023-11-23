@@ -14,7 +14,7 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import lightning
 import pint
@@ -84,7 +84,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             self,
             potential_energy_func : torch.nn.Module,
             topology_file_path : str,
-            coordinates_file_path : str | Sequence[str],
+            coordinates_file_path : Union[str, Sequence[str]],
             temperature : pint.Quantity,
             tfep_logger_dir_path : str = 'tfep_logs',
             batch_size : int = 1,
