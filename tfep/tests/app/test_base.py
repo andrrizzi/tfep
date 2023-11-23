@@ -20,9 +20,9 @@ import tempfile
 import lightning
 import pint
 import pytest
-import torch
 
 import tfep.nn.flows
+from tfep.potentials.base import PotentialBase
 from tfep.app.base import TFEPMapBase
 
 
@@ -40,10 +40,11 @@ UNITS = pint.UnitRegistry()
 # TEST UTILITIES
 # =============================================================================
 
-class MockPotential(torch.nn.Module):
+class MockPotential(PotentialBase):
     """Mock potential to test TFEPMapBase."""
 
-    energy_unit = UNITS.joule/UNITS.mole
+    DEFAULT_ENERGY_UNIT = 'kcal'
+    DEFAULT_POSITION_UNIT = 'angstrom'
 
     def forward(self, x):
         return x.sum(dim=1)
@@ -57,9 +58,9 @@ class TFEPMap(TFEPMapBase):
 
     """
 
-    def __init__(self, tfep_logger_dir_path, fail_after=None):
+    def __init__(self, energy_unit, tfep_logger_dir_path, fail_after=None):
         super().__init__(
-            potential_energy_func=MockPotential(),
+            potential_energy_func=MockPotential(energy_unit=energy_unit),
             topology_file_path=CHLOROMETHANE_PDB_FILE_PATH,
             coordinates_file_path=CHLOROMETHANE_PDB_FILE_PATH,
             temperature=300*UNITS.kelvin,
@@ -106,7 +107,8 @@ class TFEPMap(TFEPMapBase):
 # TESTS
 # =============================================================================
 
-def test_resuming_mid_epoch():
+@pytest.mark.parametrize('energy_unit', [None, UNITS.joule, UNITS.kcal/UNITS.mole])
+def test_resuming_mid_epoch(energy_unit):
     """Test that resuming mid-epoch works correctly.
 
     In particular, that training does not restart from the next epoch, and that
@@ -119,6 +121,7 @@ def test_resuming_mid_epoch():
 
     def init_map_trainer(tmp_dir_path):
         tfep_map = TFEPMap(
+            energy_unit=energy_unit,
             tfep_logger_dir_path=tmp_dir_path,
             fail_after=fail_after  # steps
         )
