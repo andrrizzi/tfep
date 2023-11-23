@@ -608,12 +608,20 @@ class TFEPLogger:
 
     def _metadata_from_data(self, data_loader):
         """Load metadata from the DataLoader."""
+        # batch_size and drop_last could be in DataLoader or in a batch sampler.
         self._batch_size = data_loader.batch_size
-        len_dataset = len(data_loader.dataset)
-        if data_loader.drop_last:
-            self._n_samples_per_epoch = len_dataset - len_dataset%self._batch_size
+        if self._batch_size is None:
+            self._batch_size = data_loader.batch_sampler.batch_size
+            drop_last = data_loader.batch_sampler.drop_last
         else:
-            self._n_samples_per_epoch = len_dataset
+            drop_last = data_loader.drop_last
+
+        # Determine number of samples per epoch
+        n_dataset_samples = len(data_loader.dataset)
+        if drop_last:
+            self._n_samples_per_epoch = n_dataset_samples - n_dataset_samples%self._batch_size
+        else:
+            self._n_samples_per_epoch = n_dataset_samples
 
     def _metadata_from_file(self, file_path):
         """Load batch and epoch size from disk."""

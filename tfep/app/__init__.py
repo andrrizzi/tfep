@@ -5,17 +5,11 @@
 # PACKAGE DOCSTRING
 # =============================================================================
 
-"""
-A Python library to perform targeted free energy perturbation with normalizing
-flows.
-"""
-
-__all__ = ['analysis', 'app', 'io', 'nn', 'potentials', 'utils']
+"""A collection of ``LightningModule``\ s implementing ready-to-use TFEP maps."""
 
 
 # =============================================================================
 # GLOBAL IMPORTS
 # =============================================================================
 
-# versioningit
-from ._version import __version__
+from tfep.app.base import TFEPMapBase
