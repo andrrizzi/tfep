@@ -186,7 +186,6 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             The normalizing flow.
 
         """
-        pass
 
     def configure_optimizers(self):
         """Lightning method.
