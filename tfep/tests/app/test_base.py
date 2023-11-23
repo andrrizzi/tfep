@@ -20,7 +20,9 @@ import tempfile
 import lightning
 import pint
 import pytest
+import torch
 
+import tfep.nn.dynamics
 import tfep.nn.flows
 from tfep.potentials.base import PotentialBase
 from tfep.app.base import TFEPMapBase
@@ -56,9 +58,11 @@ class TFEPMap(TFEPMapBase):
     fail_after is the number of global_steps after which an exception is raised
     to simulate a crashed training.
 
+    flow can be 'maf' or 'continuous'.
+
     """
 
-    def __init__(self, energy_unit, tfep_logger_dir_path, fail_after=None):
+    def __init__(self, energy_unit, tfep_logger_dir_path, flow='maf', fail_after=None):
         super().__init__(
             potential_energy_func=MockPotential(energy_unit=energy_unit),
             topology_file_path=CHLOROMETHANE_PDB_FILE_PATH,
@@ -67,13 +71,32 @@ class TFEPMap(TFEPMapBase):
             tfep_logger_dir_path=tfep_logger_dir_path,
             batch_size=2,
         )
+        self._flow_type = flow
         self.fail_after = fail_after
         self.epoch_visited_samples = None
         self.n_processed_steps = 0
 
     def configure_flow(self):
         n_dofs = self.dataset.n_atoms * 3
-        return tfep.nn.flows.MAF(dimension_in=n_dofs)
+
+        # MAF.
+        if self._flow_type == 'maf':
+            return tfep.nn.flows.MAF(dimension_in=n_dofs)
+
+        # Continuous.
+        egnn_dynamics = tfep.nn.dynamics.EGNNDynamics(
+            particle_types=torch.tensor([0, 1, 2, 2, 2, 3]),
+            r_cutoff=6.0,
+            time_feat_dim=2,
+            node_feat_dim=4,
+            distance_feat_dim=4,
+            n_layers=2,
+        )
+        return tfep.nn.flows.ContinuousFlow(
+            dynamics=egnn_dynamics,
+            solver='euler',
+            solver_options={'step_size': 1.0},
+        )
 
     def training_step(self, batch, batch_idx):
         # Call the actual training step.
@@ -108,13 +131,21 @@ class TFEPMap(TFEPMapBase):
 # =============================================================================
 
 @pytest.mark.parametrize('energy_unit', [None, UNITS.joule, UNITS.kcal/UNITS.mole])
-def test_resuming_mid_epoch(energy_unit):
+@pytest.mark.parametrize('flow', ['maf', 'continuous'])
+def test_resuming_mid_epoch(energy_unit, flow):
     """Test that resuming mid-epoch works correctly.
 
     In particular, that training does not restart from the next epoch, and that
     the training does not process the same samples twice in the restarted epoch.
 
     """
+    # Check if the optional dependency torchdiffeq required for continuous flows is present.
+    if flow == 'continuous':
+        try:
+            import torchdiffeq
+        except ImportError:
+            pytest.skip('The torchdiffeq package is required for continuous flows.')
+
     # The trajectory should have a total of 5 frames so 3 step per epoch.
     fail_after = 4
     max_epochs = 2
@@ -123,7 +154,8 @@ def test_resuming_mid_epoch(energy_unit):
         tfep_map = TFEPMap(
             energy_unit=energy_unit,
             tfep_logger_dir_path=tmp_dir_path,
-            fail_after=fail_after  # steps
+            flow=flow,
+            fail_after=fail_after,  # steps
         )
 
         # This first training should fail.
