@@ -56,11 +56,7 @@ class DictDataset(torch.utils.data.Dataset):
             raise ValueError('The values of tensor_dict must all have the same length.')
 
         # Convert all values to tensors.
-        self._tensor_dict = {}
-        for k, v in tensor_dict.items():
-            if not isinstance(v, torch.Tensor):
-                v = torch.tensor(v)
-            self._tensor_dict[k] = v
+        self._tensor_dict = {k: torch.as_tensor(v) for k, v in tensor_dict.items()}
 
     def __getitem__(self, item):
         """Retrieve a dataset sample.
