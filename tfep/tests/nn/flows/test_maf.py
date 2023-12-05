@@ -18,7 +18,6 @@ import numpy as np
 import pytest
 import torch
 
-from tfep.nn.utils import generate_block_sizes
 from tfep.nn.transformers import (
     AffineTransformer, SOSPolynomialTransformer,
     NeuralSplineTransformer, MoebiusTransformer
