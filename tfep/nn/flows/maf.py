@@ -14,11 +14,15 @@ Masked autoregressive flow layer for PyTorch.
 # GLOBAL IMPORTS
 # =============================================================================
 
+from collections.abc import Sequence
+from typing import Optional, Union
+
 import numpy as np
 import torch
 
 from tfep.nn.conditioners.made import MADE, degrees_in_from_str
 from tfep.nn.transformers.affine import AffineTransformer
+from tfep.utils.misc import ensure_tensor_sequence
 
 
 # =============================================================================
@@ -37,73 +41,6 @@ class MAF(torch.nn.Module):
     of the conditional dependence, effectively determining which between
     forward and inverse evaluation is faster.
 
-    Parameters
-    ----------
-    dimension_in : int
-        The number of features of a single input vector. This includes
-        the number of conditioning features.
-    dimensions_hidden : int or List[int], optional
-        Control the number of layers and nodes of the hidden layers in
-        the MADE networks that implements the conditioner. If an int,
-        this is the number of hidden layers, and the number of nodes in
-        each hidden layer will be set to ``(dimension_in - 1) * out_per_dimension``
-        where ``out_per_dimension`` is the number of output nodes for each
-        input feature. If a list, ``dimensions_hidden[l]`` must be the number
-        of nodes in the l-th hidden layer.
-    conditioning_indices : List[int], optional
-        The indices of the input features corresponding to the conditioning
-        features. These features affect the output, but they are not mapped
-        by the flow.
-    periodic_indices : List, optional
-        Shape (n_periodic,). The (ordered) indices of the input features that
-        are periodic. When passed to the conditioner, these are transformed to
-        ``(cos(a), sin(a))``, where ``a`` is a shifted/rescaled feature to be in
-        the interval [0, 2pi]. This way the conditioner will have periodic input.
-    periodic_limits : List, optional
-        A pair ``(lower, upper)`` defining the limits of the periodic input
-        features  (e.g. ``[-pi, pi]``). The period is ``upper - lower``.
-    degrees_in : str or numpy.ndarray, optional
-        The degrees to assign to the input/output nodes. Effectively this
-        controls the dependencies between variables in the conditioner.
-        If ``'input'``/``'reversed'``, the degrees are assigned in
-        the same/reversed order they are passed. If an array, this must
-        be a permutation of ``numpy.arange(0, n_blocks)``, where ``n_blocks``
-        is the number of blocks passed to the constructor. If blocks are
-        not used, this corresponds to the number of non-conditioning features
-        (i.e., ``dimension_in - len(conditioning_indices)``). Default is ``'input'``.
-    degrees_hidden_motif : numpy.ndarray, optional
-        The degrees of the hidden nodes of the conditioner are assigned
-        using this array in a round-robin fashion. If not given, they
-        are assigned in the same order used for the input nodes. This
-        must be at least as large as the dimension of the smallest hidden
-        layer.
-    weight_norm : bool, optional
-        If True, weight normalization is applied to the masked linear
-        modules.
-    blocks : int or List[int], optional
-        If an integer, the non-conditioning input features are divided
-        into contiguous blocks of size ``blocks`` that are assigned the
-        same degree in the MADE conditioner. If a list, ``blocks[i]``
-        must represent the size of the i-th block. The default, ``1``,
-        correspond to a fully autoregressive network.
-    shorten_last_block : bool, optional
-        If ``blocks`` is an integer that is not a divisor of the number
-        of non-conditioning  features, this option controls whether the
-        last block is shortened (``True``) or an exception is raised
-        (``False``). Default is ``False``.
-    split_conditioner : bool, optional
-        If ``True``, separate MADE networks are used to compute separately
-        each parameter of the transformer (e.g., for affine transformers
-        which require scale and shift parameters, two networks are used).
-        Otherwise, a single network is used to implement the conditioner,
-        and all parameters are generated in a single pass.
-    transformer : torch.nn.Module
-        The transformer used to map the input features. By default, the
-        ``AffineTransformer`` is used.
-    initialize_identity : bool, optional
-        If ``True``, the parameters are initialized in such a way that
-        the flow initially performs the identity function.
-
     References
     ----------
     [1] Kingma DP, Salimans T, Jozefowicz R, Chen X, Sutskever I, Welling M.
@@ -120,27 +57,108 @@ class MAF(torch.nn.Module):
 
     def __init__(
             self,
-            dimension_in,
-            dimensions_hidden=2,
-            conditioning_indices=None,
-            periodic_indices=None,
-            periodic_limits=None,
-            degrees_in='input',
-            degrees_hidden_motif=None,
-            weight_norm=True,
-            blocks=1,
-            shorten_last_block=False,
-            split_conditioner=True,
-            transformer=None,
-            initialize_identity=True
+            dimension_in : int,
+            dimensions_hidden: Union[int, Sequence[int]] = 2,
+            conditioning_indices: Optional[Sequence[int]] = None,
+            periodic_indices: Optional[Sequence[int]] = None,
+            periodic_limits: Optional[Sequence[int]] = None,
+            degrees_in: Union[str, Sequence[int]] = 'input',
+            degrees_hidden_motif: Optional[Sequence[int]] = None,
+            weight_norm: bool = True,
+            blocks: Union[int, Sequence[int]] = 1,
+            shorten_last_block: bool = False,
+            split_conditioner: bool = True,
+            transformer: Optional[torch.nn.Module] = None,
+            initialize_identity: bool = True,
     ):
+        """Constructor.
+
+        Parameters
+        ----------
+        dimension_in : int
+            The number of features of a single input vector. This includes
+            the number of conditioning features.
+        dimensions_hidden : int or Sequence[int], optional
+            Control the number of layers and nodes of the hidden layers in
+            the MADE networks that implements the conditioner. If an int,
+            this is the number of hidden layers, and the number of nodes in
+            each hidden layer will be set to ``(dimension_in - 1) * out_per_dimension``
+            where ``out_per_dimension`` is the number of output nodes for each
+            input feature. If a list, ``dimensions_hidden[l]`` must be the number
+            of nodes in the l-th hidden layer.
+        conditioning_indices : None or Sequence[int], optional
+            The indices of the input features corresponding to the conditioning
+            features. These features affect the output, but they are not mapped
+            by the flow.
+        periodic_indices : Sequence[int] or None, optional
+            Shape (n_periodic,). The (ordered) indices of the input features that
+            are periodic. When passed to the conditioner, these are transformed
+            to ``(cos(a), sin(a))``, where ``a`` is a shifted/rescaled feature
+            to be in the interval [0, 2pi]. This way the conditioner will have
+            periodic input.
+        periodic_limits : Sequence[int] or None, optional
+            A pair ``(lower, upper)`` defining the limits of the periodic input
+            features  (e.g. ``[-pi, pi]``). The period is ``upper - lower``.
+        degrees_in : str or Sequence[int], optional
+            The degrees to assign to the input/output nodes. Effectively this
+            controls the dependencies between variables in the conditioner.
+            If ``'input'``/``'reversed'``, the degrees are assigned in
+            the same/reversed order they are passed. If an array, this must
+            be a permutation of ``numpy.arange(0, n_blocks)``, where ``n_blocks``
+            is the number of blocks passed to the constructor. If blocks are
+            not used, this corresponds to the number of non-conditioning features
+            (i.e., ``dimension_in - len(conditioning_indices)``). Default is
+            ``'input'``.
+        degrees_hidden_motif : Sequence[int], optional
+            The degrees of the hidden nodes of the conditioner are assigned
+            using this array in a round-robin fashion. If not given, they
+            are assigned in the same order used for the input nodes. This
+            must be at least as large as the dimension of the smallest hidden
+            layer.
+        weight_norm : bool, optional
+            If True, weight normalization is applied to the masked linear
+            modules.
+        blocks : int or Sequence[int], optional
+            If an integer, the non-conditioning input features are divided
+            into contiguous blocks of size ``blocks`` that are assigned the
+            same degree in the MADE conditioner. If a list, ``blocks[i]``
+            must represent the size of the i-th block. The default, ``1``,
+            correspond to a fully autoregressive network.
+        shorten_last_block : bool, optional
+            If ``blocks`` is an integer that is not a divisor of the number
+            of non-conditioning  features, this option controls whether the
+            last block is shortened (``True``) or an exception is raised
+            (``False``). Default is ``False``.
+        split_conditioner : bool, optional
+            If ``True``, separate MADE networks are used to compute separately
+            each parameter of the transformer (e.g., for affine transformers
+            which require scale and shift parameters, two networks are used).
+            Otherwise, a single network is used to implement the conditioner,
+            and all parameters are generated in a single pass.
+        transformer : torch.nn.Module or None, optional
+            The transformer used to map the input features. By default, the
+            ``AffineTransformer`` is used.
+        initialize_identity : bool, optional
+            If ``True``, the parameters are initialized in such a way that
+            the flow initially performs the identity function.
+
+        """
         super().__init__()
+
+        # Convert all sequences to Tensors to simplify the code.
+        dimensions_hidden = ensure_tensor_sequence(dimensions_hidden)
+        conditioning_indices = ensure_tensor_sequence(conditioning_indices)
+        periodic_indices = ensure_tensor_sequence(periodic_indices)
+        periodic_limits = ensure_tensor_sequence(periodic_limits)
+        degrees_in = ensure_tensor_sequence(degrees_in)
+        degrees_hidden_motif = ensure_tensor_sequence(degrees_hidden_motif)
+        blocks = ensure_tensor_sequence(blocks)
 
         # We'll need this set later.
         if conditioning_indices is None:
             conditioning_indices_set = set()
         else:
-            conditioning_indices_set = set(conditioning_indices)
+            conditioning_indices_set = set(conditioning_indices.tolist())
 
         # Create the lifter used to map the periodic degrees of freedom.
         if periodic_indices is None:
@@ -151,7 +169,7 @@ class MAF(torch.nn.Module):
         else:
             if periodic_limits is None:
                 raise ValueError('periodic_limits must be given if periodic_indices is passed.')
-            if blocks != 1:
+            if not (isinstance(blocks, int) and blocks == 1):
                 raise ValueError('periodic features are not supported with blocks != 1.')
 
             # MADE takes as input the output of self._lifter which doubles
@@ -166,22 +184,22 @@ class MAF(torch.nn.Module):
             )
 
             # The periodic features are transformed to (cosa, sina) and need
-            # blocks of dimensions 2 in MADE (except for the conditioning DOFs).
+            # blocks of dimensions 2 in MADE (except for the conditioning DOFs
+            # which are always assigned the same degree and do not enter blocks).
             # In practice, this assigns them the same autoregressive degree.
             # TODO: Map cosa and sina using different degrees?
-            periodic_indices_set = set(periodic_indices)
+            periodic_indices_set = set(periodic_indices.tolist())
             blocks = [2 if i in periodic_indices_set else 1
                       for i in range(dimension_in) if i not in conditioning_indices_set]
 
             # If conditioning indices are greater than periodic indices, these
             # must be shifted since extra features are inserted in the input.
             conditioning_indices_made = []
-            periodic_indices_tensor = torch.tensor(periodic_indices)
             if conditioning_indices is not None:
                 # We traverse the list in reverse in case a conditioning indices
                 # is also a periodic index and we need to insert a new one.
-                for i, cond_idx in enumerate(conditioning_indices):
-                    new_cond_idx = cond_idx + torch.sum(periodic_indices_tensor < cond_idx).tolist()
+                for i, cond_idx in enumerate(conditioning_indices.tolist()):
+                    new_cond_idx = cond_idx + torch.sum(periodic_indices < cond_idx).tolist()
                     conditioning_indices_made.append(new_cond_idx)
                     if cond_idx in periodic_indices_set:
                         conditioning_indices_made.append(new_cond_idx+1)
@@ -228,7 +246,8 @@ class MAF(torch.nn.Module):
             self._conditioning_indices = None
         else:
             n_conditioning_dofs = len(conditioning_indices)
-            self._mapped_indices = [i for i in range(dimension_in) if i not in conditioning_indices_set]
+            self._mapped_indices = torch.tensor([i for i in range(dimension_in)
+                                                 if i not in conditioning_indices_set])
             self._conditioning_indices = conditioning_indices
 
         # Initialize the log_scale and shift nets to 0.0 so that at
@@ -259,27 +278,27 @@ class MAF(torch.nn.Module):
                 net.layers[-1].bias.data = id_cond
 
     @property
-    def conditioning_indices(self):
-        """List[int]: The indices of the conditioning degrees of freedom."""
+    def conditioning_indices(self) -> torch.Tensor:
+        """The indices of the conditioning degrees of freedom."""
         # This is stored only if there are periodic conditioning indices.
         if self._conditioning_indices is None:
             return self._conditioners[0].conditioning_indices
         return self._conditioning_indices
 
     @property
-    def degrees_in(self):
-        """numpy.ndarray: ``degrees_in[i]`` is the degree assigned to the i-th input feature."""
+    def degrees_in(self) -> torch.Tensor:
+        """``degrees_in[i]`` is the degree assigned to the i-th input feature."""
         degrees_in = self._conditioners[0].degrees_in
         # The degree_in of periodic features is duplicated.
         if self._lifter is not None:
             degrees_in = np.delete(degrees_in, self._lifter._periodic_indices_lifted)
         return degrees_in
 
-    def n_parameters(self):
-        """int: The total number of (unmasked) parameters."""
+    def n_parameters(self) -> int:
+        """The total number of (unmasked) parameters."""
         return sum(c.n_parameters() for c in self._conditioners)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Map the input data.
 
         Parameters
@@ -311,7 +330,7 @@ class MAF(torch.nn.Module):
 
         return y, log_det_J
 
-    def inverse(self, y):
+    def inverse(self, y: torch.Tensor) -> torch.Tensor:
         # This is slower than forward because to evaluate x_i we need
         # all x_<i. For the algorithm, see Eq 39 in reference [3] above.
         degrees_in = self.degrees_in
@@ -425,23 +444,29 @@ class _LiftPeriodic(torch.nn.Module):
 
     Parameters
     ----------
-    periodic_indices : List
+    dimension_in : int
+        Dimension of the input.
+    periodic_indices : torch.Tensor[int]
         Shape (n_periodic,). The (ordered) indices of the input features that
         are periodic and must be lifted to the (cos, sin) representation.
-    limits : List
+    limits : torch.Tensor[float]
         A pair ``(lower, upper)`` defining the limits of the periodic variables.
         The period is given by ``upper - lower``.
 
     """
 
-    def __init__(self, dimension_in, periodic_indices, limits):
+    def __init__(
+            self,
+            dimension_in : int,
+            periodic_indices : torch.Tensor,
+            limits : torch.Tensor,
+    ):
         super().__init__()
         self.limits = limits
 
-
         # Cache a set of periodic/nonperiodic indices BEFORE and AFTER the input has been lifted.
-        periodic_indices_set = set(periodic_indices)
-        self._periodic_indices = torch.tensor(periodic_indices)
+        periodic_indices_set = set(periodic_indices.tolist())
+        self._periodic_indices = periodic_indices
         self._nonperiodic_indices = torch.tensor([i for i in range(dimension_in) if i not in periodic_indices_set])
 
         self._periodic_indices_lifted = []  # Shape (n_periodic,).
@@ -459,7 +484,7 @@ class _LiftPeriodic(torch.nn.Module):
         self._periodic_indices_lifted = torch.tensor(self._periodic_indices_lifted)
         self._nonperiodic_indices_lifted = torch.tensor(self._nonperiodic_indices_lifted)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Lift each periodic degree of freedom x into a periodic representation (cosx, sinx).
 
         Parameters

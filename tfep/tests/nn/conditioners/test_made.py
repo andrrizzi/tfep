@@ -20,6 +20,7 @@ import numpy as np
 import pytest
 import torch
 
+from tfep.utils.misc import ensure_tensor_sequence
 from tfep.nn.conditioners.made import MADE
 
 
@@ -141,12 +142,17 @@ def check_MADE_get_dimensions(
         conditioning_indices, expected_dimensions_hidden
 ):
     """Used by test_MADE_get_dimensions and test_MADE_get_dimensions_blocks."""
+    dimensions_hidden = ensure_tensor_sequence(dimensions_hidden, dtype=int)
+    conditioning_indices = ensure_tensor_sequence(conditioning_indices, dtype=int)
+    degrees_in = ensure_tensor_sequence(degrees_in, dtype=int)
+    blocks = ensure_tensor_sequence(blocks, dtype=int)
+
     n_hidden_layers, dimensions_hidden, expanded_blocks = MADE._get_dimensions(
         dimension_in, dimensions_hidden, out_per_dimension, conditioning_indices,
         degrees_in, blocks, shorten_last_block=True)
 
     assert n_hidden_layers == len(expected_dimensions_hidden)
-    assert dimensions_hidden == expected_dimensions_hidden
+    assert dimensions_hidden.tolist() == expected_dimensions_hidden
 
 
 @pytest.mark.parametrize(('dimension_in,conditioning_indices,degrees_in,blocks,'
@@ -169,14 +175,19 @@ def test_MADE_generate_degrees(dimension_in, conditioning_indices, degrees_in, b
     """Test that the input degrees and the motif for the hidden nodes are correct."""
     # Create a mock MADE class with the blocks attribute.
     mock_made = mock.Mock(blocks=blocks)
-    mock_made.degrees_in = MADE._assign_degrees_in(mock_made, dimension_in, conditioning_indices, degrees_in)
 
-    # When not None, _generate_degrees_hidden_motif simply returns degrees_hidden_motif
+    # _assign_degrees_in expects tensors.
+    conditioning_indices = ensure_tensor_sequence(conditioning_indices, dtype=int)
+    degrees_in = ensure_tensor_sequence(degrees_in, dtype=int)
+    MADE._assign_degrees_in(mock_made, dimension_in, conditioning_indices, degrees_in)
+    mock_made.degrees_in = mock_made._degrees_in
+
+    # When not None, _assign_degrees_hidden_motif simply returns degrees_hidden_motif
     # so this simply tests that the returned motif is based on degrees_in.
-    motif = MADE._generate_degrees_hidden_motif(mock_made, degrees_hidden_motif=None)
+    MADE._assign_degrees_hidden_motif(mock_made, degrees_hidden_motif=None)
 
-    assert np.all(mock_made.degrees_in == np.array(expected_degrees_in))
-    assert np.all(motif == np.array(expected_degrees_hidden_motif))
+    assert torch.all(mock_made._degrees_in == torch.tensor(expected_degrees_in))
+    assert torch.all(mock_made._degrees_hidden_motif == torch.tensor(expected_degrees_hidden_motif))
 
 
 @pytest.mark.parametrize('weight_norm', [False, True])
@@ -205,6 +216,12 @@ def check_MADE_mask_dimensions(blocks, degrees_in, dimension_in, dimensions_hidd
         shorten_last_block=True
     )
 
+    # _get_dimensions expects tensors.
+    dimensions_hidden = ensure_tensor_sequence(dimensions_hidden, dtype=int)
+    conditioning_indices = ensure_tensor_sequence(conditioning_indices, dtype=int)
+    degrees_in = ensure_tensor_sequence(degrees_in, dtype=int)
+    blocks = ensure_tensor_sequence(blocks, dtype=int)
+
     # Compute the expected dimensions.
     n_hidden_layers, dimensions_hidden, expanded_blocks = made._get_dimensions(
         dimension_in, dimensions_hidden, out_per_dimension, conditioning_indices,
@@ -225,8 +242,8 @@ def check_MADE_mask_dimensions(blocks, degrees_in, dimension_in, dimensions_hidd
     # Test correct implementation of the Python properties.
     assert made.dimension_in == dimension_in
     assert made.n_layers == n_hidden_layers + 1
-    assert made.dimensions_hidden == dimensions_hidden
-    assert made.conditioning_indices == conditioning_indices
+    assert torch.all(made.dimensions_hidden == dimensions_hidden)
+    assert torch.all(made.conditioning_indices == conditioning_indices)
     assert made.dimension_conditioning == len(conditioning_indices)
     assert made.dimension_out == dimension_out
 
@@ -282,7 +299,7 @@ def check_MADE_autoregressive_property(blocks, degrees_in, dimension_in, dimensi
     assert output.shape == (1, dimension_out)
 
     # Make sure that there are no duplicate degrees in the input/output.
-    assert len(set(made.degrees_in)) == len(made.blocks) + int(len(conditioning_indices) > 0)
+    assert len(set(made.degrees_in.tolist())) == len(made.blocks) + int(len(conditioning_indices) > 0)
 
     for out_idx in range(dimension_out // out_per_dimension):
         # Compute the gradient of the out_idx-th dimension of the
