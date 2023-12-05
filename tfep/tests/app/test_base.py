@@ -6,7 +6,7 @@
 # =============================================================================
 
 """
-Test objects and function in the module ``tfep.io.sampler``.
+Test objects and function in the module ``tfep.app.base``.
 """
 
 
@@ -25,6 +25,8 @@ import torch
 import tfep.nn.dynamics
 import tfep.nn.flows
 from tfep.potentials.base import PotentialBase
+from tfep.utils.misc import atom_to_flattened_indices, flattened_to_atom
+
 from tfep.app.base import TFEPMapBase
 
 
@@ -36,6 +38,22 @@ SCRIPT_DIR_PATH = os.path.dirname(__file__)
 CHLOROMETHANE_PDB_FILE_PATH = os.path.join(SCRIPT_DIR_PATH, '..', 'data', 'chloro-fluoromethane.pdb')
 
 UNITS = pint.UnitRegistry()
+
+
+# =============================================================================
+# TEST MODULE CONFIGURATION
+# =============================================================================
+
+_old_default_dtype = None
+
+def setup_module(module):
+    global _old_default_dtype
+    _old_default_dtype = torch.get_default_dtype()
+    torch.set_default_dtype(torch.double)
+
+
+def teardown_module(module):
+    torch.set_default_dtype(_old_default_dtype)
 
 
 # =============================================================================
@@ -62,14 +80,14 @@ class TFEPMap(TFEPMapBase):
 
     """
 
-    def __init__(self, energy_unit, tfep_logger_dir_path, flow='maf', fail_after=None):
+    def __init__(self, energy_unit=None, flow='maf', fail_after=None, **kwargs):
         super().__init__(
             potential_energy_func=MockPotential(energy_unit=energy_unit),
             topology_file_path=CHLOROMETHANE_PDB_FILE_PATH,
             coordinates_file_path=CHLOROMETHANE_PDB_FILE_PATH,
             temperature=300*UNITS.kelvin,
-            tfep_logger_dir_path=tfep_logger_dir_path,
             batch_size=2,
+            **kwargs,
         )
         self._flow_type = flow
         self.fail_after = fail_after
@@ -77,13 +95,22 @@ class TFEPMap(TFEPMapBase):
         self.n_processed_steps = 0
 
     def configure_flow(self):
-        n_dofs = self.dataset.n_atoms * 3
-
         # MAF.
         if self._flow_type == 'maf':
-            return tfep.nn.flows.MAF(dimension_in=n_dofs)
+            if self.conditioning_atom_indices is None:
+                conditioning_indices = None
+            else:
+                conditioning_indices=atom_to_flattened_indices(self.conditioning_atom_indices)
+
+            return tfep.nn.flows.MAF(
+                dimension_in=3*(self.dataset.n_atoms-self.n_fixed_atoms),
+                conditioning_indices=conditioning_indices,
+                initialize_identity=False,
+            )
 
         # Continuous.
+        if (self.conditioning_atom_indices is not None) or (self.fixed_atom_indices is not None):
+            raise NotImplementedError()
         egnn_dynamics = tfep.nn.dynamics.EGNNDynamics(
             particle_types=torch.tensor([0, 1, 2, 2, 2, 3]),
             r_cutoff=6.0,
@@ -129,6 +156,80 @@ class TFEPMap(TFEPMapBase):
 # =============================================================================
 # TESTS
 # =============================================================================
+
+@pytest.mark.parametrize('mapped_atoms,conditioning_atoms,expected_mapped,expected_conditioning,expected_fixed,expected_mapped_remove_fixed,expected_conditioning_remove_fixed', [
+    # If neither mapped nor conditioning are given, all atoms are mapped.
+    (None, None, list(range(6)), None, None, list(range(6)), None),
+    # If only mapped is given, the non-mapped are fixed.
+    ('index 0:1', None, [0, 1], None, [2, 3, 4, 5], [0, 1], None),
+    ([2, 5], None, [2, 5], None, [0, 1, 3, 4], [0, 1], None),
+    ('index 1:5', None, [1, 2, 3, 4, 5], None, [0], [0, 1, 2, 3, 4], None),
+    ([0, 2, 3, 4, 5], None, [0, 2, 3, 4, 5], None, [1], [0, 1, 2, 3, 4], None),
+    # If only conditioning is given, the non-conditioning are mapped.
+    (None, 'index 3:4', [0, 1, 2, 5], [3, 4], None, [0, 1, 2, 5], [3, 4]),
+    (None, torch.tensor([0, 4, 5]), [1, 2, 3], [0, 4, 5], None, [1, 2, 3], [0, 4, 5]),
+    # If both are given, everything else is fixed.
+    ('index 3:4', [1], [3, 4], [1], [0, 2, 5], [1, 2], [0]),
+    ([1, 4], [2, 5], [1, 4], [2, 5], [0, 3], [0, 2], [1, 3]),
+    ([0, 4], [2, 3, 5], [0, 4], [2, 3, 5], [1], [0, 3], [1, 2, 4]),
+])
+def test_atom_selection(
+        mapped_atoms,
+        conditioning_atoms,
+        expected_mapped,
+        expected_conditioning,
+        expected_fixed,
+        expected_mapped_remove_fixed,
+        expected_conditioning_remove_fixed,
+):
+    """Mapped, conditioning, and fixed atoms are selected correctly."""
+    tfep_map = TFEPMap(
+        mapped_atoms=mapped_atoms,
+        conditioning_atoms=conditioning_atoms,
+    )
+    tfep_map.setup()
+
+    # Convert to tensor for comparison.
+    for expected_indices, tfep_indices in zip([expected_mapped_remove_fixed, expected_conditioning_remove_fixed, expected_fixed],
+                                              [tfep_map.mapped_atom_indices, tfep_map.conditioning_atom_indices, tfep_map.fixed_atom_indices]):
+        if expected_indices is None:
+            assert tfep_indices is None
+        else:
+            assert torch.all(tfep_indices == torch.tensor(expected_indices))
+
+    # Generate random positions.
+    batch_size, n_features = 2, 18
+    x = torch.randn(batch_size, n_features)
+
+    # Test forward and inverse.
+    y, log_det_J = tfep_map(x)
+    x_inv, log_det_J_inv = tfep_map.inverse(y)
+    assert torch.allclose(x, x_inv)
+
+    # The flow must take care of only mapped and conditioning.
+    # The fixed atoms are handled automatically.
+    x = flattened_to_atom(x)
+    y = flattened_to_atom(y)
+    assert not torch.allclose(x[:, expected_mapped], y[:, expected_mapped])
+    if expected_conditioning is not None:
+        assert torch.allclose(x[:, expected_conditioning], y[:, expected_conditioning])
+    if expected_fixed is not None:
+        assert torch.allclose(x[:, expected_fixed], y[:, expected_fixed])
+
+
+def test_no_mapped_atoms():
+    """If only conditioning is given and there are no atoms left to map, an error is raised."""
+    tfep_map = TFEPMap(conditioning_atoms=list(range(6)))
+    with pytest.raises(ValueError, match='no atoms to map'):
+        tfep_map.setup()
+
+
+def test_overlapping_atom_selections():
+    """If mapped and conditioning atoms overlap, an error is raised."""
+    tfep_map = TFEPMap(mapped_atoms=[0, 1, 2], conditioning_atoms=[2, 3])
+    with pytest.raises(ValueError, match='overlapping atoms'):
+        tfep_map.setup()
+
 
 @pytest.mark.parametrize('energy_unit', [None, UNITS.joule, UNITS.kcal/UNITS.mole])
 @pytest.mark.parametrize('flow', ['maf', 'continuous'])
