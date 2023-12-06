@@ -42,9 +42,9 @@ class TFEPMapBase(ABC, lightning.LightningModule):
     - Identify the mapped, conditioning, and fixed atom indices and handle fixed
       atoms.
 
-    For the latter, mapped atoms are defined as those that the flow should map.
-    Conditioning atoms are not mapped but should be given as input to the flow
-    to condition the mapping. Fixed atoms are instead ignored. Note that the flow
+    For the latter, mapped atoms are defined as those that the flow maps.
+    Conditioning atoms are not mapped but are given as input to the flow to
+    condition the mapping. Fixed atoms are instead ignored. Note that the flow
     defined child class must handle only the mapped and conditioning atoms. The
     flow will be automatically wrapped in a :class:`tfep.nn.flows.PartialFlow`
     to handle the fixed atoms. In particular, the class provides two attributes
