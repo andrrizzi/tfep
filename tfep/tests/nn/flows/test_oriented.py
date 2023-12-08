@@ -19,7 +19,6 @@ import torch
 
 import tfep.nn.flows
 from tfep.nn.flows.oriented import OrientedFlow
-from tfep.utils.geometry import normalize_vector
 from tfep.utils.math import batchwise_dot
 from tfep.utils.misc import atom_to_flattened, flattened_to_atom
 
@@ -131,15 +130,15 @@ def test_centered_centroid_flow(flow, axis_point_idx, plane_point_idx, axis, pla
     x = flattened_to_atom(x)
     y = flattened_to_atom(y)
     if rotate_back:
-        expected_directions = normalize_vector(x[:, axis_point_idx])
-        expected_normal_planes = normalize_vector(torch.cross(expected_directions, x[:, plane_point_idx]))
+        expected_directions = torch.nn.functional.normalize(x[:, axis_point_idx])
+        expected_normal_planes = torch.nn.functional.normalize(torch.cross(expected_directions, x[:, plane_point_idx]))
     else:
         expected_directions = OrientedFlow._AXES[axis].type(x.dtype)
         expected_normal_planes = [OrientedFlow._AXES[a].type(x.dtype)
                                   for a in ['x', 'y', 'z'] if a not in plane][0]
 
     # The axis atom is on the expected axis.
-    assert torch.allclose(normalize_vector(y[:, axis_point_idx]), expected_directions)
+    assert torch.allclose(torch.nn.functional.normalize(y[:, axis_point_idx]), expected_directions)
 
     # The plane atom is orthogonal to the plane normal.
     assert torch.allclose(
