@@ -81,7 +81,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
     ...             conditioning_indices = None
     ...         else:
     ...             # Convert from atom indices to the indices of the degrees of freedom.
-    ...             conditioning_indices=atom_to_flattened_indices(self.conditioning_atom_indices)
+    ...             conditioning_indices = atom_to_flattened_indices(self.conditioning_atom_indices)
     ...
     ...         return tfep.nn.flows.MAF(
     ...             dimension_in=3*(self.dataset.n_atoms-self.n_fixed_atoms),
@@ -276,7 +276,8 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             Logarithm of the absolute value of the Jacobian determinant.
 
         """
-        return self._flow(x)
+        # Continuous flows return also the regularization, which is important only for training.
+        return self._flow(x)[:2]
 
     def inverse(self, y):
         """Execute the normalizing flow in the inverse direction.
@@ -295,7 +296,8 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             Logarithm of the absolute value of the Jacobian determinant.
 
         """
-        return self._flow.inverse(y)
+        # Continuous flows return also the regularization, which is important only for training.
+        return self._flow.inverse(y)[:2]
 
     def training_step(self, batch, batch_idx):
         """Lightning method.
