@@ -106,9 +106,8 @@ class MyMAF:
     ('z', 'yz'),
 ])
 @pytest.mark.parametrize('rotate_back', [True, False])
-def test_centered_centroid_flow(flow, axis_point_idx, plane_point_idx, axis, plane, rotate_back):
-    """Test with identity and MAF flow that centroid is in the expected position."""
-    atol = 1e-5  # Absolute tolerance for numerical imprecisions.
+def test_oriented_flow(flow, axis_point_idx, plane_point_idx, axis, plane, rotate_back):
+    """Test that the output of OrientedFlow is in the expected reference frame."""
     batch_size = 10
     n_points = 4
 
@@ -140,17 +139,17 @@ def test_centered_centroid_flow(flow, axis_point_idx, plane_point_idx, axis, pla
     # The axis atom is on the expected axis.
     normalized_y_axis = torch.nn.functional.normalize(y[:, axis_point_idx])
     sign = torch.sign(batchwise_dot(normalized_y_axis, expected_directions)).unsqueeze(1)
-    assert torch.allclose(sign * normalized_y_axis, expected_directions, atol=atol)
+    assert torch.allclose(sign * normalized_y_axis, expected_directions)
 
     # The plane atom is orthogonal to the plane normal.
     assert torch.allclose(batchwise_dot(expected_normal_planes, y[:, plane_point_idx]),
-                          torch.zeros(batch_size), atol=atol)
+                          torch.zeros(batch_size))
 
     # When rotate_back is True, we can also compute the inverse.
     if rotate_back:
         x_inv, log_det_J_inv = flow.inverse(atom_to_flattened(y))
-        assert torch.allclose(atom_to_flattened(x), x_inv, atol=atol)
-        assert torch.allclose(log_det_J + log_det_J_inv, torch.zeros_like(log_det_J), atol=atol)
+        assert torch.allclose(atom_to_flattened(x), x_inv)
+        assert torch.allclose(log_det_J + log_det_J_inv, torch.zeros_like(log_det_J))
     else:
         # Otherwise an error is raised.
         with pytest.raises(ValueError, match="can be computed only if 'rotate_back' is set"):

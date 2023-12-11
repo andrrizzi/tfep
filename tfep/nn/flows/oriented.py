@@ -200,7 +200,7 @@ class OrientedFlow(PartialFlow):
 
         # r1_angles goes from 0 to pi. We want to rotate the point onto the
         # negative/positive axis, depending which is closest.
-        r1_angles = r1_angles - torch.pi * (r1_angles > torch.pi/2).float()
+        r1_angles = r1_angles - torch.pi * (r1_angles > torch.pi/2).to(r1_angles.dtype)
 
         # This are the rotation matrices that bring the axis points onto the axis.
         r1_rotation_matrices = rotation_matrix_3d(r1_angles, rotation_vectors)
