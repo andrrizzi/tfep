@@ -14,6 +14,8 @@ Transformation that constrains the rotational degrees of freedom.
 # GLOBAL IMPORTS
 # =============================================================================
 
+from typing import Optional, Literal
+
 import torch
 
 from tfep.nn.flows.partial import PartialFlow
@@ -50,49 +52,6 @@ class OrientedFlow(PartialFlow):
     points must must be listed so that ``input[b][3*i:3*i+3]`` are the x, y, and
     z coordinates (in this order) of the ``i``-th point for batch sample ``b``.
 
-    Parameters
-    ----------
-    flow : torch.nn.Module
-        The wrapped flow.
-    axis_point_idx : int, optional
-        The index of the point that is constrained on the given axis.
-
-        Note this index must refer to the points, not the feature indices. For
-        example, ``axis_point_idx = 1`` will force on ``axis`` the point whose
-        coordinates correspond to feature indices ``[3, 4, 5]``.
-    plane_point_idx : int, optional
-        The index of the point that is forced on the given plane.
-
-        Note this index must refer to the points, not the feature indices. For
-        example, ``plane_point_idx = 1`` will force on ``plane`` the point whose
-        coordinates correspond to feature indices ``[3, 4, 5]``.
-    axis : str, optional
-        The axis on which the position of ``axis_point_idx`` is forced. This can
-        be ``'x'``, ``'y'``, or ``'z'``.
-    plane : str, optional
-        The plane on which the position of ``plane_point_idx`` is forced. This
-        can be ``'xy'``, ``'yz'``, or ``'xz'``.
-    round_off_imprecisions : bool, optional
-        As a result of the constrains, several coordinates should be exactly 0.0,
-        but numerical errors may cause these to deviate from it. Setting this to
-        ``True`` truncate the least significant decimal values of the constrained
-        degrees of freedom.
-    rotate_back : bool, optional
-        If ``False``, the output configuration has the centroid in the ``origin``.
-        Otherwise, it the centroid is restored to the original position.
-    return_partial : bool, optional
-        If ``True``, only the propagated indices are returned.
-
-    Attributes
-    ----------
-    flow : torch.nn.Module
-        The wrapped flow.
-    rotate_back : bool
-        Whether the frame of reference is restored to its original orientation
-        in the output configuration.
-    return_partial : bool
-        If ``True``, only the propagated indices are returned.
-
     """
 
     # Conversion string representation to vector representation.
@@ -104,15 +63,50 @@ class OrientedFlow(PartialFlow):
 
     def __init__(
             self,
-            flow,
-            axis_point_idx=None,
-            plane_point_idx=None,
-            axis='x',
-            plane='xy',
-            round_off_imprecisions=True,
-            rotate_back=True,
-            return_partial=False,
+            flow: torch.nn.Module,
+            axis_point_idx: Optional[int] = None,
+            plane_point_idx: Optional[int] = None,
+            axis: Literal['x', 'y', 'z'] = 'x',
+            plane: Literal['xy', 'yz', 'xz'] = 'xy',
+            round_off_imprecisions: bool = True,
+            rotate_back: bool = True,
+            return_partial: bool = False,
     ):
+        """Constructor.
+
+        Parameters
+        ----------
+        flow : torch.nn.Module
+            The wrapped flow.
+        axis_point_idx : int, optional
+            The index of the point that is constrained on the given axis.
+
+            Note this index must refer to the points, not the feature indices.
+            For example, ``axis_point_idx = 1`` will force on ``axis`` the point
+            whose coordinates correspond to feature indices ``[3, 4, 5]``.
+        plane_point_idx : int, optional
+            The index of the point that is forced on the given plane.
+
+            Note this index must refer to the points, not the feature indices.
+            For example, ``plane_point_idx = 1`` will force on ``plane`` the
+            point whose coordinates correspond to feature indices ``[3, 4, 5]``.
+        axis : Literal['x', 'y', 'z'], optional
+            The axis on which the position of ``axis_point_idx`` is forced.
+        plane : Literal['xy', 'yz', 'xz'], optional
+            The plane on which the position of ``plane_point_idx`` is forced.
+        round_off_imprecisions : bool, optional
+            As a result of the constrains, several coordinates should be exactly
+            0.0, but numerical errors may cause these to deviate from it. Setting
+            this to ``True`` truncate the least significant decimal values of
+            the constrained degrees of freedom.
+        rotate_back : bool, optional
+            If ``False``, the output configuration has the centroid in the
+            ``origin``. Otherwise, it the centroid is restored to the original
+            position.
+        return_partial : bool, optional
+            If ``True``, only the propagated indices are returned.
+
+        """
         if return_partial and rotate_back:
             raise ValueError("'return_partial=True' is supported only if 'rotate_back=False'")
 
@@ -128,7 +122,7 @@ class OrientedFlow(PartialFlow):
             else:
                 plane_point_idx = 1
 
-        # Two different points must be used to define the frame of reference.
+        # Two different points must be used to define the reference frame.
         if axis_point_idx == plane_point_idx:
             raise ValueError("'axis_point_idx' and 'plane_point_idx' must be different.")
 
@@ -166,7 +160,7 @@ class OrientedFlow(PartialFlow):
         self._axis_point_idx = axis_point_idx
         self._plane_point_idx = plane_point_idx
         self.round_off_imprecisions = round_off_imprecisions
-        self.rotate_back = rotate_back
+        self.rotate_back = rotate_back  #: Whether the reference frame is restored to its original orientation in the output configuration.
 
     def forward(self, x):
         """Transform the input configuration."""
@@ -197,14 +191,19 @@ class OrientedFlow(PartialFlow):
         # torch.expand() does not allocate new memory.
         axis = self._axis.expand((batch_size, 3))
 
-        # rotation_axes has shape (batch_size, 3).
+        # rotation_vectors has shape (batch_size, 3).
         rotation_vectors = torch.cross(x[:, self._axis_point_idx], axis, dim=1)
 
         # Find the first rotation angle. r1_angle has shape (batch_size,).
         r1_angles = vector_vector_angle(
             x[:, self._axis_point_idx], self._axis)
-        r1_rotation_matrices = rotation_matrix_3d(r1_angles, rotation_vectors)
 
+        # r1_angles goes from 0 to pi. We want to rotate the point onto the
+        # negative/positive axis, depending which is closest.
+        r1_angles = r1_angles - torch.pi * (r1_angles > torch.pi/2).float()
+
+        # This are the rotation matrices that bring the axis points onto the axis.
+        r1_rotation_matrices = rotation_matrix_3d(r1_angles, rotation_vectors)
 
         # To bring the plane atom in position, we perform a rotation about
         # self._axis so that we don't modify the position of the axis atom.
@@ -245,11 +244,12 @@ class OrientedFlow(PartialFlow):
         else:
             y, log_det_J = super().forward(x)
 
-        # Check if we need only to return the partial result.
+        # Check if we need only to return the partial result. PartialFlow takes
+        # care of returning ony the propagated indices.
         if self.return_partial:
             return y, log_det_J
 
-        # If we need to rotate back, the new frame of reference must equal the original.
+        # If we need to rotate back, the new reference frame must equal the original.
         if self.rotate_back:
             y = flattened_to_atom(y)
             y = batchwise_rotate(y, rotation_matrices, inverse=True)

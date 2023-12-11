@@ -108,6 +108,7 @@ class MyMAF:
 @pytest.mark.parametrize('rotate_back', [True, False])
 def test_centered_centroid_flow(flow, axis_point_idx, plane_point_idx, axis, plane, rotate_back):
     """Test with identity and MAF flow that centroid is in the expected position."""
+    atol = 1e-5  # Absolute tolerance for numerical imprecisions.
     batch_size = 10
     n_points = 4
 
@@ -119,7 +120,6 @@ def test_centered_centroid_flow(flow, axis_point_idx, plane_point_idx, axis, pla
         axis=axis,
         plane=plane,
         rotate_back=rotate_back,
-        round_off_imprecisions=False
     )
 
     # Create random input and run flow.
@@ -138,16 +138,69 @@ def test_centered_centroid_flow(flow, axis_point_idx, plane_point_idx, axis, pla
                                   for a in ['x', 'y', 'z'] if a not in plane][0]
 
     # The axis atom is on the expected axis.
-    assert torch.allclose(torch.nn.functional.normalize(y[:, axis_point_idx]), expected_directions)
+    normalized_y_axis = torch.nn.functional.normalize(y[:, axis_point_idx])
+    sign = torch.sign(batchwise_dot(normalized_y_axis, expected_directions)).unsqueeze(1)
+    assert torch.allclose(sign * normalized_y_axis, expected_directions, atol=atol)
 
     # The plane atom is orthogonal to the plane normal.
-    assert torch.allclose(
-        batchwise_dot(expected_normal_planes, y[:, plane_point_idx]),
-        torch.zeros(batch_size)
-    )
+    assert torch.allclose(batchwise_dot(expected_normal_planes, y[:, plane_point_idx]),
+                          torch.zeros(batch_size), atol=atol)
 
-    # When translate_back is True, we can also compute the inverse.
+    # When rotate_back is True, we can also compute the inverse.
     if rotate_back:
         x_inv, log_det_J_inv = flow.inverse(atom_to_flattened(y))
-        assert torch.allclose(atom_to_flattened(x), x_inv)
-        assert torch.allclose(log_det_J + log_det_J_inv, torch.zeros_like(log_det_J))
+        assert torch.allclose(atom_to_flattened(x), x_inv, atol=atol)
+        assert torch.allclose(log_det_J + log_det_J_inv, torch.zeros_like(log_det_J), atol=atol)
+    else:
+        # Otherwise an error is raised.
+        with pytest.raises(ValueError, match="can be computed only if 'rotate_back' is set"):
+            flow.inverse(atom_to_flattened(y))
+
+
+@pytest.mark.parametrize('axis,plane,expected_axis,expected_plane', [
+    (None, 0, 1, 0),
+    (None, 2, 0, 2),
+    (0, None, 0, 1),
+    (1, None, 1, 0),
+    (None, None, 0, 1),
+])
+def test_automatic_axis_plane_selection(axis, plane, expected_axis, expected_plane):
+    """Test automatic selection of axis/plane points."""
+    flow = OrientedFlow(flow=IdentityFlow(9), axis_point_idx=axis, plane_point_idx=plane)
+    assert flow._axis_point_idx == expected_axis
+    assert flow._plane_point_idx == expected_plane
+
+
+def test_return_partial():
+    """With return_partial=True, only the propagated DOFs are returned."""
+    batch_size = 3
+    n_points = 4
+    flow = OrientedFlow(MyMAF((n_points-1) * 3),)
+
+    # Default is return_partial == False
+    x = torch.randn(batch_size, n_points * 3)
+    y, log_det_J = flow(x)
+    assert y.shape == (batch_size, n_points*3)
+
+    # The 3 constrained DOFs are not returned.
+    flow.return_partial = True
+    y, log_det_J = flow(x)
+    assert y.shape == (batch_size, n_points*3-3)
+
+
+def test_error_rotate_and_partial():
+    """An error is raised if both rotate_back and partial_result is set."""
+    with pytest.raises(ValueError, match="supported only if 'rotate_back=False'"):
+        OrientedFlow(IdentityFlow(9), return_partial=True, rotate_back=True)
+
+
+def test_error_equal_axis_plane_atoms():
+    """An error is raised if axis and plane atoms are the same."""
+    with pytest.raises(ValueError, match="must be different"):
+        OrientedFlow(IdentityFlow(9), axis_point_idx=1, plane_point_idx=1)
+
+
+def test_error_axis_not_in_plane():
+    """An error is raised if the reference axis does not belong to the reference plane."""
+    with pytest.raises(ValueError, match="must be constrained on an axis on the same plane"):
+        OrientedFlow(IdentityFlow(9), axis='x', plane='yz')
