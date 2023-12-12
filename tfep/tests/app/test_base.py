@@ -201,22 +201,31 @@ def test_atom_selection(
 
     # Generate random positions.
     n_features = 18
-    x = torch.randn(tfep_map.hparams.batch_size, n_features)
+    x = torch.randn(tfep_map.hparams.batch_size, n_features, requires_grad=True)
 
     # Test forward and inverse.
     y, log_det_J = tfep_map(x)
     x_inv, log_det_J_inv = tfep_map.inverse(y)
     assert torch.allclose(x, x_inv)
 
+    # Compute gradients w.r.t. the input.
+    loss = y.sum()
+    loss.backward()
+
     # The flow must take care of only mapped and conditioning.
     # The fixed atoms are handled automatically.
+    x_grad = flattened_to_atom(x.grad)
     x = flattened_to_atom(x)
     y = flattened_to_atom(y)
     assert not torch.allclose(x[:, expected_mapped], y[:, expected_mapped])
     if expected_conditioning is not None:
         assert torch.allclose(x[:, expected_conditioning], y[:, expected_conditioning])
+        # The output still depends on the conditioning DOFs.
+        assert not torch.allclose(x_grad[:, expected_conditioning], torch.ones(*x[:, expected_conditioning].shape))
     if expected_fixed is not None:
         assert torch.allclose(x[:, expected_fixed], y[:, expected_fixed])
+        # The output does not depend on the fixed DOFs.
+        assert torch.allclose(x_grad[:, expected_fixed], torch.ones(*x[:, expected_fixed].shape))
 
 
 @pytest.mark.parametrize('tfep_map_cls', TESTED_TFEP_MAPS)
