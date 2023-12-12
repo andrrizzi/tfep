@@ -164,14 +164,14 @@ TESTED_TFEP_MAPS = [ContinuousTFEPMap, MAFTFEPMap, AutoCartesianMAFMap]
     ('index 0:2', None, [0, 1, 2], None, [3, 4, 5], [0, 1, 2], None),
     ([2, 3, 5], None, [2, 3, 5], None, [0, 1, 4], [0, 1, 2], None),
     ('index 1:5', None, [1, 2, 3, 4, 5], None, [0], [0, 1, 2, 3, 4], None),
-    ([0, 2, 3, 4, 5], None, [0, 2, 3, 4, 5], None, [1], [0, 1, 2, 3, 4], None),
+    (np.array([0, 2, 3, 4, 5]), None, [0, 2, 3, 4, 5], None, [1], [0, 1, 2, 3, 4], None),
     # If only conditioning is given, the non-conditioning are mapped.
     (None, 'index 3:4', [0, 1, 2, 5], [3, 4], None, [0, 1, 2, 5], [3, 4]),
     (None, torch.tensor([0, 4, 5]), [1, 2, 3], [0, 4, 5], None, [1, 2, 3], [0, 4, 5]),
     # If both are given, everything else is fixed.
     ('index 2:4', [1], [2, 3, 4], [1], [0, 5], [1, 2, 3], [0]),
-    ([1, 4], [2, 5], [1, 4], [2, 5], [0, 3], [0, 2], [1, 3]),
-    ([0, 2, 4], [3, 5], [0, 2, 4], [3, 5], [1], [0, 1, 3], [2, 4]),
+    (torch.tensor([1, 4]), [2, 5], [1, 4], [2, 5], [0, 3], [0, 2], [1, 3]),
+    ([0, 2, 4], np.array([3, 5]), [0, 2, 4], [3, 5], [1], [0, 1, 3], [2, 4]),
 ])
 def test_atom_selection(
         tfep_map_cls,
