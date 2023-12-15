@@ -74,6 +74,7 @@ class CartesianMAFMap(TFEPMapBase):
     ... )
     >>>
     >>> # Train the flow and save the potential energies.
+    >>> import lightning
     >>> trainer = lightning.Trainer()
     >>> trainer.fit(tfep_map)  # doctest: +SKIP
 
