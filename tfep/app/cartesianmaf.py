@@ -35,14 +35,25 @@ class CartesianMAFMap(TFEPMapBase):
     atoms are not mapped but are given as input to the flow to condition the
     mapping. Fixed atoms are instead ignored.
 
-    The flow uses three atoms to fix the frame of reference and remove the global
-    rototranslational degrees of freedom from the mapped DOFs.
+    Optionally, the flow can map the atoms in a relative frame of reference
+    which based on the position of an ``origin_atom`` and two ``axes_atoms``
+    that determine the origin and the orientation of the axes, respectively.
+
+    The class further supports logging the potential energies computed during
+    training (required for the multimap TFEP analysis) and mid-epoch resuming.
 
     .. warning::
 
         Currently, this class is not multi-process or thread safe. Running with
         multiple processes may result in the corrupted logging of the potentials
         and Jacobians.
+
+    See Also
+    --------
+    :class:`tfep.app.base.TFEPMapBase`
+        The base class for TFEP maps with more detailed explanations of how the
+        relative reference frame and the division in mapped/conditioning/fixed
+        atoms work.
 
     Examples
     --------
@@ -55,10 +66,11 @@ class CartesianMAFMap(TFEPMapBase):
     ...     topology_file_path='path/to/topology.psf',
     ...     coordinates_file_path='path/to/trajectory.dcd',
     ...     temperature=300*units.kelvin,
-    ...     reference_atoms=[13, 15, 18],
-    ...     mapped_atoms='resname MOL',  # MDAnalysis selection syntax.
-    ...     conditioning_atoms=range(10),
     ...     batch_size=64,
+    ...     mapped_atoms='resname MOL',  # MDAnalysis selection syntax.
+    ...     conditioning_atoms=range(10, 20),
+    ...     origin_atom=12,  # Fix the origin of the relative reference frame on atom 123.
+    ...     axes_atoms=[13, 16],  # Determine the orientation of the reference frame.
     ... )
     >>>
     >>> # Train the flow and save the potential energies.
@@ -73,10 +85,11 @@ class CartesianMAFMap(TFEPMapBase):
             topology_file_path: str,
             coordinates_file_path: Union[str, Sequence[str]],
             temperature: pint.Quantity,
-            reference_atoms: Sequence[int],
             batch_size: int = 1,
             mapped_atoms: Optional[Union[Sequence[int], str]] = None,
             conditioning_atoms: Optional[Union[Sequence[int], str]] = None,
+            origin_atom: Optional[Union[int, str]] = None,
+            axes_atoms: Optional[Union[Sequence[int], str]] = None,
             tfep_logger_dir_path: str = 'tfep_logs',
             n_maf_layers: int = 6,
             **kwargs,
@@ -99,12 +112,6 @@ class CartesianMAFMap(TFEPMapBase):
             which is automatically detected from the file extension.
         temperature : pint.Quantity
             The temperature of the ensemble.
-        reference_atoms : Sequence[int]
-            A triplet of atom indices ``(center, axis, plane)``. The frame of
-            reference of the mapping will be fixed so that the ``center``-th atom
-            will be at the origin, the  ``axis``-th atom will lay on the x axis
-            , and the ``plane``-th atom will lay on the plane spanned by x and y
-            axes. The z-axis will be set as the cross product of x and y.
         batch_size : int, optional
             The batch size.
         mapped_atoms : Sequence[int] or str, optional
@@ -116,6 +123,24 @@ class CartesianMAFMap(TFEPMapBase):
             The indices (0-based) of the atoms conditioning the mapping or a
             selection string in MDAnalysis syntax. If not passed, no atom will
             condition the map.
+        origin_atom : int or str or None, optional
+            The index (0-based) or a selection string in MDAnalysis syntax of an
+            atom on which to center the origin of the relative frame of reference.
+            While this atom affects the mapping of the mapped atoms, its position
+            will be constrained during the mapping, and thus it must be a conditioning
+            atom by definition.
+        axes_atoms : Sequence[int] or str or None, optional
+            A pair of indices (0-based) or a selection string in MDAnalysis syntax
+            for the two atoms determining the relative frame of reference. The
+            ``axes_atoms[0]``-th atom will lay on the ``x`` axis , and the
+            ``axes_atoms[1]``-th atom will lay on the plane spanned by the ``x``
+            and ``y`` axes. The ``z`` axis will be set as the cross product of
+            ``x`` and ``y``.
+
+            These atoms can be either conditioning or mapped. ``axes_atoms[0]``
+            has only 1 degree of freedom (DOF) while ``axes_atoms[1]`` has 2.
+            Whether these DOFs are mapped or not depends on whether their atoms
+            are indicated as mapped or conditioning, respectively.
         tfep_logger_dir_path : str, optional
             The path where to save TFEP-related information (potential energies,
             sample indices, etc.).
@@ -123,7 +148,6 @@ class CartesianMAFMap(TFEPMapBase):
             The number of MAF layers.
         **kwargs
             Other keyword arguments to pass to the constructor of :class:`tfep.nn.flows.MAF`.
-
 
         See Also
         --------
@@ -135,14 +159,18 @@ class CartesianMAFMap(TFEPMapBase):
             topology_file_path=topology_file_path,
             coordinates_file_path=coordinates_file_path,
             temperature=temperature,
-            tfep_logger_dir_path=tfep_logger_dir_path,
             batch_size=batch_size,
+            mapped_atoms=mapped_atoms,
+            conditioning_atoms=conditioning_atoms,
+            origin_atom=origin_atom,
+            axes_atoms=axes_atoms,
+            tfep_logger_dir_path=tfep_logger_dir_path,
+
         )
-        self.reference_atoms = reference_atoms
         self.save_hyperparameters('n_maf_layers')
         self.kwargs = kwargs
 
-    def configure_flow(self):
+    def configure_flow(self) -> torch.nn.Module:
         """Initialize the normalizing flow.
 
         Returns
@@ -151,71 +179,10 @@ class CartesianMAFMap(TFEPMapBase):
             The normalizing flow.
 
         """
-        if len(self.mapped_atom_indices) < 3:
-            raise ValueError("There must be at least 3 mapped atoms to define the frame of reference")
-
-        # Check that center, axis and plane atoms are different.
-        try:  # Tensor
-            unique = self.reference_atoms.unique()
-        except AttributeError:
-            unique = set(self.reference_atoms)
-        if len(unique) != 3:
-            raise ValueError("center, axis, and plane atoms must be different")
-
-        # Make tensor version of reference atoms to simplify code.
-        center_atom_idx, axis_atom_idx, plane_atom_idx = self.reference_atoms
-        center_atom_idx = torch.tensor([center_atom_idx])
-        axis_atom_idx = torch.tensor([axis_atom_idx])
-        plane_atom_idx = torch.tensor([plane_atom_idx])
-
-        # center atom refers to the atom index after the fixed atoms have been
-        # removed, while the axis/plane atom indices must account for the removed
-        # fixed and center atoms. First remove the fixed atoms from all, which
-        # is needed to update the conditioning atoms. We will fix the axis/plane
-        # atoms later.
-        if self.fixed_atom_indices is not None:
-            center_atom_idx = center_atom_idx - torch.searchsorted(self.fixed_atom_indices, center_atom_idx)
-            axis_atom_idx = axis_atom_idx - torch.searchsorted(self.fixed_atom_indices, axis_atom_idx)
-            plane_atom_idx = plane_atom_idx - torch.searchsorted(self.fixed_atom_indices, plane_atom_idx)
-
-        # Now we can test whether this are mapped atoms. mapped_atom_indices
-        # refers to the indices after the fixed atoms have been removed.
-        if center_atom_idx[0] not in self.mapped_atom_indices:
-            raise ValueError("center atom is not a mapped atom")
-        if axis_atom_idx[0] not in self.mapped_atom_indices:
-            raise ValueError("axis atom is not a mapped atom")
-        if plane_atom_idx[0] not in self.mapped_atom_indices:
-            raise ValueError("plane atom is not a mapped atom")
-
-        # Determine conditioning indices.
-        if self.conditioning_atom_indices is None:
-            conditioning_indices = None
-        else:
-            # Convert from atom indices to DOF indices.
-            conditioning_indices = atom_to_flattened_indices(self.conditioning_atom_indices)
-
-            # Conditioning DOFs indices already account for the fixed atoms, but we need
-            # to account for the removed rototranslational DOFs.
-            # The center atom accounts for 3 lost DOFs.
-            atom_indices_diff = 3 * torch.searchsorted(center_atom_idx, self.conditioning_atom_indices)
-            # The axis atom accounts for 2 lost DOFs.
-            atom_indices_diff = atom_indices_diff + 2 * torch.searchsorted(axis_atom_idx, self.conditioning_atom_indices)
-            # The plane atom accounts for 1 lost DOFs.
-            atom_indices_diff = atom_indices_diff + torch.searchsorted(plane_atom_idx, self.conditioning_atom_indices)
-
-            # Now convert from atom_indices to DOF indices.
-            dof_indices_diff = atom_indices_diff.expand(3, -1).T.flatten()
-            conditioning_indices = conditioning_indices - dof_indices_diff
-
-        # Update the index of axis/plane atom.
-        if center_atom_idx < axis_atom_idx:
-            axis_atom_idx = axis_atom_idx - 1
-        if center_atom_idx < plane_atom_idx:
-            plane_atom_idx = plane_atom_idx - 1
-
-        # Remove the 6 rototranslational degrees of freedom from the number of
-        # DOFs mapped by the MAF layers.
-        dimension_in = 3*(self.dataset.n_atoms-self.n_fixed_atoms) - 6
+        dimension_in = self.n_mapped_dofs
+        conditioning_indices = self.get_conditioning_indices(idx_type='dof', remove_constrained=True)
+        if conditioning_indices is not None:
+            dimension_in += len(conditioning_indices)
 
         # Build MAF layers.
         maf_layers = []
@@ -227,19 +194,5 @@ class CartesianMAFMap(TFEPMapBase):
                 **self.kwargs,
             ))
         flow = tfep.nn.flows.SequentialFlow(*maf_layers)
-
-        # Add rotational invariance.
-        flow = tfep.nn.flows.OrientedFlow(
-            flow,
-            axis_point_idx=axis_atom_idx[0],
-            plane_point_idx=plane_atom_idx[0],
-        )
-
-        # Add translational invariance.
-        flow = tfep.nn.flows.CenteredCentroidFlow(
-            flow,
-            space_dimension=3,
-            subset_point_indices=center_atom_idx,
-        )
 
         return flow
