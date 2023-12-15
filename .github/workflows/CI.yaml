@@ -45,11 +45,11 @@ jobs:
           ulimit -a
 
       # More info on options: https://github.com/marketplace/actions/provision-with-micromamba
-      - uses: mamba-org/provision-with-micromamba@main
+      - uses: mamba-org/setup-micromamba@v1
         with:
           environment-file: devtools/conda-envs/test_env.yaml
           environment-name: test
-          channels: conda-forge,defaults
+          channels: conda-forge
           extra-specs: |
             python=${{ matrix.python-version }}
 
@@ -66,15 +66,15 @@ jobs:
         run: |
           pytest -v --cov=tfep --cov-report=xml --color=yes --durations=50 tfep/tests/
 
+      - name: Run doctests
+        # conda setup requires this special shell
+        shell: bash -l {0}
+        run: |
+          pytest -v --doctest-modules --ignore=tfep/tests/
+
       - name: CodeCov
         uses: codecov/codecov-action@v3
         with:
           file: ./coverage.xml
           flags: unittests
           name: codecov-${{ matrix.os }}-py${{ matrix.python-version }}
-
-      - name: Run doctests
-        # conda setup requires this special shell
-        shell: bash -l {0}
-        run: |
-          pytest -v --doctest-modules --ignore=tfep/tests/

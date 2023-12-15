@@ -18,7 +18,6 @@ import numpy as np
 import pytest
 import torch
 
-from tfep.nn.utils import generate_block_sizes
 from tfep.nn.transformers import (
     AffineTransformer, SOSPolynomialTransformer,
     NeuralSplineTransformer, MoebiusTransformer
@@ -92,7 +91,7 @@ def test_lift_periodic(n_periodic, limits):
     dimension_in = 5
 
     # Select a few random indices for sampling.
-    periodic_indices = torch.sort(torch.randperm(dimension_in)[:n_periodic]).values.tolist()
+    periodic_indices = torch.sort(torch.randperm(dimension_in)[:n_periodic]).values
     lifter = _LiftPeriodic(dimension_in=dimension_in, periodic_indices=periodic_indices, limits=limits)
 
     # Create random input with the correct periodicity.

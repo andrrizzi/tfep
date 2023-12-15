@@ -91,16 +91,17 @@ class PartialFlow(torch.nn.Module):
         # This tensor goes through the flow.
         x = x[:, self._propagated_indices]
 
-        # Now go through the flow layers.
+        # Now go through the flow layers. Continuous flow may return also a
+        # regularization term in addition to the mapped x and the log_det_J.
         if inverse:
-            x, log_det_J = self.flow.inverse(x)
+            out = self.flow.inverse(x)
         else:
-            x, log_det_J = self.flow(x)
+            out = self.flow(x)
 
         if self.return_partial:
-            return x, log_det_J
+            return out
 
         # Add to the factored out dimensions.
-        y[:, self._propagated_indices] = x
+        y[:, self._propagated_indices] = out[0]
 
-        return y, log_det_J
+        return (y, *out[1:])

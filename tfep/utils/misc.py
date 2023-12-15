@@ -11,8 +11,10 @@
 # GLOBAL IMPORTS
 # =============================================================================
 
+from collections.abc import Sequence
 import contextlib
 import os
+from typing import Union
 
 import numpy as np
 import pint
@@ -151,6 +153,31 @@ def atom_to_flattened_indices(atom_indices, space_dimension=3):
     if is_not_batch:
         return flattened_indices[0]
     return flattened_indices
+
+
+def ensure_tensor_sequence(x: Union[str, int, float, Sequence], dtype=None) -> torch.Tensor:
+    r"""If x is a sequence, return it as a torch.Tensor without copying the memory (if possible).
+
+    Parameters
+    ----------
+    x : str, int, float, or Sequence
+        The input. Sequences (that are not strings) are converted to ``torch.Tensor``\ s.
+    dtype : dtype or None, optional
+        If set, forces the tensor to a data type.
+
+    Returns
+    -------
+    converted_x : str, int, float, or torch.Tensor
+        The input, eventually converted to a tensor.
+
+    """
+    # as_tensor supports scalars but not None or strings.
+    if not np.isscalar(x):
+        try:
+            x = torch.as_tensor(x, dtype=dtype)
+        except (TypeError, RuntimeError):
+            pass
+    return x
 
 
 def energies_array_to_tensor(energies, energy_unit=None, dtype=None):

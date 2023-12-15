@@ -20,27 +20,6 @@ from tfep.utils.math import batchwise_dot, batchwise_outer
 
 
 # =============================================================================
-# GEOMETRY
-# =============================================================================
-
-def normalize_vector(x):
-    """Return the normalized vector.
-
-    Parameters
-    ----------
-    x : torch.Tensor
-        Tensor of shape ``(batch_size, N)`` or ``(N,)``.
-
-    Returns
-    -------
-    norm_x : torch.Tensor
-        Normalized tensor of same shape as ``v``.
-
-    """
-    return x / torch.linalg.vector_norm(x, dim=-1, keepdim=True)
-
-
-# =============================================================================
 # INTERNAL COORDINATES
 # =============================================================================
 
@@ -225,7 +204,7 @@ def rotation_matrix_3d(angles, directions):
     cosa = torch.cos(angles)
 
     # unit rotation vectors (batch_size, 3).
-    k = normalize_vector(directions)
+    k = torch.nn.functional.normalize(directions, dim=-1)
     if len(k.shape) < 2:
         k = k.unsqueeze(0)
 
