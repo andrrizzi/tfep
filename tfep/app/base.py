@@ -71,9 +71,11 @@ class TFEPMapBase(ABC, lightning.LightningModule):
     ...     def configure_flow(self):
     ...         # A simple 1-layer affine autoregressive flow.
     ...         # The flow must take care only of the mapped and conditioning atoms.
+    ...         conditioning_indices = self.get_conditioning_indices(
+    ...             idx_type="dof", remove_fixed=True, remove_reference=True)
     ...         return tfep.nn.flows.MAF(
     ...             dimension_in=self.n_mapped_dofs,
-    ...             conditioning_indices=self.get_conditioning_indices(idx_type="dof", remove_constrained=True),
+    ...             conditioning_indices=conditioning_indices,
     ...         )
     ...
 
@@ -327,7 +329,8 @@ class TFEPMapBase(ABC, lightning.LightningModule):
     def get_mapped_indices(
             self,
             idx_type: Literal['atom', 'dof'],
-            remove_constrained: bool,
+            remove_fixed: bool,
+            remove_reference: bool,
     ) -> torch.Tensor:
         """Return the indices of the mapped atom or degrees of freedom (DOF).
 
@@ -342,11 +345,14 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         ----------
         idx_type : Literal['atom', 'dof']
             Whether to return the indices of the atom or the degrees of freedom.
-        remove_constrained : bool
+        remove_fixed : bool
             If ``True``, the returned tensor represent the indices after the
-            fixed atoms have been removed. Moreover, if ``idx_type == 'dof'``,
-            then also the constrained DOFs of the origin and axes atoms determining
-            the reference frame are removed as well.
+            fixed atoms have been removed.
+        remove_reference : bool
+            If ``True``, the returned tensor represent the indices after the
+            reference frame atoms (i.e., origin and axes atoms) have been removed.
+            Note that if ``idx_type == 'dof'``, only the constrained DOFs of the
+            reference frame atoms are removed.
 
         Returns
         -------
@@ -354,12 +360,14 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             The mapped atom/DOFs indices.
 
         """
-        return self._get_nonfixed_indices(self._mapped_atom_indices, idx_type, remove_constrained)
+        return self._get_nonfixed_indices(
+            self._mapped_atom_indices, idx_type, remove_fixed, remove_reference)
 
     def get_conditioning_indices(
             self,
             idx_type: Literal['atom', 'dof'],
-            remove_constrained: bool,
+            remove_fixed: bool,
+            remove_reference: bool,
     ) -> torch.Tensor:
         """Return the indices of the conditioning atom or degrees of freedom (DOF).
 
@@ -376,11 +384,14 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         ----------
         idx_type : Literal['atom', 'dof']
             Whether to return the indices of the atom or the degrees of freedom.
-        remove_constrained : bool
+        remove_fixed : bool
             If ``True``, the returned tensor represent the indices after the
-            fixed atoms have been removed. Moreover, if ``idx_type == 'dof'``,
-            then also the constrained DOFs of the origin and axes atoms determining
-            the reference frame are removed as well.
+            fixed atoms have been removed.
+        remove_reference : bool
+            If ``True``, the returned tensor represent the indices after the
+            reference frame atoms (i.e., origin and axes atoms) have been removed.
+            Note that if ``idx_type == 'dof'``, only the constrained DOFs of the
+            reference frame atoms are removed.
 
         Returns
         -------
@@ -391,7 +402,8 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         # Conditioning atoms might be None.
         if self.n_conditioning_atoms == 0:
             return None
-        return self._get_nonfixed_indices(self._conditioning_atom_indices, idx_type, remove_constrained)
+        return self._get_nonfixed_indices(
+            self._conditioning_atom_indices, idx_type, remove_fixed, remove_reference)
 
     def forward(self, x):
         """Execute the normalizing flow in the forward direction.
@@ -758,7 +770,8 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             self,
             atom_indices: torch.Tensor,
             idx_type: Literal['atom', 'dof'],
-            remove_constrained: bool,
+            remove_fixed: bool,
+            remove_reference: bool,
     ) -> torch.Tensor:
         """Return the atom/DOFs indices.
 
@@ -772,45 +785,53 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         indices = atom_indices
 
         # We search the fixed indices by atom index so that searchsorted takes
-        # three times less and the fixed indices are typically the most numerous.
-        if remove_constrained and self.n_fixed_atoms > 0:
+        # three times less and we expect the fixed indices (when present) to be
+        # the most numerous.
+        if remove_fixed and self.n_fixed_atoms > 0:
             indices = indices - torch.searchsorted(self._fixed_atom_indices, indices)
+
+        # Initialize the indices of the reference atoms to remove.
+        removed_indices = []
+
+        # Now determine the indices of the reference frame atoms after the fixed
+        # atoms have been removed so that we can match them with the shifted indices.
+        if remove_reference:
+            # We don't need to remove the origin from axes since we didn't remove from indices either.
+            removed_indices = self._get_passed_reference_atom_indices(remove_origin_from_axes=False)
 
         # Convert to DOF indices.
         if is_dof:
             indices = atom_to_flattened_indices(indices)
 
             # If DOF, remove the origin and axes atom constrained DOFs.
-            if remove_constrained:
-                # First find the indices of the reference atoms after the fixed
-                # atoms have been removed.
-                reference_atoms_indices = self._get_passed_reference_atom_indices(
-                    remove_origin_from_axes=False)
-
-                # Find all the DOFs associated with the origin and axes atoms.
+            if remove_reference:
+                # Find all the constrained DOFs associated with the origin and axes atoms.
                 removed_dof_indices = []
                 if self._origin_atom_idx is not None:
                     # All DOFs of the origin atoms are constrained.
-                    removed_dof_indices.append(atom_to_flattened_indices(reference_atoms_indices[:1]))
+                    removed_dof_indices.append(atom_to_flattened_indices(removed_indices[:1]))
                 if self._axes_atom_indices is not None:
                     # axes_atom[0] is constrained on the x-axis so y,z coordinates are fixed.
-                    removed_dof_indices.append(atom_to_flattened_indices(reference_atoms_indices[-2:-1])[1:])
+                    removed_dof_indices.append(atom_to_flattened_indices(removed_indices[-2:-1])[1:])
                     # axes_atom[1] is constrained on the x-y plane so z coordinate is fixed.
-                    removed_dof_indices.append(atom_to_flattened_indices(reference_atoms_indices[-1:])[2:])
+                    removed_dof_indices.append(atom_to_flattened_indices(removed_indices[-1:])[2:])
 
-                # No constrained DOFs to remove.
-                if len(removed_dof_indices) > 0:
-                    # removed_dof_indices must be sorted for searchsorted.
-                    removed_dof_indices = torch.cat(removed_dof_indices).sort()[0]
+                # Update from atom to DOF the indices to remove.
+                removed_indices = removed_dof_indices
 
-                    # We need to first to delete the constrained reference DOFs that belong to atom_indices.
-                    mask = True
-                    for idx in removed_dof_indices:
-                        mask &= indices != idx
-                    indices = indices[mask]
+        # Remove the reference atom indices.
+        if len(removed_indices) > 0:
+            # removed_indices must be sorted for searchsorted.
+            removed_indices = torch.cat(removed_indices).sort()[0]
 
-                    # And now shift the indices to account for the removal of the
-                    # constrained reference DOFs (even if they don't belong to atom_indices).
-                    indices = indices - torch.searchsorted(removed_dof_indices, indices)
+            # We need to first to delete the constrained reference DOFs that belong to atom_indices.
+            mask = True
+            for idx in removed_indices:
+                mask &= indices != idx
+            indices = indices[mask]
+
+            # And now shift the indices to account for the removal of the
+            # constrained indices (even if they don't belong to atom_indices).
+            indices = indices - torch.searchsorted(removed_indices, indices)
 
         return indices

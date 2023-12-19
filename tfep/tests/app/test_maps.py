@@ -181,8 +181,8 @@ def test_atom_selection(
                 expected_conditioning_fixed_removed,
                 expected_fixed
             ], [
-                tfep_map.get_mapped_indices(idx_type='atom', remove_constrained=True),
-                tfep_map.get_conditioning_indices(idx_type='atom', remove_constrained=True),
+                tfep_map.get_mapped_indices(idx_type='atom', remove_fixed=True, remove_reference=False),
+                tfep_map.get_conditioning_indices(idx_type='atom', remove_fixed=True, remove_reference=False),
                 tfep_map._fixed_atom_indices
             ]):
         if expected_indices is None:

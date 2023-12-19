@@ -20,7 +20,6 @@ import torch
 
 from tfep.app.base import TFEPMapBase
 import tfep.nn.flows
-from tfep.utils.misc import atom_to_flattened_indices
 
 
 # =============================================================================
@@ -181,7 +180,8 @@ class CartesianMAFMap(TFEPMapBase):
 
         """
         dimension_in = self.n_mapped_dofs
-        conditioning_indices = self.get_conditioning_indices(idx_type='dof', remove_constrained=True)
+        conditioning_indices = self.get_conditioning_indices(
+            idx_type='dof', remove_fixed=True, remove_reference=True)
         if conditioning_indices is not None:
             dimension_in += len(conditioning_indices)
 
