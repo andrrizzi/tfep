@@ -23,13 +23,13 @@ import pytest
 
 from tfep.utils.plumed.auxreader import PLUMEDAuxReader
 
+from ... import DATA_DIR_PATH
+
 
 # =============================================================================
 # GLOBAL VARIABLES
 # =============================================================================
 
-SCRIPT_DIR_PATH = os.path.dirname(__file__)
-DATA_DIR_PATH = os.path.join(SCRIPT_DIR_PATH, '..', '..', 'data')
 CHLOROMETHANE_PDB_FILE_PATH = os.path.join(DATA_DIR_PATH, 'chloro-fluoromethane.pdb')
 AUXILIARY_DATA_FILE_PATH = os.path.join(DATA_DIR_PATH, 'auxiliary.xvg')
 

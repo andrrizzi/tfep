@@ -30,15 +30,14 @@ from tfep.utils.misc import flattened_to_atom
 
 from tfep.app import TFEPMapBase, CartesianMAFMap
 
-from . import MockPotential
+from .. import MockPotential, DATA_DIR_PATH
 
 
 # =============================================================================
 # GLOBAL VARIABLES
 # =============================================================================
 
-SCRIPT_DIR_PATH = os.path.dirname(__file__)
-CHLOROMETHANE_PDB_FILE_PATH = os.path.join(SCRIPT_DIR_PATH, '..', 'data', 'chloro-fluoromethane.pdb')
+CHLOROMETHANE_PDB_FILE_PATH = os.path.join(DATA_DIR_PATH, 'chloro-fluoromethane.pdb')
 
 UNITS = pint.UnitRegistry()
 

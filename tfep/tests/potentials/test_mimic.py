@@ -30,13 +30,14 @@ from tfep.utils.cli import SRunLauncher
 from tfep.utils.parallel import ProcessPoolStrategy
 from tfep.utils.misc import temporary_cd
 
+from .. import DATA_DIR_PATH
+
 
 # =============================================================================
 # GLOBAL VARIABLES
 # =============================================================================
 
-SCRIPT_DIR_PATH = os.path.dirname(__file__)
-MIMIC_INPUT_DIR_PATH = os.path.realpath(os.path.join(SCRIPT_DIR_PATH, '..', 'data', 'mimic'))
+MIMIC_INPUT_DIR_PATH = os.path.realpath(os.path.join(DATA_DIR_PATH, 'mimic'))
 
 _UREG = pint.UnitRegistry()
 

@@ -38,6 +38,8 @@ from tfep.potentials.ase import PotentialASE, potential_energy_ase
 from tfep.utils.misc import atom_to_flattened, flattened_to_atom
 from tfep.utils.parallel import SerialStrategy, ProcessPoolStrategy
 
+from .. import DATA_DIR_PATH
+
 
 # =============================================================================
 # GLOBAL VARIABLES
@@ -45,10 +47,6 @@ from tfep.utils.parallel import SerialStrategy, ProcessPoolStrategy
 
 # Common unit registry for all tests.
 _UREG = pint.UnitRegistry()
-
-# Path to data.
-SCRIPT_DIR_PATH = os.path.dirname(__file__)
-DATA_DIR_PATH = os.path.realpath(os.path.join(SCRIPT_DIR_PATH, '..', 'data'))
 
 # Determine the available calculators.
 _CALCULATORS = [ase.calculators.tip3p.TIP3P()]

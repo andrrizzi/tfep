@@ -26,14 +26,15 @@ import torch.utils.data
 
 from tfep.io.dataset.traj import TrajectoryDataset, TrajectorySubset
 
+from .. import DATA_DIR_PATH
+
 
 # =============================================================================
 # GLOBAL VARIABLES
 # =============================================================================
 
-SCRIPT_DIR_PATH = os.path.dirname(__file__)
-CHLOROMETHANE_PDB_FILE_PATH = os.path.join(SCRIPT_DIR_PATH, '..', 'data', 'chloro-fluoromethane.pdb')
-AUXILIARY_DATA_FILE_PATH = os.path.join(SCRIPT_DIR_PATH, '..', 'data', 'auxiliary.xvg')
+CHLOROMETHANE_PDB_FILE_PATH = os.path.join(DATA_DIR_PATH, 'chloro-fluoromethane.pdb')
+AUXILIARY_DATA_FILE_PATH = os.path.join(DATA_DIR_PATH, 'auxiliary.xvg')
 
 _U = pint.UnitRegistry()
 
