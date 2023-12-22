@@ -179,17 +179,14 @@ class CartesianMAFMap(TFEPMapBase):
             The normalizing flow.
 
         """
-        dimension_in = self.n_mapped_dofs
         conditioning_indices = self.get_conditioning_indices(
             idx_type='dof', remove_fixed=True, remove_reference=True)
-        if conditioning_indices is not None:
-            dimension_in += len(conditioning_indices)
 
         # Build MAF layers.
         maf_layers = []
         for layer_idx in range(self.hparams.n_maf_layers):
             maf_layers.append(tfep.nn.flows.MAF(
-                dimension_in=dimension_in,
+                dimension_in=self.n_nonfixed_dofs,
                 conditioning_indices=conditioning_indices,
                 degrees_in='input' if (layer_idx%2 == 0) else 'reversed',
                 **self.kwargs,

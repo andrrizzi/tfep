@@ -74,7 +74,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
     ...         conditioning_indices = self.get_conditioning_indices(
     ...             idx_type="dof", remove_fixed=True, remove_reference=True)
     ...         return tfep.nn.flows.MAF(
-    ...             dimension_in=self.n_mapped_dofs,
+    ...             dimension_in=self.n_nonfixed_dofs,
     ...             conditioning_indices=conditioning_indices,
     ...         )
     ...
@@ -293,22 +293,17 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
     @property
     def n_mapped_dofs(self) -> int:
-        """The number of mapped degrees of freedom."""
+        """The number of mapped degrees of freedom (excluding the constrained DOFs of the reference frame atoms)."""
         n_mapped_dofs = 3 * self.n_mapped_atoms
 
         # Check if the unconstrained DOFs of the axes atoms are mapped (the origin
         # atom is always conditioning).
         if self._axes_atom_indices is not None:
-            if self.n_conditioning_atoms == 0:
-                n_mapped_dofs -= 3
-            else:
-                is_atom_0_mapped = torch.any(self._mapped_atom_indices == self._axes_atom_indices[0])
-                if is_atom_0_mapped:
-                    n_mapped_dofs -= 2
-
-                is_atom_1_mapped = torch.any(self._mapped_atom_indices == self._axes_atom_indices[1])
-                if is_atom_1_mapped:
-                    n_mapped_dofs -= 1
+            is_atom_0_mapped, is_atom_1_mapped = self._are_axes_atoms_mapped()
+            if is_atom_0_mapped:
+                n_mapped_dofs -= 2
+            if is_atom_1_mapped:
+                n_mapped_dofs -= 1
 
         return n_mapped_dofs
 
@@ -320,11 +315,45 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         return len(self._conditioning_atom_indices)
 
     @property
+    def n_conditioning_dofs(self) -> int:
+        """The number of conditioning degrees of freedom (excluding the constrained DOFs of the reference frame atoms)."""
+        n_conditioning_dofs = 3 * self.n_conditioning_dofs
+
+        # Remove constrained DOFs of the origin atom which is always conditioning.
+        if self._origin_atom_idx is not None:
+            n_conditioning_dofs -= 3
+
+        # Remove constrained DOFs of the axes atoms.
+        if self._axes_atom_indices is not None:
+            is_atom_0_mapped, is_atom_1_mapped = self._are_axes_atoms_mapped()
+            if not is_atom_0_mapped:
+                n_conditioning_dofs -= 2
+            if not is_atom_1_mapped:
+                n_conditioning_dofs -= 1
+
+        return n_conditioning_dofs
+
+    @property
     def n_fixed_atoms(self) -> int:
         """The number of fixed atoms."""
         if self._fixed_atom_indices is None:
             return 0
         return len(self._fixed_atom_indices)
+
+    @property
+    def n_nonfixed_atoms(self) -> int:
+        """Total number of mapped and conditioning atoms."""
+        return self.n_mapped_atoms + self.n_conditioning_atoms
+
+    @property
+    def n_nonfixed_dofs(self) -> int:
+        """Total number of mapped and conditioning degrees of freedom (excluding the constrained DOFs of the reference frame atoms)."""
+        n_nonfixed_dofs = 3 * self.n_nonfixed_atoms
+        if self._origin_atom_idx is not None:
+            n_nonfixed_dofs -= 3
+        if self._axes_atom_indices is not None:
+            n_nonfixed_dofs -= 3
+        return n_nonfixed_dofs
 
     def get_mapped_indices(
             self,
@@ -713,6 +742,30 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         if sort:
             selection = selection.sort()[0]
         return selection
+
+    def _are_axes_atoms_mapped(self):
+        """Return whether the two axes atoms (if any) are mapped.
+
+        Returns
+        -------
+        are_mapped : None or Tuple[bool]
+            A pair ``(is_axes_atom_0_mapped, is_axes_atom_1_mapped)`` or ``None``
+            if there are no axes atoms.
+
+        """
+        if self._axes_atom_indices is None:
+            return None
+
+        if self.n_conditioning_atoms == 0:
+            return True, True
+        elif self.n_conditioning_atoms > self.n_mapped_atoms:
+            is_atom_0_mapped = torch.any(self._mapped_atom_indices == self._axes_atom_indices[0])
+            is_atom_1_mapped = torch.any(self._mapped_atom_indices == self._axes_atom_indices[1])
+        else:
+            is_atom_0_mapped = not torch.any(self._conditioning_atom_indices == self._axes_atom_indices[0])
+            is_atom_1_mapped = not torch.any(self._conditioning_atom_indices == self._axes_atom_indices[1])
+
+        return is_atom_0_mapped, is_atom_1_mapped
 
     def _get_passed_reference_atom_indices(self, remove_origin_from_axes: bool) -> Union[torch.Tensor, None]:
         """Return the atom indices of the origin and axes atoms after the fixed atoms have been removed.
