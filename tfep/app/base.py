@@ -225,7 +225,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
         """
         # Create TrajectoryDataset. This sets self.dataset.
-        self._create_dataset()
+        self.dataset = self._create_dataset()
 
         # Identify mapped, conditioning, and fixed atom indices.
         self._determine_atom_indices()
@@ -575,13 +575,9 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         checkpoint['stateful_batch_sampler'] = self._stateful_batch_sampler.state_dict()
 
     def _create_dataset(self):
-        """Create the dataset object.
-
-        This sets the attribute ``self.dataset``.
-
-        """
+        """Create and return the dataset object."""
         universe = self._create_universe()
-        self.dataset = tfep.io.TrajectoryDataset(universe=universe)
+        return tfep.io.TrajectoryDataset(universe=universe)
 
     def _create_universe(self):
         """Create and return the MDAnalysis Universe."""
