@@ -231,34 +231,11 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         self._determine_atom_indices()
 
         # Create model.
-        self._flow = self.configure_flow()
+        flow = self.configure_flow()
 
-        # Determine origin and axes atom indices after the fixed DOFs have been removed.
-        reference_atom_indices = self._get_passed_reference_atom_indices(remove_origin_from_axes=True)
-
-        # Set the axes orientation of the relative reference frame.
-        if self._axes_atom_indices is not None:
-            self._flow = tfep.nn.flows.OrientedFlow(
-                self._flow,
-                axis_point_idx=reference_atom_indices[-2],
-                plane_point_idx=reference_atom_indices[-1],
-            )
-
-        # Set the origin of the relative reference frame.
-        if self._origin_atom_idx is not None:
-            self._flow = tfep.nn.flows.CenteredCentroidFlow(
-                self._flow,
-                space_dimension=3,
-                subset_point_indices=[reference_atom_indices[0]],
-            )
-
-        # Wrap in a partial flow to carry over fixed degrees of freedom.
-        if self.n_fixed_atoms > 0:
-            fixed_dof_indices = atom_to_flattened_indices(self._fixed_atom_indices)
-            self._flow = tfep.nn.flows.PartialFlow(
-                self._flow,
-                fixed_indices=fixed_dof_indices,
-            )
+        # Wrap in partial flow(s) to carry over the fixed degrees of freedom and
+        # change the frame of reference.
+        self._flow = self._create_change_of_frame_flow(flow)
 
     @abstractmethod
     def configure_flow(self) -> torch.nn.Module:
@@ -888,3 +865,57 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             indices = indices - torch.searchsorted(removed_indices, indices)
 
         return indices
+
+    def _create_change_of_frame_flow(self, flow: torch.nn.Module, restore: bool = True) -> torch.nn.Module:
+        """Wrap the flow to remove the fixed DOFs and change the frame of reference.
+
+        Parameters
+        ----------
+        flow : torch.nn.Module
+            The flow to be wrapped in the Partial and/or Oriented/CenteredCentroid
+            flows.
+        restore : bool, optional
+            If ``False``, the ``rotate_back`` and ``translate_back`` options of
+            ``OrientedFlow`` and ``CenteredCentroidFlow``, respectively are set
+            to ``False``, and the returned wrapped flow outputs only the propagated
+            degrees of freedom.
+
+        Returns
+        -------
+        flow : torch.nn.Module
+            The wrapped flow.
+
+        """
+        # Determine origin and axes atom indices after the fixed DOFs have been removed.
+        reference_atom_indices = self._get_passed_reference_atom_indices(remove_origin_from_axes=True)
+
+        # Set the axes orientation of the relative reference frame.
+        if self._axes_atom_indices is not None:
+            flow = tfep.nn.flows.OrientedFlow(
+                flow,
+                axis_point_idx=reference_atom_indices[-2],
+                plane_point_idx=reference_atom_indices[-1],
+                rotate_back=restore,
+                return_partial=not restore,
+            )
+
+        # Set the origin of the relative reference frame.
+        if self._origin_atom_idx is not None:
+            flow = tfep.nn.flows.CenteredCentroidFlow(
+                flow,
+                space_dimension=3,
+                subset_point_indices=[reference_atom_indices[0]],
+                translate_back=restore,
+                return_partial=not restore,
+            )
+
+        # Wrap in a partial flow to carry over fixed degrees of freedom.
+        if self.n_fixed_atoms > 0:
+            fixed_dof_indices = atom_to_flattened_indices(self._fixed_atom_indices)
+            flow = tfep.nn.flows.PartialFlow(
+                flow,
+                fixed_indices=fixed_dof_indices,
+                return_partial=not restore,
+            )
+
+        return flow
