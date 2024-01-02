@@ -808,8 +808,14 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         atom_indices should be either self._mapped_atom_indices or self._conditioning_atom_indices.
 
         """
+        # Shortcuts.
         assert idx_type in {"atom", "dof"}
         is_dof = idx_type == "dof"
+        has_origin = self._origin_atom_idx is not None
+        has_axes = self._axes_atom_indices is not None
+
+        # We don't need to remove the reference atoms if there are none.
+        remove_reference = remove_reference and (has_origin or has_axes)
 
         # Returned value.
         indices = atom_indices
@@ -837,10 +843,10 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             if remove_reference:
                 # Find all the constrained DOFs associated with the origin and axes atoms.
                 removed_dof_indices = []
-                if self._origin_atom_idx is not None:
+                if has_origin:
                     # All DOFs of the origin atoms are constrained.
                     removed_dof_indices.append(atom_to_flattened_indices(removed_indices[:1]))
-                if self._axes_atom_indices is not None:
+                if has_axes:
                     # axes_atom[0] is constrained on the x-axis so y,z coordinates are fixed.
                     removed_dof_indices.append(atom_to_flattened_indices(removed_indices[-2:-1])[1:])
                     # axes_atom[1] is constrained on the x-y plane so z coordinate is fixed.
