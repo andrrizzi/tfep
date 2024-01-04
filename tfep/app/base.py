@@ -710,6 +710,8 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         """Return selected indices as a sorted Tensor of integers."""
         if isinstance(selection, str):
             selection = self.dataset.universe.select_atoms(selection).ix
+        if len(selection) == 0:
+            raise ValueError('Selection contains 0 atoms.')
         if not torch.is_tensor(selection):
             selection = torch.tensor(selection)
         if sort:
