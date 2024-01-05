@@ -48,7 +48,7 @@ class PartialFlow(torch.nn.Module):
     Attributes
     ----------
     return_partial : bool
-        If ``True``, only the propagated indices are returned.
+
 
     """
 
@@ -59,7 +59,11 @@ class PartialFlow(torch.nn.Module):
             return_partial: bool = False,
     ):
         super().__init__()
+
+        #: Wrapped flow.
         self.flow = flow
+
+        #: If ``True``, only the propagated indices are returned.
         self.return_partial = return_partial
 
         # Convert to tensor.
