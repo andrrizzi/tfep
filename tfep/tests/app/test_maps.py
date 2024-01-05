@@ -295,7 +295,7 @@ def test_error_reference_frame_atoms_overlap(tfep_map_cls, origin_atom, axes_ato
 
 
 @pytest.mark.parametrize('tfep_map_cls', TESTED_TFEP_MAPS)
-def test_error_origin_atom_not_fixed(tfep_map_cls):
+def test_error_origin_atom_not_conditioning(tfep_map_cls):
     """An error is raised if the origin atom is not a conditioning atom."""
     tfep_map = tfep_map_cls(
         mapped_atoms=range(6),
@@ -307,7 +307,7 @@ def test_error_origin_atom_not_fixed(tfep_map_cls):
 
 
 @pytest.mark.parametrize('tfep_map_cls', TESTED_TFEP_MAPS)
-def test_error_axes_atom_not_fixed(tfep_map_cls):
+def test_error_axes_atom_fixed(tfep_map_cls):
     """An error is raised if the origin atom is not a conditioning atom."""
     tfep_map = tfep_map_cls(
         mapped_atoms=range(1, 6),
