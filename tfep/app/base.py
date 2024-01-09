@@ -276,7 +276,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         # Check if the unconstrained DOFs of the axes atoms are mapped (the origin
         # atom is always conditioning).
         if self._axes_atom_indices is not None:
-            is_atom_0_mapped, is_atom_1_mapped = self._are_axes_atoms_mapped()
+            is_atom_0_mapped, is_atom_1_mapped = self.are_axes_atoms_mapped()
             if is_atom_0_mapped:
                 n_mapped_dofs -= 2
             if is_atom_1_mapped:
@@ -302,7 +302,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
         # Remove constrained DOFs of the axes atoms.
         if self._axes_atom_indices is not None:
-            is_atom_0_mapped, is_atom_1_mapped = self._are_axes_atoms_mapped()
+            is_atom_0_mapped, is_atom_1_mapped = self.are_axes_atoms_mapped()
             if not is_atom_0_mapped:
                 n_conditioning_dofs -= 2
             if not is_atom_1_mapped:
@@ -331,6 +331,30 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         if self._axes_atom_indices is not None:
             n_nonfixed_dofs -= 3
         return n_nonfixed_dofs
+
+    def are_axes_atoms_mapped(self):
+        """Return whether the two axes atoms (if any) are mapped.
+
+        Returns
+        -------
+        are_mapped : None or Tuple[bool]
+            A pair ``(is_axes_atom_0_mapped, is_axes_atom_1_mapped)`` or ``None``
+            if there are no axes atoms.
+
+        """
+        if self._axes_atom_indices is None:
+            return None
+
+        if self.n_conditioning_atoms == 0:
+            return True, True
+        elif self.n_conditioning_atoms > self.n_mapped_atoms:
+            is_atom_0_mapped = torch.any(self._mapped_atom_indices == self._axes_atom_indices[0])
+            is_atom_1_mapped = torch.any(self._mapped_atom_indices == self._axes_atom_indices[1])
+        else:
+            is_atom_0_mapped = not torch.any(self._conditioning_atom_indices == self._axes_atom_indices[0])
+            is_atom_1_mapped = not torch.any(self._conditioning_atom_indices == self._axes_atom_indices[1])
+
+        return is_atom_0_mapped, is_atom_1_mapped
 
     def get_mapped_indices(
             self,
@@ -717,30 +741,6 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         if sort:
             selection = selection.sort()[0]
         return selection
-
-    def _are_axes_atoms_mapped(self):
-        """Return whether the two axes atoms (if any) are mapped.
-
-        Returns
-        -------
-        are_mapped : None or Tuple[bool]
-            A pair ``(is_axes_atom_0_mapped, is_axes_atom_1_mapped)`` or ``None``
-            if there are no axes atoms.
-
-        """
-        if self._axes_atom_indices is None:
-            return None
-
-        if self.n_conditioning_atoms == 0:
-            return True, True
-        elif self.n_conditioning_atoms > self.n_mapped_atoms:
-            is_atom_0_mapped = torch.any(self._mapped_atom_indices == self._axes_atom_indices[0])
-            is_atom_1_mapped = torch.any(self._mapped_atom_indices == self._axes_atom_indices[1])
-        else:
-            is_atom_0_mapped = not torch.any(self._conditioning_atom_indices == self._axes_atom_indices[0])
-            is_atom_1_mapped = not torch.any(self._conditioning_atom_indices == self._axes_atom_indices[1])
-
-        return is_atom_0_mapped, is_atom_1_mapped
 
     def _get_passed_reference_atom_indices(self, remove_origin_from_axes: bool) -> Union[torch.Tensor, None]:
         """Return the atom indices of the origin and axes atoms after the fixed atoms have been removed.
