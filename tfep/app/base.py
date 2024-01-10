@@ -14,7 +14,7 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import Any, Dict, Literal, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import lightning
 import pint
@@ -39,7 +39,8 @@ class TFEPMapBase(ABC, lightning.LightningModule):
     - Support correct mid-epoch resuming.
     - Log vectorial quantities such as the calculated potential energies and the
       absolute Jacobian terms that can later be used to estimate the free energy.
-    - Create a frame of reference relative to selected system atoms.
+    - Identify and perform consistency checks on three atoms (origin, axis, and
+      plane) that can be used to define a relative frame of reference for the flow.
     - Identify the mapped, conditioning, and fixed atom indices and handle fixed
       atoms.
 
@@ -47,11 +48,15 @@ class TFEPMapBase(ABC, lightning.LightningModule):
     Conditioning atoms are not mapped but are given as input to the flow to
     condition the mapping. Fixed atoms are instead ignored. Note that the flow
     defined child class must handle only the mapped and conditioning atoms. The
-    flow will be automatically wrapped in a :class:`tfep.nn.flows.PartialFlow`
-    to handle the fixed atoms. The class further provides two methods
-    :func:`~TFEPMapBase.get_mapped_indices` and :func:`~TFEPMapBase.get_conditioning_indices`
-    to recover the indices  of the mapped/conditioning degrees of freedom after
-    the fixed atoms have been removed (see example below).
+    flow will be automatically wrapped in a :class:`~tfep.nn.flows.PartialFlow`
+    to handle the fixed atoms.
+
+    The class further provides convenience methods to retrieve the indices of
+    the mapped and conditioning atoms/degrees of freedom after the fixed atoms
+    are removed through the methods :func:`~TFEPMapBase.get_mapped_indices` and
+    :func:`~TFEPMapBase.get_conditioning_indices` (see example below). A similar
+    function exist for the atom indices of the reference frame atoms called
+    :func:`~TFEPMapBase.get_reference_atoms_indices`
 
     The only required method to implement a concrete class is :func:`~TFEPMapBase.configure_flow`.
 
@@ -70,6 +75,12 @@ class TFEPMapBase(ABC, lightning.LightningModule):
     ...
     ...     def configure_flow(self):
     ...         # A simple 1-layer affine autoregressive flow.
+    ...         # The flow must fix the relative frame of reference or raise
+    ...         # an error when origin and axes atoms are set.
+    ...         reference_atoms_indices = self.get_reference_atoms_indices()
+    ...         if reference_atoms_indices is not None:
+    ...             raise NotImplementedError('Relative frame of reference is not supported.')
+    ...
     ...         # The flow must take care only of the mapped and conditioning atoms.
     ...         conditioning_indices = self.get_conditioning_indices(
     ...             idx_type="dof", remove_fixed=True, remove_reference=True)
@@ -92,8 +103,6 @@ class TFEPMapBase(ABC, lightning.LightningModule):
     ...     batch_size=64,
     ...     mapped_atoms='resname MOL',  # MDAnalysis selection syntax.
     ...     conditioning_atoms=range(10, 20),
-    ...     origin_atom=12,  # Fix the origin of the relative reference frame on atom 123.
-    ...     axes_atoms=[13, 16],  # Determine the orientation of the reference frame.
     ... )
     >>>
     >>> # Train the flow and save the potential energies.
@@ -152,11 +161,13 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             atom by definition.
         axes_atoms : Sequence[int] or str or None, optional
             A pair of indices (0-based) or a selection string in MDAnalysis syntax
-            for the two atoms determining the relative frame of reference. The
-            ``axes_atoms[0]``-th atom will lay on the ``x`` axis , and the
-            ``axes_atoms[1]``-th atom will lay on the plane spanned by the ``x``
-            and ``y`` axes. The ``z`` axis will be set as the cross product of
-            ``x`` and ``y``.
+            for the two atoms determining the relative frame of reference.
+
+            The details of how these are used to fix the orientation of the frame
+            of reference depend on the implementation of :func:`~TFEPMapBase.configure_flow`.
+            For example, ``axes_atoms[0]``-th atom may lay on the ``z`` axis ,
+            and the ``axes_atoms[1]``-th atom may lay on the plane spanned by
+            the ``x`` and ``z`` axes.
 
             These atoms can be either conditioning or mapped. ``axes_atoms[0]``
             has only 1 degree of freedom (DOF) while ``axes_atoms[1]`` has 2.
@@ -233,9 +244,8 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         # Create model.
         flow = self.configure_flow()
 
-        # Wrap in partial flow(s) to carry over the fixed degrees of freedom and
-        # change the frame of reference.
-        self._flow = self._create_change_of_frame_flow(flow)
+        # Wrap in partial flow(s) to carry over the fixed degrees of freedom.
+        self._flow = self.create_partial_flow(flow)
 
     @abstractmethod
     def configure_flow(self) -> torch.nn.Module:
@@ -243,7 +253,11 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
         Note that the flow must handle only the mapped and conditioning atoms.
         The fixed atoms will be instead automatically wrapped in a
-        :class:`tfep.nn.flows.PartialFlow`.
+        :class:`~tfep.nn.flows.PartialFlow`.
+
+        The method must also set the flow to fix the reference frame of reference
+        based on the origin and axes atoms. For example by using
+        :class`~tfep.nn.flows.OrientedFlow` and :class`~tfep.nn.flows.CenteredCentroidFlow`.
 
         Returns
         -------
@@ -360,7 +374,6 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             self,
             idx_type: Literal['atom', 'dof'],
             remove_fixed: bool,
-            remove_reference: bool,
     ) -> torch.Tensor:
         """Return the indices of the mapped atom or degrees of freedom (DOF).
 
@@ -378,11 +391,6 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         remove_fixed : bool
             If ``True``, the returned tensor represent the indices after the
             fixed atoms have been removed.
-        remove_reference : bool
-            If ``True``, the returned tensor represent the indices after the
-            reference frame atoms (i.e., origin and axes atoms) have been removed.
-            Note that if ``idx_type == 'dof'``, only the constrained DOFs of the
-            reference frame atoms are removed.
 
         Returns
         -------
@@ -390,14 +398,12 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             The mapped atom/DOFs indices.
 
         """
-        return self._get_nonfixed_indices(
-            self._mapped_atom_indices, idx_type, remove_fixed, remove_reference)
+        return self._get_nonfixed_indices(self._mapped_atom_indices, idx_type, remove_fixed)
 
     def get_conditioning_indices(
             self,
             idx_type: Literal['atom', 'dof'],
             remove_fixed: bool,
-            remove_reference: bool,
     ) -> torch.Tensor:
         """Return the indices of the conditioning atom or degrees of freedom (DOF).
 
@@ -408,7 +414,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         constrained, i.e., the ``x`` coordinate of ``axes_atoms[0]``, and the
         ``x,y`` coordinates of ``axes_atoms[1]``. The ``origin_atom`` is always
         a conditioning atom by definition, and it is thus included in the returned
-        indices unless ``remove_constrained is True``.
+        indices.
 
         Parameters
         ----------
@@ -417,11 +423,6 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         remove_fixed : bool
             If ``True``, the returned tensor represent the indices after the
             fixed atoms have been removed.
-        remove_reference : bool
-            If ``True``, the returned tensor represent the indices after the
-            reference frame atoms (i.e., origin and axes atoms) have been removed.
-            Note that if ``idx_type == 'dof'``, only the constrained DOFs of the
-            reference frame atoms are removed.
 
         Returns
         -------
@@ -432,8 +433,100 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         # Conditioning atoms might be None.
         if self.n_conditioning_atoms == 0:
             return None
-        return self._get_nonfixed_indices(
-            self._conditioning_atom_indices, idx_type, remove_fixed, remove_reference)
+        return self._get_nonfixed_indices(self._conditioning_atom_indices, idx_type, remove_fixed)
+
+    def get_reference_atoms_indices(
+            self,
+            remove_fixed: bool,
+            separate_origin_axes: bool = False,
+    ) -> Union[torch.Tensor, None, List[Union[torch.Tensor, None]]]:
+        """Return the atom indices of the origin and axes atoms.
+
+        Parameters
+        ----------
+        remove_fixed : bool
+            If ``True``, the returned tensor represent the indices after the
+            fixed atoms have been removed.
+        separate_origin_axes : bool, optional
+            If ``True``, the origin and axes atoms are returned separately in
+            two ``Tensors``. Otherwise, a single ``Tensor`` is returned.
+
+        Returns
+        -------
+        reference_atom_indices : torch.Tensor or None or List[torch.Tensor | None]
+            If ``separate_origin_axes is False``, a single ``Tensor`` including
+            the indices, in this order, of the origin, axis, and plane atoms (if
+            they exist) or ``None`` if there are no origin and axes atoms.
+
+            If ``separate_origin_axes is False``, this is a pair of ``Tensors``
+            (or ``None``) holding the origin atom index and the axes atom indices.
+
+        """
+        # Shortcuts.
+        has_origin = self._origin_atom_idx is not None
+        has_axes = self._axes_atom_indices is not None
+
+        # Return None if no origin/axes atoms are given.
+        if not (has_origin or has_axes):
+            if separate_origin_axes:
+                return [None, None]
+            return None
+
+        # Initialize return value.
+        reference_atom_indices = [
+            self._origin_atom_idx if has_origin else None,
+            self._axes_atom_indices if has_axes else None,
+        ]
+
+        # Remove fixed atoms.
+        if remove_fixed and self.n_fixed_atoms > 0:
+            for i, atom_indices in enumerate(reference_atom_indices):
+                if atom_indices is not None:
+                    shift = torch.searchsorted(self._fixed_atom_indices, atom_indices)
+                    reference_atom_indices[i] = atom_indices - shift
+
+        # Concatenate if requested.
+        if not separate_origin_axes:
+            # The returned tensor must be at least 1D.
+            if has_origin:
+                reference_atom_indices[0] = reference_atom_indices[0].unsqueeze(0)
+
+            # Concatenate if both origin and axes are present.
+            if has_origin and has_axes:
+                reference_atom_indices = torch.cat(reference_atom_indices)
+            else:
+                reference_atom_indices.remove(None)
+                reference_atom_indices = reference_atom_indices[0]
+
+        return reference_atom_indices
+
+    def create_partial_flow(self, flow: torch.nn.Module, return_partial: bool = False) -> torch.nn.Module:
+        """Wrap the flow to remove the fixed DOFs.
+
+        Parameters
+        ----------
+        flow : torch.nn.Module
+            The flow to be wrapped in the Partial and/or Oriented/CenteredCentroid
+            flows.
+        return_partial : bool, optional
+            The ``return_partial`` flag of the :class:`~tfep.nn.flows.PartialFlow`.
+
+        Returns
+        -------
+        flow : torch.nn.Module
+            The wrapped flow.
+
+        """
+        # Wrap in a partial flow to carry over fixed degrees of freedom.
+        if self.n_fixed_atoms > 0:
+            fixed_dof_indices = atom_to_flattened_indices(self._fixed_atom_indices)
+            flow = tfep.nn.flows.PartialFlow(
+                flow,
+                fixed_indices=fixed_dof_indices,
+                return_partial=return_partial,
+            )
+
+        return flow
 
     def forward(self, x):
         """Execute the normalizing flow in the forward direction.
@@ -757,64 +850,11 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             selection = selection.sort()[0]
         return selection
 
-    def _get_passed_reference_atom_indices(self, remove_origin_from_axes: bool) -> Union[torch.Tensor, None]:
-        """Return the atom indices of the origin and axes atoms after the fixed atoms have been removed.
-
-        Parameters
-        ----------
-        remove_origin_from_axes : bool
-            If ``True``, the returned indices of the axes atoms also account for
-            the removed origin atom.
-
-        Returns
-        -------
-        reference_atom_indices : torch.Tensor or None
-            The indices of the atoms (if they exist) or ``None`` if there are no
-            origin and axes atoms.
-        """
-        # Shortcuts.
-        has_fixed = self.n_fixed_atoms > 0
-        has_origin = self._origin_atom_idx is not None
-        has_axes = self._axes_atom_indices is not None
-
-        # Initialize return value.
-        reference_atom_indices = []
-        if has_origin:
-            reference_atom_indices.append(self._origin_atom_idx.unsqueeze(0))
-        if has_axes:
-            reference_atom_indices.append(self._axes_atom_indices)
-
-        if len(reference_atom_indices) > 0:
-            reference_atom_indices = torch.cat(reference_atom_indices)
-        else:
-            return None
-
-        # Remove fixed atoms.
-        if has_fixed:
-            if has_origin:
-                shift = torch.searchsorted(self._fixed_atom_indices, self._origin_atom_idx)
-                reference_atom_indices[0] = self._origin_atom_idx - shift
-
-            # Find axes atom indices.
-            if has_axes:
-                shift = torch.searchsorted(self._fixed_atom_indices, self._axes_atom_indices)
-                reference_atom_indices[-2:] = self._axes_atom_indices - shift
-
-        # Remove origin atom from axes.
-        if remove_origin_from_axes and has_axes and has_origin:
-            if self._origin_atom_idx < self._axes_atom_indices[0]:
-                reference_atom_indices[-2] = reference_atom_indices[-2] - 1
-            if self._origin_atom_idx < self._axes_atom_indices[1]:
-                reference_atom_indices[-1] = reference_atom_indices[-1] - 1
-
-        return reference_atom_indices
-
     def _get_nonfixed_indices(
             self,
             atom_indices: torch.Tensor,
             idx_type: Literal['atom', 'dof'],
             remove_fixed: bool,
-            remove_reference: bool,
     ) -> torch.Tensor:
         """Return the atom/DOFs indices.
 
@@ -824,13 +864,8 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         # Shortcuts.
         assert idx_type in {"atom", "dof"}
         is_dof = idx_type == "dof"
-        has_origin = self._origin_atom_idx is not None
-        has_axes = self._axes_atom_indices is not None
 
-        # We don't need to remove the reference atoms if there are none.
-        remove_reference = remove_reference and (has_origin or has_axes)
-
-        # Returned value.
+        # Returned value (could be atom or dof indices).
         indices = atom_indices
 
         # We search the fixed indices by atom index so that searchsorted takes
@@ -839,102 +874,8 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         if remove_fixed and self.n_fixed_atoms > 0:
             indices = indices - torch.searchsorted(self._fixed_atom_indices, indices)
 
-        # Initialize the indices of the reference atoms to remove.
-        removed_indices = []
-
-        # Now determine the indices of the reference frame atoms after the fixed
-        # atoms have been removed so that we can match them with the shifted indices.
-        if remove_reference:
-            # We don't need to remove the origin from axes since we didn't remove from indices either.
-            removed_indices = self._get_passed_reference_atom_indices(remove_origin_from_axes=False)
-
         # Convert to DOF indices.
         if is_dof:
             indices = atom_to_flattened_indices(indices)
 
-            # If DOF, remove the origin and axes atom constrained DOFs.
-            if remove_reference:
-                # Find all the constrained DOFs associated with the origin and axes atoms.
-                removed_dof_indices = []
-                if has_origin:
-                    # All DOFs of the origin atoms are constrained.
-                    removed_dof_indices.append(atom_to_flattened_indices(removed_indices[:1]))
-                if has_axes:
-                    # axes_atom[0] is constrained on the x-axis so y,z coordinates are fixed.
-                    removed_dof_indices.append(atom_to_flattened_indices(removed_indices[-2:-1])[1:])
-                    # axes_atom[1] is constrained on the x-y plane so z coordinate is fixed.
-                    removed_dof_indices.append(atom_to_flattened_indices(removed_indices[-1:])[2:])
-
-                # Update from atom to DOF the indices to remove.
-                removed_indices = removed_dof_indices
-
-        # Remove the reference atom indices.
-        if len(removed_indices) > 0:
-            # removed_indices must be sorted for searchsorted.
-            removed_indices = torch.cat(removed_indices).sort()[0]
-
-            # We need to first to delete the constrained reference DOFs that belong to atom_indices.
-            mask = True
-            for idx in removed_indices:
-                mask &= indices != idx
-            indices = indices[mask]
-
-            # And now shift the indices to account for the removal of the
-            # constrained indices (even if they don't belong to atom_indices).
-            indices = indices - torch.searchsorted(removed_indices, indices)
-
         return indices
-
-    def _create_change_of_frame_flow(self, flow: torch.nn.Module, restore: bool = True) -> torch.nn.Module:
-        """Wrap the flow to remove the fixed DOFs and change the frame of reference.
-
-        Parameters
-        ----------
-        flow : torch.nn.Module
-            The flow to be wrapped in the Partial and/or Oriented/CenteredCentroid
-            flows.
-        restore : bool, optional
-            If ``False``, the ``rotate_back`` and ``translate_back`` options of
-            ``OrientedFlow`` and ``CenteredCentroidFlow``, respectively are set
-            to ``False``, and the returned wrapped flow outputs only the propagated
-            degrees of freedom.
-
-        Returns
-        -------
-        flow : torch.nn.Module
-            The wrapped flow.
-
-        """
-        # Determine origin and axes atom indices after the fixed DOFs have been removed.
-        reference_atom_indices = self._get_passed_reference_atom_indices(remove_origin_from_axes=True)
-
-        # Set the axes orientation of the relative reference frame.
-        if self._axes_atom_indices is not None:
-            flow = tfep.nn.flows.OrientedFlow(
-                flow,
-                axis_point_idx=reference_atom_indices[-2],
-                plane_point_idx=reference_atom_indices[-1],
-                rotate_back=restore,
-                return_partial=not restore,
-            )
-
-        # Set the origin of the relative reference frame.
-        if self._origin_atom_idx is not None:
-            flow = tfep.nn.flows.CenteredCentroidFlow(
-                flow,
-                space_dimension=3,
-                subset_point_indices=[reference_atom_indices[0]],
-                translate_back=restore,
-                return_partial=not restore,
-            )
-
-        # Wrap in a partial flow to carry over fixed degrees of freedom.
-        if self.n_fixed_atoms > 0:
-            fixed_dof_indices = atom_to_flattened_indices(self._fixed_atom_indices)
-            flow = tfep.nn.flows.PartialFlow(
-                flow,
-                fixed_indices=fixed_dof_indices,
-                return_partial=not restore,
-            )
-
-        return flow
