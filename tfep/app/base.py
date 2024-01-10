@@ -730,14 +730,29 @@ class TFEPMapBase(ABC, lightning.LightningModule):
                 raise ValueError("axis and plane atoms must be mapped or conditioning "
                                  "atoms as they affect the mapping.")
 
-    def _get_selected_indices(self, selection, sort=True):
-        """Return selected indices as a sorted Tensor of integers."""
+    def _get_selected_indices(self, selection: Union[str, int, Sequence[int]], sort: bool = True) -> torch.Tensor:
+        """Return selected indices as a sorted Tensor of integers.
+
+        Parameters
+        ----------
+        selection : str, int, or array-like of ints
+            An MDAnalysis string selection, an integer, or a sequence of integers
+            representing the indices of the atoms.
+        sort : bool, optional
+            If ``True``, the returned atom indices are sorted.
+
+        Returns
+        -------
+        atom_indices : torch.Tensor
+            The atom indices of the selection.
+
+        """
         if isinstance(selection, str):
             selection = self.dataset.universe.select_atoms(selection).ix
-        if len(selection) == 0:
-            raise ValueError('Selection contains 0 atoms.')
         if not torch.is_tensor(selection):
             selection = torch.tensor(selection)
+        if selection.numel() == 0:
+            raise ValueError('Selection contains 0 atoms.')
         if sort:
             selection = selection.sort()[0]
         return selection
