@@ -222,7 +222,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         self._conditioning_atom_indices = None  # The indices of the conditioning atoms.
         self._fixed_atom_indices = None  # The indices of the fixed atoms.
         self._origin_atom_idx = None  # The index of the origin atom.
-        self._axes_atom_indices = None  # The indices of the axis and plane atoms.
+        self._axes_atoms_indices = None  # The indices of the axis and plane atoms.
         self._flow = None  # The normalizing flow model.
         self._stateful_batch_sampler = None  # Batch sampler for mid-epoch resuming.
         self._tfep_logger = None  # The logger where to save the potentials.
@@ -289,7 +289,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
         # Check if the unconstrained DOFs of the axes atoms are mapped (the origin
         # atom is always conditioning).
-        if self._axes_atom_indices is not None:
+        if self._axes_atoms_indices is not None:
             is_atom_0_mapped, is_atom_1_mapped = self.are_axes_atoms_mapped()
             if is_atom_0_mapped:
                 n_mapped_dofs -= 2
@@ -315,7 +315,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             n_conditioning_dofs -= 3
 
         # Remove constrained DOFs of the axes atoms.
-        if self._axes_atom_indices is not None:
+        if self._axes_atoms_indices is not None:
             is_atom_0_mapped, is_atom_1_mapped = self.are_axes_atoms_mapped()
             if not is_atom_0_mapped:
                 n_conditioning_dofs -= 2
@@ -342,7 +342,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         n_nonfixed_dofs = 3 * self.n_nonfixed_atoms
         if self._origin_atom_idx is not None:
             n_nonfixed_dofs -= 3
-        if self._axes_atom_indices is not None:
+        if self._axes_atoms_indices is not None:
             n_nonfixed_dofs -= 3
         return n_nonfixed_dofs
 
@@ -356,17 +356,17 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             if there are no axes atoms.
 
         """
-        if self._axes_atom_indices is None:
+        if self._axes_atoms_indices is None:
             return None
 
         if self.n_conditioning_atoms == 0:
             return True, True
         elif self.n_conditioning_atoms > self.n_mapped_atoms:
-            is_atom_0_mapped = torch.any(self._mapped_atom_indices == self._axes_atom_indices[0])
-            is_atom_1_mapped = torch.any(self._mapped_atom_indices == self._axes_atom_indices[1])
+            is_atom_0_mapped = torch.any(self._mapped_atom_indices == self._axes_atoms_indices[0])
+            is_atom_1_mapped = torch.any(self._mapped_atom_indices == self._axes_atoms_indices[1])
         else:
-            is_atom_0_mapped = not torch.any(self._conditioning_atom_indices == self._axes_atom_indices[0])
-            is_atom_1_mapped = not torch.any(self._conditioning_atom_indices == self._axes_atom_indices[1])
+            is_atom_0_mapped = not torch.any(self._conditioning_atom_indices == self._axes_atoms_indices[0])
+            is_atom_1_mapped = not torch.any(self._conditioning_atom_indices == self._axes_atoms_indices[1])
 
         return is_atom_0_mapped, is_atom_1_mapped
 
@@ -464,7 +464,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         """
         # Shortcuts.
         has_origin = self._origin_atom_idx is not None
-        has_axes = self._axes_atom_indices is not None
+        has_axes = self._axes_atoms_indices is not None
 
         # Return None if no origin/axes atoms are given.
         if not (has_origin or has_axes):
@@ -475,7 +475,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         # Initialize return value.
         reference_atom_indices = [
             self._origin_atom_idx if has_origin else None,
-            self._axes_atom_indices if has_axes else None,
+            self._axes_atoms_indices if has_axes else None,
         ]
 
         # Remove fixed atoms.
@@ -708,7 +708,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         - ``self._conditioning_atom_indices``
         - ``self._fixed_atom_indices``
         - ``self._origin_atom_idx``
-        - ``self._axes_atom_indices``
+        - ``self._axes_atoms_indices``
 
         """
         # Shortcuts.
@@ -789,15 +789,15 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
         # Select axes atoms.
         if axes is None:
-            self._axes_atom_indices = None
+            self._axes_atoms_indices = None
         else:
             # In this case we must maintain the given order.
-            self._axes_atom_indices = self._get_selected_indices(axes, sort=False)
-            if len(self._axes_atom_indices) != 2:
+            self._axes_atoms_indices = self._get_selected_indices(axes, sort=False)
+            if len(self._axes_atoms_indices) != 2:
                 raise ValueError('Exactly 2 axes atoms must be given.')
 
             # Check that the atoms don't overlap.
-            reference_atoms = self._axes_atom_indices
+            reference_atoms = self._axes_atoms_indices
             if origin is not None:
                 reference_atoms = torch.cat((self._origin_atom_idx.unsqueeze(0), reference_atoms))
             if len(reference_atoms.unique()) != len(reference_atoms):
@@ -816,7 +816,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
                     else:
                         non_fixed_set = mapped_set
 
-                axes_atom_indices_set = set(self._axes_atom_indices.tolist())
+                axes_atom_indices_set = set(self._axes_atoms_indices.tolist())
                 are_axes_atom_fixed = len(axes_atom_indices_set & non_fixed_set) != 2
 
             if are_axes_atom_fixed:
