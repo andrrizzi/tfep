@@ -299,10 +299,22 @@ def test_error_origin_atom_not_conditioning(tfep_map_cls):
     """An error is raised if the origin atom is not a conditioning atom."""
     tfep_map = tfep_map_cls(
         mapped_atoms=range(6),
-        origin_atom=[1],
+        origin_atom=1,
         **MAP_INIT_KWARGS,
     )
     with pytest.raises(ValueError, match="is not a conditioning atom"):
+        tfep_map.setup()
+
+
+@pytest.mark.parametrize('tfep_map_cls', TESTED_TFEP_MAPS)
+def test_error_multiple_origin_atom(tfep_map_cls):
+    """An error is raised if multiple atoms are selected."""
+    tfep_map = tfep_map_cls(
+        mapped_atoms=range(6),
+        origin_atom='element H',
+        **MAP_INIT_KWARGS,
+    )
+    with pytest.raises(ValueError, match="multiple atoms as the origin atom"):
         tfep_map.setup()
 
 

@@ -781,6 +781,12 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         else:
             self._origin_atom_idx = self._get_selected_indices(origin, sort=False)
 
+            # String selections are returned as an array containing 1 index.
+            if len(self._origin_atom_idx.shape) > 0:
+                if self._origin_atom_idx.numel() > 1:
+                    raise ValueError('Selected multiple atoms as the origin atom')
+                self._origin_atom_idx = self._origin_atom_idx[0]
+
             # Make sure origin is a fixed atom.
             if (self._conditioning_atom_indices is None or
                         self._origin_atom_idx not in self._conditioning_atom_indices):
