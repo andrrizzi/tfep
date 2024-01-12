@@ -43,7 +43,12 @@ class MockPotential(PotentialBase):
 # =============================================================================
 
 def benzoic_acid_universe():
-    """Return an MDAnalysis.Universe representing a benzoic acid molecule."""
+    """Return an MDAnalysis.Universe representing a benzoic acid molecule.
+
+    The atom naming and order of the benzoic acid molecule were taken from
+    https://www.rcsb.org/ligand/BEZ.
+
+    """
     import MDAnalysis
     import numpy as np
 
