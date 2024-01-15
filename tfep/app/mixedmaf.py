@@ -1107,7 +1107,7 @@ class _CartesianToMixedFlow(torch.nn.Module):
             reference_atom_positions.append(origin_atom_position)
         if self.has_axes_atoms:
             # x0 is always the origin (0, 0, 0) since in the forward pass we translated before rotating.
-            origin = torch.zeros_like(y_cartesian[0, 0]).expand(batch_size, 1, 3)
+            origin = torch.zeros_like(y[0, :3]).expand(batch_size, 1, 3)
             _, z_axis_atom, xz_plane_atom, log_det_J = self._ref_ic(
                 origin, euler_angles, d01, d12, a012, inverse=True)
 
