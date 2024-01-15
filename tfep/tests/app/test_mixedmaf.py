@@ -26,6 +26,7 @@ from tfep.utils.misc import flattened_to_atom
 from tfep.app.mixedmaf import MixedMAFMap, _CartesianToMixedFlow
 
 from .. import DATA_DIR_PATH, MockPotential, benzoic_acid_universe, water_universe
+from . import check_atom_groups
 
 
 # bgflow is an optional dependency of the package.
@@ -77,23 +78,27 @@ class MyMixedMAFMap(MixedMAFMap):
 
     """
 
-    def __init__(self, coordinate_unit=UNITS.angstrom, **kwargs):
+    def __init__(self, coordinate_unit=UNITS.angstrom, benzoic_acid_only=False, **kwargs):
         super().__init__(
             potential_energy_func=MockPotential(),
             topology_file_path=CHLOROMETHANE_PDB_FILE_PATH,
             coordinates_file_path=CHLOROMETHANE_PDB_FILE_PATH,
             temperature=298*UNITS.kelvin,
             coordinate_unit=coordinate_unit,
-            initialize_identity=False,
             **kwargs
         )
+        self.benzoic_acid_only = benzoic_acid_only
 
     def _create_universe(self):
+        # Load the benzoic acid
+        benzoic_acid = benzoic_acid_universe()
+        if self.benzoic_acid_only:
+            return benzoic_acid
+
         # Load the chloromethane + fluoride system from disk.
         chloromethane = super()._create_universe()
 
-        # Load the benzoic acid and the water.
-        benzoic_acid = benzoic_acid_universe()
+        # Load the water.
         water = water_universe(n_waters=2)
 
         # Combine the two universes.
@@ -106,7 +111,7 @@ class MyMixedMAFMap(MixedMAFMap):
 
 
 # =============================================================================
-# TESTS
+# TESTS CartesianToMixedFlow
 # =============================================================================
 
 @pytest.mark.parametrize('origin,axes,conditioning,expected', [
@@ -138,7 +143,7 @@ def test_cartesian_to_mixed_flow_get_maf_conditioning_dof_indices(origin, axes, 
         cartesian_atom_indices=np.array([1, 2, 4, 5, 6]),
         z_matrix=np.array([[3, 1, 5, 2], [0, 2, 3, 1]]),
         origin_atom_idx=origin,
-        axes_atom_indices=axes,
+        axes_atoms_indices=axes,
     )
     conditioning_indices = flow.get_maf_conditioning_dof_indices(conditioning_atom_indices=conditioning)
 
@@ -161,7 +166,7 @@ def test_cartesian_to_mixed_flow_get_maf_periodic_dof_indices(axes):
         cartesian_atom_indices=np.array([0, 1, 3, 4, 5]),
         z_matrix=np.array([[2, 4, 0, 1], [6, 4, 2, 1]]),
         origin_atom_idx=None,
-        axes_atom_indices=axes,
+        axes_atoms_indices=axes,
     )
     periodic_indices = flow.get_maf_periodic_dof_indices()
 
@@ -178,7 +183,7 @@ def test_cartesian_to_mixed_flow_get_maf_distance_dof_indices(axes, return_bonds
         cartesian_atom_indices=np.array([0, 1, 3, 4, 5]),
         z_matrix=np.array([[2, 4, 0, 1], [6, 4, 2, 1]]),
         origin_atom_idx=None,
-        axes_atom_indices=axes,
+        axes_atoms_indices=axes,
     )
     distance_indices = flow.get_maf_distance_dof_indices(return_bonds=return_bonds, return_axes=return_axes)
 
@@ -200,7 +205,7 @@ def test_cartesian_to_mixed_flow_conversion(origin, axes):
         cartesian_atom_indices=np.array([0, 1, 2, 3, 4, 5, 7, 9]),
         z_matrix=np.array([[6, 2, 1, 4], [8, 1, 4, 2]]),
         origin_atom_idx=None if origin is None else torch.tensor(origin),
-        axes_atom_indices=None if axes is None else torch.tensor(axes),
+        axes_atoms_indices=None if axes is None else torch.tensor(axes),
     )
 
     # Forward pass.
@@ -237,6 +242,10 @@ def test_cartesian_to_mixed_flow_conversion(origin, axes):
     # Total Jacobian determinant of forward+inverse without a flow should be one.
     assert torch.allclose(log_det_J + log_det_J_inv, torch.zeros_like(log_det_J))
 
+
+# =============================================================================
+# TESTS MixedMAFMap
+# =============================================================================
 
 @pytest.mark.parametrize('mapped_atoms,conditioning_atoms,origin_atom,axes_atoms,expected_are_bonded,expected_z_matrix', [
     # Chloromethane is mapped. Everything else is fixed. No origin/axes.
@@ -368,6 +377,54 @@ def test_mixed_maf_flow_build_z_matrix(
     n_expected_atoms = tfep_map.n_mapped_atoms + tfep_map.n_conditioning_atoms
     assert n_ic_atoms + n_cartesian_atoms == n_expected_atoms
     assert len(set(ic_atom_indices) | set(cartesian_atom_indices)) == n_expected_atoms
+
+
+@pytest.mark.parametrize('fix_origin', [False, True])
+@pytest.mark.parametrize('fix_orientation', [False, True])
+@pytest.mark.parametrize('mapped_atoms,conditioning_atoms,expected_mapped,expected_conditioning,expected_fixed,expected_mapped_fixed_removed,expected_conditioning_fixed_removed', [
+    # If neither mapped nor conditioning are given, all atoms are mapped.
+    (None, None, list(range(15)), None, None, list(range(15)), None),
+    # If only mapped is given, the non-mapped are fixed.
+    ('index 0:5', None, list(range(6)), None, list(range(6, 15)), list(range(6)), None),
+    ([0, 3, 4, 5, 7], None, [0, 3, 4, 5, 7], None, [1, 2, 6]+list(range(8, 15)), [0, 1, 2, 3, 4], None),
+    ('index 1:13', None, list(range(1, 14)), None, [0, 14], list(range(13)), None),
+    (np.array([3, 4, 5, 8, 12]), None, [ 3, 4, 5, 8, 12], None, [0, 1, 2, 6, 7, 9, 10, 11, 13, 14], [0, 1, 2, 3, 4], None),
+    # If only conditioning is given, the non-conditioning are mapped.
+    (None, 'index 3:4', [0, 1, 2]+list(range(5, 15)), [3, 4], None, [0, 1, 2]+list(range(5, 15)), [3, 4]),
+    (None, torch.tensor([0, 4, 5]), [1, 2, 3]+list(range(6, 15)), [0, 4, 5], None, [1, 2, 3]+list(range(6, 15)), [0, 4, 5]),
+    # If both are given, everything else is fixed.
+    ('index 3:6', [1], [3, 4, 5, 6], [1], [0, 2]+list(range(7, 15)), [1, 2, 3, 4], [0]),
+    (torch.tensor([1, 3, 4, 5, 6]), [2]+list(range(7, 14)), [1, 3, 4, 5, 6], [2]+list(range(7, 14)), [0, 14], [0, 2, 3, 4, 5], [1]+list(range(6, 13))),
+    ([0, 3, 4, 8, 14], np.array([1, 5]), [0, 3, 4, 8, 14], [1, 5], [2, 6, 7, 9, 10, 11, 12, 13], [0, 2, 3, 5, 6], [1, 4]),
+])
+def test_atom_groups(
+        fix_origin,
+        fix_orientation,
+        mapped_atoms,
+        conditioning_atoms,
+        expected_mapped,
+        expected_conditioning,
+        expected_fixed,
+        expected_mapped_fixed_removed,
+        expected_conditioning_fixed_removed,
+):
+    """Mapped, conditioning, fixed, and reference frame atoms are selected and handled correctly."""
+    check_atom_groups(
+        tfep_map_cls=MyMixedMAFMap,
+        fix_origin=fix_origin,
+        fix_orientation=fix_orientation,
+        mapped_atoms=mapped_atoms,
+        conditioning_atoms=conditioning_atoms,
+        expected_mapped=expected_mapped,
+        expected_conditioning=expected_conditioning,
+        expected_fixed=expected_fixed,
+        expected_mapped_fixed_removed=expected_mapped_fixed_removed,
+        expected_conditioning_fixed_removed=expected_conditioning_fixed_removed,
+
+        # MixedMAFMap kwargs.
+        batch_size=1,
+        benzoic_acid_only=True,
+    )
 
 
 def test_mixed_maf_flow_auto_reference_atoms():
