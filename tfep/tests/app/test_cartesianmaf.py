@@ -104,5 +104,4 @@ def test_atom_groups(
         coordinates_file_path=CHLOROMETHANE_PDB_FILE_PATH,
         temperature=298*UNITS.kelvin,
         batch_size=2,
-        initialize_identity=False,
     )

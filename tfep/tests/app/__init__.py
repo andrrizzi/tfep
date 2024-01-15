@@ -31,10 +31,12 @@ def check_atom_groups(
         **kwargs,
 ):
     """Test selection of mapped, conditioning, fixed, and reference frame atoms."""
+    import lightning
     import numpy as np
     import pytest
+    import tempfile
     import torch
-    from tfep.utils.misc import flattened_to_atom
+    from tfep.utils.misc import atom_to_flattened, flattened_to_atom, temporary_cd
     from tfep.utils.geometry import batchwise_dot
 
     # Select a random fixed atom to fix the rotational degrees of freedom.
@@ -56,15 +58,27 @@ def check_atom_groups(
     else:
         axes_atoms = None
 
-    # Initialize the map.
-    tfep_map = tfep_map_cls(
-        mapped_atoms=mapped_atoms,
-        conditioning_atoms=conditioning_atoms,
-        origin_atom=origin_atom,
-        axes_atoms=axes_atoms,
-        **kwargs,
-    )
-    tfep_map.setup()
+    with tempfile.TemporaryDirectory() as tmp_dir_path:
+        with temporary_cd(tmp_dir_path):
+            # Initialize the map.
+            tfep_map = tfep_map_cls(
+                mapped_atoms=mapped_atoms,
+                conditioning_atoms=conditioning_atoms,
+                origin_atom=origin_atom,
+                axes_atoms=axes_atoms,
+                **kwargs,
+            )
+            tfep_map.setup()
+
+            # Train for one step to make sure that the map is not the identity.
+            trainer = lightning.Trainer(
+                max_steps=1,
+                logger=False,
+                enable_checkpointing=False,
+                enable_progress_bar=False,
+                enable_model_summary=False,
+            )
+            trainer.fit(tfep_map)
 
     # Compare expected indices.
     for expected_indices, tfep_indices in zip(
@@ -82,9 +96,12 @@ def check_atom_groups(
         else:
             assert torch.all(tfep_indices == torch.tensor(expected_indices))
 
-    # Generate random positions.
-    n_features = 3 * tfep_map.dataset.n_atoms
-    x = torch.randn(tfep_map.hparams.batch_size, n_features, requires_grad=True)
+    # Create position input.
+    x = torch.tensor([tfep_map.dataset.universe.trajectory[i].positions
+                      for i in range(tfep_map.hparams.batch_size)],
+                     dtype=torch.get_default_dtype())
+    x = atom_to_flattened(x)
+    x.requires_grad = True
 
     # Test forward and inverse.
     y, log_det_J = tfep_map(x)
