@@ -681,6 +681,10 @@ class MixedMAFMap(TFEPMapBase):
             mask = [i not in maf_conditioning_dof_indices_set for i in maf_periodic_dof_indices.tolist()]
             maf_periodic_dof_indices = maf_periodic_dof_indices[mask]
 
+            # The indices of circular refer to the indices of x0/xf. We need to
+            # shift them to account for the removal of the conditioning DOFs.
+            maf_periodic_dof_indices = maf_periodic_dof_indices - torch.searchsorted(maf_conditioning_dof_indices, maf_periodic_dof_indices)
+
         return tfep.nn.transformers.NeuralSplineTransformer(
             x0=x0.detach(),
             xf=xf.detach(),
