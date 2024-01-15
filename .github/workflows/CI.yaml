@@ -44,7 +44,7 @@ jobs:
           df -h
           ulimit -a
 
-      # More info on options: https://github.com/marketplace/actions/provision-with-micromamba
+      # More info on options: https://github.com/mamba-org/setup-micromamba
       - uses: mamba-org/setup-micromamba@v1
         with:
           environment-file: devtools/conda-envs/test_env.yaml
