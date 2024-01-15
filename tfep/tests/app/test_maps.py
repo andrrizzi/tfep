@@ -6,7 +6,7 @@
 # =============================================================================
 
 """
-Test shared functionalities of the TFEP maps in in the ``tfep.app`` package.
+Test shared functionalities of the TFEP maps in the ``tfep.app`` package.
 """
 
 
@@ -25,10 +25,8 @@ import torch
 
 import tfep.nn.dynamics
 import tfep.nn.flows
-from tfep.utils.math import batchwise_dot
-from tfep.utils.misc import flattened_to_atom
 
-from tfep.app import TFEPMapBase, CartesianMAFMap
+from tfep.app import TFEPMapBase, CartesianMAFMap, MixedMAFMap
 
 from .. import MockPotential, DATA_DIR_PATH
 
@@ -40,16 +38,6 @@ from .. import MockPotential, DATA_DIR_PATH
 CHLOROMETHANE_PDB_FILE_PATH = os.path.join(DATA_DIR_PATH, 'chloro-fluoromethane.pdb')
 
 UNITS = pint.UnitRegistry()
-
-# Shared kwargs for TFEPMap.__init__().
-MAP_INIT_KWARGS = dict(
-    potential_energy_func=MockPotential(),
-    topology_file_path=CHLOROMETHANE_PDB_FILE_PATH,
-    coordinates_file_path=CHLOROMETHANE_PDB_FILE_PATH,
-    temperature=298*UNITS.kelvin,
-    batch_size=2,
-    initialize_identity=False,
-)
 
 
 # =============================================================================
@@ -75,10 +63,6 @@ def teardown_module(module):
 class ContinuousTFEPMap(TFEPMapBase):
     """TFEPMap for testing inheritance from TFEPMapBase and compatibility with continuous flows."""
 
-    def __init__(self, initialize_identity=False, **kwargs):
-        super().__init__(**kwargs)
-        self.initialize_identity = initialize_identity
-
     def configure_flow(self):
         try:
             import torchdiffeq
@@ -96,7 +80,6 @@ class ContinuousTFEPMap(TFEPMapBase):
             node_feat_dim=4,
             distance_feat_dim=4,
             n_layers=2,
-            initialize_identity=self.initialize_identity,
         )
         return tfep.nn.flows.ContinuousFlow(
             dynamics=egnn_dynamics,
@@ -105,152 +88,32 @@ class ContinuousTFEPMap(TFEPMapBase):
         )
 
 
-TESTED_TFEP_MAPS = [ContinuousTFEPMap, CartesianMAFMap]
+# Maps to be tested.
+TESTED_TFEP_MAPS = [ContinuousTFEPMap, CartesianMAFMap, MixedMAFMap]
+
+
+# Shared kwargs for TFEPMap.__init__().
+MAP_INIT_KWARGS = dict(
+    potential_energy_func=MockPotential(),
+    topology_file_path=CHLOROMETHANE_PDB_FILE_PATH,
+    coordinates_file_path=CHLOROMETHANE_PDB_FILE_PATH,
+    temperature=298*UNITS.kelvin,
+    batch_size=2,
+)
+MAP_INIT_KWARGS = {cls.__name__: MAP_INIT_KWARGS.copy() for cls in TESTED_TFEP_MAPS}
+
+# Map-specific kwargs.
+MAP_INIT_KWARGS['MixedMAFMap']['coordinate_unit'] = UNITS.angstrom
 
 
 # =============================================================================
 # TESTS
 # =============================================================================
 
-# ContinuousTFEPMap doesn't support conditioning atoms.
-@pytest.mark.parametrize('tfep_map_cls', TESTED_TFEP_MAPS[1:])
-@pytest.mark.parametrize('fix_origin', [False, True])
-@pytest.mark.parametrize('fix_orientation', [False, True])
-@pytest.mark.parametrize('mapped_atoms,conditioning_atoms,expected_mapped,expected_conditioning,expected_fixed,expected_mapped_fixed_removed,expected_conditioning_fixed_removed', [
-    # If neither mapped nor conditioning are given, all atoms are mapped.
-    (None, None, list(range(6)), None, None, list(range(6)), None),
-    # If only mapped is given, the non-mapped are fixed.
-    ('index 0:2', None, [0, 1, 2], None, [3, 4, 5], [0, 1, 2], None),
-    ([2, 3, 5], None, [2, 3, 5], None, [0, 1, 4], [0, 1, 2], None),
-    ('index 1:5', None, [1, 2, 3, 4, 5], None, [0], [0, 1, 2, 3, 4], None),
-    (np.array([0, 2, 3, 4, 5]), None, [0, 2, 3, 4, 5], None, [1], [0, 1, 2, 3, 4], None),
-    # If only conditioning is given, the non-conditioning are mapped.
-    (None, 'index 3:4', [0, 1, 2, 5], [3, 4], None, [0, 1, 2, 5], [3, 4]),
-    (None, torch.tensor([0, 4, 5]), [1, 2, 3], [0, 4, 5], None, [1, 2, 3], [0, 4, 5]),
-    # If both are given, everything else is fixed.
-    ('index 2:4', [1], [2, 3, 4], [1], [0, 5], [1, 2, 3], [0]),
-    (torch.tensor([1, 4]), [2, 5], [1, 4], [2, 5], [0, 3], [0, 2], [1, 3]),
-    ([0, 2, 4], np.array([3, 5]), [0, 2, 4], [3, 5], [1], [0, 1, 3], [2, 4]),
-])
-def test_atom_selection(
-        tfep_map_cls,
-        fix_origin,
-        fix_orientation,
-        mapped_atoms,
-        conditioning_atoms,
-        expected_mapped,
-        expected_conditioning,
-        expected_fixed,
-        expected_mapped_fixed_removed,
-        expected_conditioning_fixed_removed,
-):
-    """Mapped, conditioning, fixed, and reference frame atoms are selected and handled correctly."""
-    # Select a random fixed atom to fix the rotational degrees of freedom.
-    if fix_origin:
-        if expected_conditioning is None:
-            pytest.skip('fixing the translational DOFs require the presence of a conditioning atom')
-        origin_atom = np.random.choice(expected_conditioning)
-    else:
-        origin_atom = None
-
-    # Select axis and plane atoms among the remaining atoms.
-    if fix_orientation:
-        remaining = []
-        [remaining.extend(l) for l in (expected_mapped, expected_conditioning) if l is not None]
-        remaining = sorted([i for i in remaining if i != origin_atom])
-        if len(remaining) < 2:
-            pytest.skip('fixing the orientation of the reference frame requires at least 2 mapped or conditioning atoms.')
-        axes_atoms = np.random.choice(remaining, size=2, replace=False).tolist()
-    else:
-        axes_atoms = None
-
-    # Initialize the map.
-    tfep_map = tfep_map_cls(
-        mapped_atoms=mapped_atoms,
-        conditioning_atoms=conditioning_atoms,
-        origin_atom=origin_atom,
-        axes_atoms=axes_atoms,
-        **MAP_INIT_KWARGS,
-    )
-    tfep_map.setup()
-
-    # Compare expected indices.
-    for expected_indices, tfep_indices in zip(
-            [
-                expected_mapped_fixed_removed,
-                expected_conditioning_fixed_removed,
-                expected_fixed
-            ], [
-                tfep_map.get_mapped_indices(idx_type='atom', remove_fixed=True, remove_reference=False),
-                tfep_map.get_conditioning_indices(idx_type='atom', remove_fixed=True, remove_reference=False),
-                tfep_map._fixed_atom_indices
-            ]):
-        if expected_indices is None:
-            assert tfep_indices is None
-        else:
-            assert torch.all(tfep_indices == torch.tensor(expected_indices))
-
-    # Generate random positions.
-    n_features = 3 * tfep_map.dataset.n_atoms
-    x = torch.randn(tfep_map.hparams.batch_size, n_features, requires_grad=True)
-
-    # Test forward and inverse.
-    y, log_det_J = tfep_map(x)
-    x_inv, log_det_J_inv = tfep_map.inverse(y)
-    assert torch.allclose(x, x_inv)
-
-    # Compute gradients w.r.t. the input.
-    loss = y.sum()
-    loss.backward()
-    x_grad = flattened_to_atom(x.grad)
-
-    # The flow must take care of mapped and conditioning, while the fixed atoms
-    # are handled automatically.
-    x = flattened_to_atom(x)
-    y = flattened_to_atom(y)
-
-    # Check that the map is not the identity or this test doesn't make sense.
-    assert not torch.allclose(x[:, expected_mapped], y[:, expected_mapped])
-
-    # The flow doesn't alter but still depends on the conditioning DOFs.
-    if expected_conditioning is not None:
-        assert torch.allclose(x[:, expected_conditioning], y[:, expected_conditioning])
-        assert torch.all(~torch.isclose(x_grad[:, expected_conditioning], torch.ones(*x[:, expected_conditioning].shape)))
-
-    # The flow doesn't alter and doesn't depend on the fixed DOFs.
-    if expected_fixed is not None:
-        assert torch.allclose(x[:, expected_fixed], y[:, expected_fixed])
-        # The output does not depend on the fixed DOFs.
-        assert torch.allclose(x_grad[:, expected_fixed], torch.ones(*x[:, expected_fixed].shape))
-
-    # The center atom should be left untouched.
-    if fix_origin:
-        assert torch.allclose(x[:, origin_atom], y[:, origin_atom])
-
-    # Check rotational frame of reference.
-    if fix_orientation:
-        if fix_origin:
-            origin = x[:, origin_atom]
-        else:
-            origin = torch.zeros(tfep_map.hparams.batch_size, 3)
-
-        # The direction center-axis should be the same (up to a flip).
-        dir_01_x = torch.nn.functional.normalize(x[:, axes_atoms[0]] - origin)
-        dir_01_y = torch.nn.functional.normalize(y[:, axes_atoms[0]] - origin)
-        sign = torch.sign(batchwise_dot(dir_01_x, dir_01_y)).unsqueeze(1)
-        assert torch.allclose(sign*dir_01_x, dir_01_y)
-
-        # The mapped plane atom should be orthogonal to the plane-center-axis plane normal.
-        dir_02_x = torch.nn.functional.normalize(x[:, axes_atoms[1]] - origin)
-        plane_x = torch.cross(dir_01_x, dir_02_x)
-        dir_02_y = torch.nn.functional.normalize(y[:, axes_atoms[1]] - origin)
-        assert torch.allclose(batchwise_dot(plane_x, dir_02_y), torch.zeros(len(dir_02_y)))
-
-
 @pytest.mark.parametrize('tfep_map_cls', TESTED_TFEP_MAPS)
 def test_error_no_mapped_atoms(tfep_map_cls):
     """If only conditioning is given and there are no atoms left to map, an error is raised."""
-    tfep_map = tfep_map_cls(conditioning_atoms=list(range(6)), **MAP_INIT_KWARGS)
+    tfep_map = tfep_map_cls(conditioning_atoms=list(range(6)), **MAP_INIT_KWARGS[tfep_map_cls.__name__])
     with pytest.raises(ValueError, match='no atoms to map'):
         tfep_map.setup()
 
@@ -258,7 +121,7 @@ def test_error_no_mapped_atoms(tfep_map_cls):
 @pytest.mark.parametrize('tfep_map_cls', TESTED_TFEP_MAPS)
 def test_error_overlapping_atom_selections(tfep_map_cls):
     """If mapped and conditioning atoms overlap, an error is raised."""
-    tfep_map = tfep_map_cls(mapped_atoms=[0, 1, 2], conditioning_atoms=[2, 3], **MAP_INIT_KWARGS)
+    tfep_map = tfep_map_cls(mapped_atoms=[0, 1, 2], conditioning_atoms=[2, 3], **MAP_INIT_KWARGS[tfep_map_cls.__name__])
     with pytest.raises(ValueError, match='overlapping atoms'):
         tfep_map.setup()
 
@@ -266,11 +129,11 @@ def test_error_overlapping_atom_selections(tfep_map_cls):
 @pytest.mark.parametrize('tfep_map_cls', TESTED_TFEP_MAPS)
 def test_error_duplicate_atoms(tfep_map_cls):
     """If mapped and conditioning atoms overlap, an error is raised."""
-    tfep_map = tfep_map_cls(mapped_atoms=[0, 0, 2], **MAP_INIT_KWARGS)
+    tfep_map = tfep_map_cls(mapped_atoms=[0, 0, 2], **MAP_INIT_KWARGS[tfep_map_cls.__name__])
     with pytest.raises(ValueError, match='duplicate mapped atom'):
         tfep_map.setup()
 
-    tfep_map = tfep_map_cls(conditioning_atoms=[3, 4, 4], **MAP_INIT_KWARGS)
+    tfep_map = tfep_map_cls(conditioning_atoms=[3, 4, 4], **MAP_INIT_KWARGS[tfep_map_cls.__name__])
     with pytest.raises(ValueError, match='duplicate conditioning atom'):
         tfep_map.setup()
 
@@ -288,7 +151,7 @@ def test_error_reference_frame_atoms_overlap(tfep_map_cls, origin_atom, axes_ato
         conditioning_atoms=[0],
         origin_atom=origin_atom,
         axes_atoms=axes_atoms,
-        **MAP_INIT_KWARGS,
+        **MAP_INIT_KWARGS[tfep_map_cls.__name__],
     )
     with pytest.raises(ValueError, match="must be different"):
         tfep_map.setup()
@@ -300,7 +163,7 @@ def test_error_origin_atom_not_conditioning(tfep_map_cls):
     tfep_map = tfep_map_cls(
         mapped_atoms=range(6),
         origin_atom=1,
-        **MAP_INIT_KWARGS,
+        **MAP_INIT_KWARGS[tfep_map_cls.__name__],
     )
     with pytest.raises(ValueError, match="is not a conditioning atom"):
         tfep_map.setup()
@@ -312,7 +175,7 @@ def test_error_multiple_origin_atom(tfep_map_cls):
     tfep_map = tfep_map_cls(
         mapped_atoms=range(6),
         origin_atom='element H',
-        **MAP_INIT_KWARGS,
+        **MAP_INIT_KWARGS[tfep_map_cls.__name__],
     )
     with pytest.raises(ValueError, match="multiple atoms as the origin atom"):
         tfep_map.setup()
@@ -324,7 +187,7 @@ def test_error_axes_atom_fixed(tfep_map_cls):
     tfep_map = tfep_map_cls(
         mapped_atoms=range(1, 6),
         axes_atoms=[0, 2],
-        **MAP_INIT_KWARGS,
+        **MAP_INIT_KWARGS[tfep_map_cls.__name__],
     )
     with pytest.raises(ValueError, match="must be mapped or conditioning atoms"):
         tfep_map.setup()
@@ -340,7 +203,7 @@ def test_handling_energy_unit(tfep_map_cls):
 
     # Collect different values of kTs.
     kTs = []
-    kwargs = MAP_INIT_KWARGS.copy()
+    kwargs = MAP_INIT_KWARGS[tfep_map_cls.__name__].copy()
     for energy_unit in tested_energy_units:
         kwargs['potential_energy_func'] = MockPotential(energy_unit=energy_unit)
         tfep_map = tfep_map_cls(**kwargs)
@@ -408,7 +271,7 @@ def test_resuming_mid_epoch(tfep_map_cls):
     max_epochs = 2
 
     def init_map_and_trainer(tmp_dir_path):
-        tfep_map = InterruptableTFEPMap(tfep_logger_dir_path=tmp_dir_path, **MAP_INIT_KWARGS)
+        tfep_map = InterruptableTFEPMap(tfep_logger_dir_path=tmp_dir_path, **MAP_INIT_KWARGS[tfep_map_cls.__name__])
 
         # This first training should fail.
         checkpoint_callback = lightning.pytorch.callbacks.ModelCheckpoint(
