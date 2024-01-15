@@ -682,10 +682,10 @@ class MixedMAFMap(TFEPMapBase):
             maf_periodic_dof_indices = maf_periodic_dof_indices[mask]
 
         return tfep.nn.transformers.NeuralSplineTransformer(
-            x0=x0,
-            xf=xf,
+            x0=x0.detach(),
+            xf=xf.detach(),
             n_bins=5,
-            circular=maf_periodic_dof_indices,
+            circular=maf_periodic_dof_indices.detach(),
         )
 
     def _get_min_max_dofs(self, cartesian_to_mixed_flow: torch.nn.Module) -> Tuple[torch.Tensor]:
@@ -991,9 +991,9 @@ class _CartesianToMixedFlow(torch.nn.Module):
 
         # Run flow.
         if inverse:
-            y, log_det_J = self.flow.inverse(x)
+            y, log_det_J = self.flow.inverse(y)
         else:
-            y, log_det_J = self.flow(x)
+            y, log_det_J = self.flow(y)
         cumulative_log_det_J = cumulative_log_det_J + log_det_J
 
         # Convert from mixed to Cartesian coordinates.
