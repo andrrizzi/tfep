@@ -227,7 +227,7 @@ class CartesianMAFMap(TFEPMapBase):
             self,
             idx_type: Literal['atom', 'dof'],
             remove_fixed: bool,
-            remove_reference: bool,
+            remove_reference: bool = False,
     ) -> torch.Tensor:
         """Return the indices of the mapped atom or degrees of freedom (DOF).
 
@@ -245,7 +245,7 @@ class CartesianMAFMap(TFEPMapBase):
         remove_fixed : bool
             If ``True``, the returned tensor represent the indices after the
             fixed atoms have been removed.
-        remove_reference : bool
+        remove_reference : bool, optional
             If ``True``, the returned tensor represent the indices after the
             reference frame atoms (i.e., origin and axes atoms) have been removed.
             Note that if ``idx_type == 'dof'``, only the constrained DOFs of the
@@ -266,7 +266,7 @@ class CartesianMAFMap(TFEPMapBase):
             self,
             idx_type: Literal['atom', 'dof'],
             remove_fixed: bool,
-            remove_reference: bool,
+            remove_reference: bool = False,
     ) -> torch.Tensor:
         """Return the indices of the conditioning atom or degrees of freedom (DOF).
 
@@ -286,7 +286,7 @@ class CartesianMAFMap(TFEPMapBase):
         remove_fixed : bool
             If ``True``, the returned tensor represent the indices after the
             fixed atoms have been removed.
-        remove_reference : bool
+        remove_reference : bool, optional
             If ``True``, the returned tensor represent the indices after the
             reference frame atoms (i.e., origin and axes atoms) have been removed.
             Note that if ``idx_type == 'dof'``, only the constrained DOFs of the
