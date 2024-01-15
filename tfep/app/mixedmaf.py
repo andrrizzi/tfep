@@ -266,14 +266,14 @@ class MixedMAFMap(TFEPMapBase):
 
         # Initialize _CartesianToMixedFlow that will map the MAF. We will set
         # the wrapped flow after we have initialized the MAF.
-        origin_atom_idx, axes_atom_indices = self.get_reference_atoms_indices(
+        origin_atom_idx, axes_atoms_indices = self.get_reference_atoms_indices(
             remove_fixed=True, separate_origin_axes=True)
         cartesian_to_mixed_flow = _CartesianToMixedFlow(
             flow=None,
             cartesian_atom_indices=cartesian_atom_indices,
             z_matrix=z_matrix,
             origin_atom_idx=origin_atom_idx,
-            axes_atom_indices=axes_atom_indices,
+            axes_atoms_indices=axes_atoms_indices,
         )
 
         # Determine the conditioning DOFs after going through _CartesianToMixedFlow.
@@ -775,7 +775,7 @@ def _is_hydrogen(atom):
 class _CartesianToMixedFlow(torch.nn.Module):
     """Utility flow to convert from Cartesian to mixed Cartesian/internal coordinates.
 
-    This also sets the relative frame of reference if origin/axes_atom_indices are passed.
+    This also sets the relative frame of reference if origin/axes_atoms_indices are passed.
 
     """
 
@@ -785,7 +785,7 @@ class _CartesianToMixedFlow(torch.nn.Module):
             cartesian_atom_indices: np.ndarray,
             z_matrix: np.ndarray,
             origin_atom_idx: Optional[torch.Tensor],
-            axes_atom_indices: Optional[torch.Tensor],
+            axes_atoms_indices: Optional[torch.Tensor],
     ):
         """Constructor.
 
@@ -806,7 +806,7 @@ class _CartesianToMixedFlow(torch.nn.Module):
             The index of the origin atom after the fixed atoms are removed. If
             given, the Cartesian coordinates will be translated to have this
             atom in the origin before being passed to the MAF.
-        axes_atom_indices : torch.Tensor or None
+        axes_atoms_indices : torch.Tensor or None
             The indices of the axes atoms determining the orientation of the
             reference frame after the fixed atoms are removed. If passed, the
             Cartesian coordinates will be rotated into this reference frame
@@ -828,7 +828,7 @@ class _CartesianToMixedFlow(torch.nn.Module):
         )
 
         # We need to perform the rototranslation only if there are axes atoms.
-        if axes_atom_indices is None:
+        if axes_atoms_indices is None:
             self._ref_ic = None
         else:
             self._ref_ic = ReferenceSystemTransformation(normalize_angles=True)
@@ -841,12 +841,12 @@ class _CartesianToMixedFlow(torch.nn.Module):
         if origin_atom_idx is not None:
             idx = np.searchsorted(cartesian_atom_indices, [origin_atom_idx.tolist()])
             self._reference_atoms_indices_in_cartesian.append(idx[0])
-        if axes_atom_indices is not None:
-            indices = np.searchsorted(cartesian_atom_indices, axes_atom_indices.tolist())
+        if axes_atoms_indices is not None:
+            indices = np.searchsorted(cartesian_atom_indices, axes_atoms_indices.tolist())
             self._reference_atoms_indices_in_cartesian.extend(indices)
 
         # Convert to tensor.
-        self._reference_atoms_indices_in_cartesian = torch.tensor(self._reference_atoms_indices_in_cartesian)
+        self._reference_atoms_indices_in_cartesian = torch.tensor(self._reference_atoms_indices_in_cartesian, dtype=int)
 
     @property
     def has_origin_atom(self) -> bool:
@@ -907,7 +907,7 @@ class _CartesianToMixedFlow(torch.nn.Module):
         reference_atoms_indices_in_cartesian_set = set(self._reference_atoms_indices_in_cartesian.tolist())
         conditioning_atom_indices_in_cartesian_no_ref = [i for i in conditioning_atom_indices_in_cartesian
                                                          if i not in reference_atoms_indices_in_cartesian_set]
-        conditioning_atom_indices_in_cartesian_no_ref = torch.tensor(conditioning_atom_indices_in_cartesian_no_ref)
+        conditioning_atom_indices_in_cartesian_no_ref = torch.tensor(conditioning_atom_indices_in_cartesian_no_ref, dtype=int)
 
         # Shift indices due to the removed reference atoms. searchsorted requires sorted tensor.
         # We eventually will shift the indices to the right for the axes atoms DOFs later.
