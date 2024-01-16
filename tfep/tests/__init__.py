@@ -32,7 +32,7 @@ class MockPotential(PotentialBase):
     """Mock potential to test TFEPMaps."""
 
     DEFAULT_ENERGY_UNIT = 'kcal'
-    DEFAULT_POSITION_UNIT = 'angstrom'
+    DEFAULT_POSITIONS_UNIT = 'angstrom'
 
     def forward(self, x):
         return x.sum(dim=1)
