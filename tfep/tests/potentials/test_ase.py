@@ -199,7 +199,7 @@ def test_potential_ase_energy_force(batch_size, strategy, calculator):
             potential = PotentialASE(
                 calculator=calculator,
                 symbols=atoms.symbols,
-                position_unit=_UREG.angstrom,
+                positions_unit=_UREG.angstrom,
                 energy_unit=_UREG.kcal/_UREG.mole,
                 parallelization_strategy=ps,
             )

@@ -207,8 +207,8 @@ class PotentialMiMiC(PotentialBase):
     #: The default energy unit.
     DEFAULT_ENERGY_UNIT : str = 'hartree'
 
-    #: The default position unit.
-    DEFAULT_POSITION_UNIT : str = 'bohr'
+    #: The default positions unit.
+    DEFAULT_POSITIONS_UNIT : str = 'bohr'
 
     def __init__(
             self,
@@ -217,7 +217,7 @@ class PotentialMiMiC(PotentialBase):
             grompp_cmd,
             launcher=None,
             grompp_launcher=None,
-            position_unit=None,
+            positions_unit=None,
             energy_unit=None,
             precompute_gradient=True,
             working_dir_path=None,
@@ -261,7 +261,7 @@ class PotentialMiMiC(PotentialBase):
         grompp_launcher : tfep.utils.cli.Launcher, optional
             The ``Launcher`` to use to run the ``grompp_cmd`` command. If not
             passed, a new :class:`tfep.utils.cli.Launcher` is created.
-        position_unit : pint.Unit, optional
+        positions_unit : pint.Unit, optional
             The unit of the positions passed. This is used to appropriately convert
             ``batch_positions`` to the units used by MiMiC. If ``None``, no
             conversion is performed, which assumes that the input positions are
@@ -320,7 +320,7 @@ class PotentialMiMiC(PotentialBase):
             More details on input parameters and implementation details.
 
         """
-        super().__init__(position_unit=position_unit, energy_unit=energy_unit)
+        super().__init__(positions_unit=positions_unit, energy_unit=energy_unit)
 
         self.cpmd_cmd = cpmd_cmd
         self.mdrun_cmd = mdrun_cmd
@@ -344,7 +344,7 @@ class PotentialMiMiC(PotentialBase):
         ----------
         batch_positions : torch.Tensor
             A tensor of positions in flattened format (i.e., with shape
-            ``(batch_size, 3*n_atoms)``) in units of ``self.position_unit``.
+            ``(batch_size, 3*n_atoms)``) in units of ``self.positions_unit``.
 
             Note that the order of the atoms is assumed to be that of the GROMACS
             input files, not the one used internally by CPMD (which always puts the
@@ -353,7 +353,7 @@ class PotentialMiMiC(PotentialBase):
         batch_cell : torch.Tensor, optional
             An tensor of box vectors with shape ``(batch_size, 3)`` defining the
             orthorhombic box side lengths (the only one currently supported in MiMiC)
-            in units of ``self.position_unit``.
+            in units of ``self.positions_unit``.
 
         Returns
         -------
@@ -372,7 +372,7 @@ class PotentialMiMiC(PotentialBase):
             grompp_cmd=self.grompp_cmd,
             launcher=self.launcher,
             grompp_launcher=self.grompp_launcher,
-            position_unit=self._position_unit,
+            positions_unit=self._positions_unit,
             energy_unit=self._energy_unit,
             precompute_gradient=self.precompute_gradient,
             working_dir_path=self.working_dir_path,
@@ -393,8 +393,8 @@ class PotentialMiMiC(PotentialBase):
         batch_positions : pint.Quantity, optional
             An array of positions with units and shape: ``(batch_size, n_atoms, 3)``
             or ``(n_atoms, 3)``. If no units are attached to the array, it is
-            assumed the positions are is in ``self.position_unit`` units (or MiMiC
-            units if ``position_unit`` was not provided).
+            assumed the positions are is in ``self.positions_unit`` units (or MiMiC
+            units if ``positions_unit`` was not provided).
 
             Note that the order of the atoms is assumed to be that of the GROMACS
             input files, not the one used internally by CPMD (which always puts the
@@ -404,8 +404,8 @@ class PotentialMiMiC(PotentialBase):
             An array of box vectors with units and shape: ``(batch_size, 3)`` or
             ``(3,)`` defining the orthorhombic box side lengths (the only one currently
             supported in MiMiC). If no units are attached to the array, it is
-            assumed the positions are is in ``self.position_unit`` units (or
-            MiMiC units if ``position_unit`` was not provided).
+            assumed the positions are is in ``self.positions_unit`` units (or
+            MiMiC units if ``positions_unit`` was not provided).
 
         Returns
         -------
@@ -446,8 +446,8 @@ class PotentialMiMiC(PotentialBase):
         batch_positions : pint.Quantity, optional
             An array of positions with units and shape: ``(batch_size, n_atoms, 3)``
             or ``(n_atoms, 3)``. If no units are attached to the array, it is
-            assumed the positions are is in ``self.position_unit`` units (or MiMiC
-            units if ``position_unit`` was not provided).
+            assumed the positions are is in ``self.positions_unit`` units (or MiMiC
+            units if ``positions_unit`` was not provided).
 
             Note that the order of the atoms is assumed to be that of the GROMACS
             input files, not the one used internally by CPMD (which always puts the
@@ -457,8 +457,8 @@ class PotentialMiMiC(PotentialBase):
             An array of box vectors with units and shape: ``(batch_size, 3)`` or
             ``(3,)`` defining the orthorhombic box side lengths (the only one currently
             supported in MiMiC). If no units are attached to the array, it is
-            assumed the positions are is in ``self.position_unit`` units (or
-            MiMiC units if ``position_unit`` was not provided).
+            assumed the positions are is in ``self.positions_unit`` units (or
+            MiMiC units if ``positions_unit`` was not provided).
 
         Returns
         -------
@@ -496,7 +496,7 @@ class PotentialMiMiC(PotentialBase):
         try:
             batch_positions.units
         except AttributeError:
-            return batch_positions * self.position_unit
+            return batch_positions * self.positions_unit
         return batch_positions
 
 
@@ -600,7 +600,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
     grompp_launcher : tfep.utils.cli.Launcher, optional
         The ``Launcher`` to use to run the ``grompp_cmd`` command. If not passed,
         a new :class:`tfep.utils.cli.Launcher` is created.
-    position_unit : pint.Unit, optional
+    positions_unit : pint.Unit, optional
         The unit of the positions passed. This is used to appropriately convert
         ``batch_positions`` to the units used by MiMiC. If ``None``, no conversion
         is performed, which assumes that the input positions are in Bohr.
@@ -674,7 +674,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
             grompp_cmd,
             launcher=None,
             grompp_launcher=None,
-            position_unit=None,
+            positions_unit=None,
             energy_unit=None,
             precompute_gradient=True,
             working_dir_path=None,
@@ -688,26 +688,26 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
     ):
         """Compute the potential energy of the molecule with MiMiC."""
         # Check for unit registry.
-        if position_unit is not None:
-            unit_registry = position_unit._REGISTRY
+        if positions_unit is not None:
+            unit_registry = positions_unit._REGISTRY
         elif energy_unit is not None:
             unit_registry = energy_unit._REGISTRY
         else:
             unit_registry = pint.UnitRegistry()
 
-        # Convert flattened position tensor to numpy array of shape
+        # Convert flattened positions tensor to numpy array of shape
         # (batch_size, n_atoms, 3) and attach units.
-        if position_unit is None:
-            position_unit = PotentialMiMiC.default_position_unit(unit_registry)
+        if positions_unit is None:
+            positions_unit = PotentialMiMiC.default_positions_unit(unit_registry)
 
         batch_positions_arr = flattened_to_atom(batch_positions.detach().numpy())
-        batch_positions_arr *= position_unit
+        batch_positions_arr *= positions_unit
 
         if batch_cell is None:
             batch_cell_arr = None
         else:
             batch_cell_arr = batch_cell.detach().numpy()
-            batch_cell_arr *= position_unit
+            batch_cell_arr *= positions_unit
 
         # Determine whether we need forces.
         if precompute_gradient:
@@ -743,7 +743,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
             energies, forces = result
             # Convert the force to a flattened tensor before storing it in ctx.
             # to compute the gradient during backpropagation.
-            forces = forces_array_to_tensor(forces, position_unit, energy_unit,
+            forces = forces_array_to_tensor(forces, positions_unit, energy_unit,
                                             dtype=batch_positions.dtype)
             ctx.save_for_backward(forces)
 
@@ -782,7 +782,7 @@ def potential_energy_mimic(
         grompp_cmd,
         launcher=None,
         grompp_launcher=None,
-        position_unit=None,
+        positions_unit=None,
         energy_unit=None,
         precompute_gradient=True,
         working_dir_path=None,
@@ -815,7 +815,7 @@ def potential_energy_mimic(
         grompp_cmd,
         launcher,
         grompp_launcher,
-        position_unit,
+        positions_unit,
         energy_unit,
         precompute_gradient,
         working_dir_path,
@@ -1038,7 +1038,7 @@ def _run_mimic(
 
     # Add units.
     default_energy_unit = PotentialMiMiC.default_energy_unit(unit_registry)
-    default_potential_unit = PotentialMiMiC.default_position_unit(unit_registry)
+    default_potential_unit = PotentialMiMiC.default_positions_unit(unit_registry)
     if return_energy:
         returned_values[0] = returned_values[0] * default_energy_unit
     if return_force:
@@ -1253,13 +1253,13 @@ def _prepare_cpmd_command(cpmd_cmd, working_dir_path, positions=None, box_vector
     # Update the box vectors and positions.
     if positions is not None:
         if box_vectors is not None:
-            box_vectors_bohr = box_vectors.to(PotentialMiMiC.DEFAULT_POSITION_UNIT).magnitude
+            box_vectors_bohr = box_vectors.to(PotentialMiMiC.DEFAULT_POSITIONS_UNIT).magnitude
             cpmd_file_lines[box_vectors_line_idx] = ' '.join([str(x) for x in box_vectors_bohr]) + '\n'
 
         # Cycle through all atoms and update their lines one by one.
         for gromacs_atom_idx, cpmd_atom_idx in gromacs_to_cpmd_atom_map.items():
             line_idx = cpmd_atom_to_line_idx[cpmd_atom_idx]
-            atom_position = positions[gromacs_atom_idx].to(PotentialMiMiC.DEFAULT_POSITION_UNIT).magnitude
+            atom_position = positions[gromacs_atom_idx].to(PotentialMiMiC.DEFAULT_POSITIONS_UNIT).magnitude
             cpmd_file_lines[line_idx] = ' '.join([str(x) for x in atom_position]) + '\n'
 
     # Create a modified copy of the file and update the command to point to it.

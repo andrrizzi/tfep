@@ -55,8 +55,8 @@ class PotentialASE(PotentialBase):
     #: The default energy unit.
     DEFAULT_ENERGY_UNIT : str = 'eV'
 
-    #: The default position unit.
-    DEFAULT_POSITION_UNIT : str = 'angstrom'
+    #: The default positions unit.
+    DEFAULT_POSITIONS_UNIT : str = 'angstrom'
 
     def __init__(
             self,
@@ -64,7 +64,7 @@ class PotentialASE(PotentialBase):
             symbols=None,
             numbers=None,
             pbc=None,
-            position_unit=None,
+            positions_unit=None,
             energy_unit=None,
             parallelization_strategy=None,
             **atoms_kwargs,
@@ -111,7 +111,7 @@ class PotentialASE(PotentialBase):
         """
         from ase import Atoms
 
-        super().__init__(position_unit=position_unit, energy_unit=energy_unit)
+        super().__init__(positions_unit=positions_unit, energy_unit=energy_unit)
 
         # Handle mutable default arguments.
         if parallelization_strategy is None:
@@ -133,12 +133,12 @@ class PotentialASE(PotentialBase):
         ----------
         batch_positions : torch.Tensor
             Shape ``(batch_size, 3*n_atoms)``. The atoms positions in units of
-            ``self.position_unit``.
+            ``self.positions_unit``.
         batch_cell : torch.Tensor, optional
             Shape ``(batch_size, 3, 3)`` or ``(batch_size, 3)`` or ``(batch_size, 6)``.
             Unit cell vectors.  Can also be given as just three numbers for
             orthorhombic cells, or 6 numbers, where first three are lengths of
-            unit cell vectors (in units of ``self.position_unit``, and the other
+            unit cell vectors (in units of ``self.positions_unit``, and the other
             three are angles between them (in degrees), in following order:
             ``[len(a), len(b), len(c), angle(b,c), angle(a,c), angle(a,b)]``.
             First vector will lie in x-direction, second in xy-plane, and the
@@ -155,7 +155,7 @@ class PotentialASE(PotentialBase):
             batch_positions,
             atoms=self.atoms,
             batch_cell=batch_cell,
-            positions_unit=self._position_unit,
+            positions_unit=self._positions_unit,
             energy_unit=self._energy_unit,
             parallelization_strategy=self.parallelization_strategy,
         )
@@ -185,14 +185,14 @@ class PotentialEnergyASEFunc(torch.autograd.Function):
         A context to save information for the gradient.
     batch_positions : torch.Tensor
         Shape ``(batch_size, 3*n_atoms)``. The atoms positions in units of
-        ``position_unit`` (or ASE units if ``position_unit`` is not provided).
+        ``positions_unit`` (or ASE units if ``positions_unit`` is not provided).
     atoms : ase.Atoms or list[ase.Atoms]
         The ASE ``Atoms`` object containing the ASE calculator.
     batch_cell : None or torch.Tensor
         Shape ``(batch_size, 3, 3)`` or ``(batch_size, 3)`` or ``(batch_size, 6)``.
         Unit cell vectors.  Can also be given as just three numbers for orthorhombic
         cells, or 6 numbers, where first three are lengths of unit cell vectors
-        (in units of ``position_unit`` or ASE units if ``position_unit`` is not
+        (in units of ``positions_unit`` or ASE units if ``positions_unit`` is not
         provided), and the other three are angles between them (in degrees), in
         following order: ``[len(a), len(b), len(c), angle(b,c), angle(a,c), angle(a,b)]``.
         First vector will lie in x-direction, second in xy-plane, and the third
@@ -308,9 +308,9 @@ class PotentialEnergyASEFunc(torch.autograd.Function):
                 forces = torch.from_numpy(atom_to_flattened(forces))
             else:
                 ureg = ctx.energy_unit._REGISTRY
-                default_position_unit = PotentialASE.default_position_unit(ureg)
+                default_positions_unit = PotentialASE.default_positions_unit(ureg)
                 default_energy_unit = PotentialASE.default_energy_unit(ureg)
-                forces *= default_energy_unit / default_position_unit
+                forces *= default_energy_unit / default_positions_unit
                 forces = forces_array_to_tensor(forces, ctx.positions_unit,
                                                 ctx.energy_unit, dtype=ctx.dtype)
 
@@ -357,8 +357,8 @@ def potential_energy_ase(
 
 def _to_ase_units(x, positions_unit):
     """Convert x from positions_unit to angstroms."""
-    default_position_unit = PotentialASE.default_position_unit(positions_unit._REGISTRY)
-    return (x * positions_unit).to(default_position_unit).magnitude
+    default_positions_unit = PotentialASE.default_positions_unit(positions_unit._REGISTRY)
+    return (x * positions_unit).to(default_positions_unit).magnitude
 
 
 def _get_potential_energy_task(
