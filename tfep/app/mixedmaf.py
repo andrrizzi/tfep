@@ -121,7 +121,6 @@ class MixedMAFMap(TFEPMapBase):
             topology_file_path: str,
             coordinates_file_path: Union[str, Sequence[str]],
             temperature: pint.Quantity,
-            coordinate_unit: pint.Unit,
             batch_size: int = 1,
             mapped_atoms: Optional[Union[Sequence[int], str]] = None,
             conditioning_atoms: Optional[Union[Sequence[int], str]] = None,
@@ -152,10 +151,6 @@ class MixedMAFMap(TFEPMapBase):
             which is automatically detected from the file extension.
         temperature : pint.Quantity
             The temperature of the ensemble.
-        coordinate_unit : pint.Unit
-            The unit of the input coordinates. This is used to set reasonable
-            limits to map bonds and Cartesian coordinates (see ``bond_limits``
-            and ``max_cartesian_displacement``).
         batch_size : int, optional
             The batch size.
         mapped_atoms : Sequence[int] or str, optional
@@ -222,10 +217,11 @@ class MixedMAFMap(TFEPMapBase):
             raise ValueError('With auto_reference_frame=True both origin_atom and axes_atoms must be None.')
 
         # Handle mutable default values.
+        positions_unit = potential_energy_func.positions_unit
         if bond_limits is None:
-            bond_limits = [0.5, 3.0] * coordinate_unit._REGISTRY.angstrom
+            bond_limits = [0.5, 3.0] * positions_unit._REGISTRY.angstrom
         if max_cartesian_displacement is None:
-            max_cartesian_displacement = 3.0 * coordinate_unit._REGISTRY.angstrom
+            max_cartesian_displacement = 3.0 * positions_unit._REGISTRY.angstrom
 
         # Convert bond
         super().__init__(
@@ -245,8 +241,8 @@ class MixedMAFMap(TFEPMapBase):
         self._kwargs = kwargs
 
         # Convert limits to input units.
-        self._bond_limits = bond_limits.to(coordinate_unit).magnitude
-        self._max_cartesian_displacement = max_cartesian_displacement.to(coordinate_unit).magnitude
+        self._bond_limits = bond_limits.to(positions_unit).magnitude
+        self._max_cartesian_displacement = max_cartesian_displacement.to(positions_unit).magnitude
 
     def configure_flow(self) -> torch.nn.Module:
         """Initialize the normalizing flow.
