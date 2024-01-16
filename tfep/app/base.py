@@ -239,7 +239,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         self.dataset = self.create_dataset()
 
         # Identify mapped, conditioning, and fixed atom indices.
-        self._determine_atom_indices()
+        self.determine_atom_indices()
 
         # Create model.
         flow = self.configure_flow()
@@ -551,6 +551,135 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
         return flow
 
+    def determine_atom_indices(self):
+        """Determine mapped, conditioning, fixed, and reference frame atom indices.
+
+        This initializes the following attributes
+        - ``self._mapped_atom_indices``
+        - ``self._conditioning_atom_indices``
+        - ``self._fixed_atom_indices``
+        - ``self._origin_atom_idx``
+        - ``self._axes_atoms_indices``
+
+        """
+        # Shortcuts.
+        mapped = self.hparams.mapped_atoms
+        conditioning = self.hparams.conditioning_atoms
+        origin = self.hparams.origin_atom
+        axes = self.hparams.axes_atoms
+        n_atoms = self.dataset.n_atoms
+
+        # Used to check for duplicate selected atoms.
+        mapped_set = None
+        conditioning_set = None
+        non_fixed_set = None
+
+        if (mapped is None) and (conditioning is None):
+            # Everything is mapped.
+            self._mapped_atom_indices = torch.tensor(range(n_atoms))
+            self._conditioning_atom_indices = None
+            self._fixed_atom_indices = None
+        elif conditioning is None:
+            # Everything that is not mapped is fixed (no conditioning.
+            self._mapped_atom_indices = self._get_selected_indices(mapped)
+            self._conditioning_atom_indices = None
+            mapped_set = set(self._mapped_atom_indices.tolist())
+            self._fixed_atom_indices = torch.tensor([idx for idx in range(n_atoms)
+                                                    if idx not in mapped_set])
+        elif mapped is None:
+            # Everything that is not conditioning is mapped (no fixed).
+            self._conditioning_atom_indices = self._get_selected_indices(conditioning)
+            conditioning_set = set(self._conditioning_atom_indices.tolist())
+            self._mapped_atom_indices = torch.tensor([idx for idx in range(n_atoms)
+                                                      if idx not in conditioning_set])
+            self._fixed_atom_indices = None
+        else:
+            # Everything needs to be selected.
+            self._mapped_atom_indices = self._get_selected_indices(mapped)
+            self._conditioning_atom_indices = self._get_selected_indices(conditioning)
+
+            # Make sure that there are no overlapping atoms.
+            mapped_set = set(self._mapped_atom_indices.tolist())
+            conditioning_set = set(self._conditioning_atom_indices.tolist())
+            if len(mapped_set & conditioning_set) > 0:
+                raise ValueError('Mapped and conditioning selections cannot have overlapping atoms.')
+
+            non_fixed_set = mapped_set | conditioning_set
+            self._fixed_atom_indices = torch.tensor([idx for idx in range(n_atoms)
+                                                    if idx not in non_fixed_set])
+
+        # Make sure conditioning and fixed atoms are None if they are empty.
+        if (self._conditioning_atom_indices is not None) and (len(self._conditioning_atom_indices) == 0):
+            self._conditioning_atom_indices = None
+        if (self._fixed_atom_indices is not None) and (len(self._fixed_atom_indices) == 0):
+            self._fixed_atom_indices = None
+
+        # Make sure there are atoms to map.
+        if len(self._mapped_atom_indices) == 0:
+            raise ValueError('There are no atoms to map.')
+
+        # Check that there are no duplicate atoms.
+        if (mapped_set is not None and
+                    len(mapped_set) != len(self._mapped_atom_indices)):
+                raise ValueError('There are duplicate mapped atom indices.')
+        if (conditioning_set is not None and
+                    len(conditioning_set) != len(self._conditioning_atom_indices)):
+                raise ValueError('There are duplicate conditioning atom indices.')
+
+        # Select origin atom.
+        if origin is None:
+            self._origin_atom_idx = None
+        else:
+            self._origin_atom_idx = self._get_selected_indices(origin, sort=False)
+
+            # String selections are returned as an array containing 1 index.
+            if len(self._origin_atom_idx.shape) > 0:
+                if self._origin_atom_idx.numel() > 1:
+                    raise ValueError('Selected multiple atoms as the origin atom')
+                self._origin_atom_idx = self._origin_atom_idx[0]
+
+            # Make sure origin is a fixed atom.
+            if (self._conditioning_atom_indices is None or
+                        self._origin_atom_idx not in self._conditioning_atom_indices):
+                raise ValueError("origin_atom is not a conditioning atom. origin_atom "
+                                 "affects the mapping but its position is constrained.")
+
+        # Select axes atoms.
+        if axes is None:
+            self._axes_atoms_indices = None
+        else:
+            # In this case we must maintain the given order.
+            self._axes_atoms_indices = self._get_selected_indices(axes, sort=False)
+            if len(self._axes_atoms_indices) != 2:
+                raise ValueError('Exactly 2 axes atoms must be given.')
+
+            # Check that the atoms don't overlap.
+            reference_atoms = self._axes_atoms_indices
+            if origin is not None:
+                reference_atoms = torch.cat((self._origin_atom_idx.unsqueeze(0), reference_atoms))
+            if len(reference_atoms.unique()) != len(reference_atoms):
+                raise ValueError("center, axis, and plane atoms must be different")
+
+            # Check that the axes atoms are not flagged as fixed.
+            if self._fixed_atom_indices is None:
+                are_axes_atom_fixed = False
+            else:
+                if non_fixed_set is None:
+                    if mapped_set is None:
+                        mapped_set = set(self._mapped_atom_indices.tolist())
+                    if (conditioning_set is None) and (self._conditioning_atom_indices is not None):
+                        conditioning_set = set(self._conditioning_atom_indices.tolist())
+                        non_fixed_set = mapped_set | conditioning_set
+                    else:
+                        non_fixed_set = mapped_set
+
+                axes_atom_indices_set = set(self._axes_atoms_indices.tolist())
+                are_axes_atom_fixed = len(axes_atom_indices_set & non_fixed_set) != 2
+
+            if are_axes_atom_fixed:
+                raise ValueError("axis and plane atoms must be mapped or conditioning "
+                                 "atoms as they affect the mapping.")
+
     def forward(self, x):
         """Execute the normalizing flow in the forward direction.
 
@@ -713,135 +842,6 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
         """
         checkpoint['stateful_batch_sampler'] = self._stateful_batch_sampler.state_dict()
-
-    def _determine_atom_indices(self):
-        """Determine mapped, conditioning, fixed, and reference frame atom indices.
-
-        This initializes the following attributes
-        - ``self._mapped_atom_indices``
-        - ``self._conditioning_atom_indices``
-        - ``self._fixed_atom_indices``
-        - ``self._origin_atom_idx``
-        - ``self._axes_atoms_indices``
-
-        """
-        # Shortcuts.
-        mapped = self.hparams.mapped_atoms
-        conditioning = self.hparams.conditioning_atoms
-        origin = self.hparams.origin_atom
-        axes = self.hparams.axes_atoms
-        n_atoms = self.dataset.n_atoms
-
-        # Used to check for duplicate selected atoms.
-        mapped_set = None
-        conditioning_set = None
-        non_fixed_set = None
-
-        if (mapped is None) and (conditioning is None):
-            # Everything is mapped.
-            self._mapped_atom_indices = torch.tensor(range(n_atoms))
-            self._conditioning_atom_indices = None
-            self._fixed_atom_indices = None
-        elif conditioning is None:
-            # Everything that is not mapped is fixed (no conditioning.
-            self._mapped_atom_indices = self._get_selected_indices(mapped)
-            self._conditioning_atom_indices = None
-            mapped_set = set(self._mapped_atom_indices.tolist())
-            self._fixed_atom_indices = torch.tensor([idx for idx in range(n_atoms)
-                                                    if idx not in mapped_set])
-        elif mapped is None:
-            # Everything that is not conditioning is mapped (no fixed).
-            self._conditioning_atom_indices = self._get_selected_indices(conditioning)
-            conditioning_set = set(self._conditioning_atom_indices.tolist())
-            self._mapped_atom_indices = torch.tensor([idx for idx in range(n_atoms)
-                                                      if idx not in conditioning_set])
-            self._fixed_atom_indices = None
-        else:
-            # Everything needs to be selected.
-            self._mapped_atom_indices = self._get_selected_indices(mapped)
-            self._conditioning_atom_indices = self._get_selected_indices(conditioning)
-
-            # Make sure that there are no overlapping atoms.
-            mapped_set = set(self._mapped_atom_indices.tolist())
-            conditioning_set = set(self._conditioning_atom_indices.tolist())
-            if len(mapped_set & conditioning_set) > 0:
-                raise ValueError('Mapped and conditioning selections cannot have overlapping atoms.')
-
-            non_fixed_set = mapped_set | conditioning_set
-            self._fixed_atom_indices = torch.tensor([idx for idx in range(n_atoms)
-                                                    if idx not in non_fixed_set])
-
-        # Make sure conditioning and fixed atoms are None if they are empty.
-        if (self._conditioning_atom_indices is not None) and (len(self._conditioning_atom_indices) == 0):
-            self._conditioning_atom_indices = None
-        if (self._fixed_atom_indices is not None) and (len(self._fixed_atom_indices) == 0):
-            self._fixed_atom_indices = None
-
-        # Make sure there are atoms to map.
-        if len(self._mapped_atom_indices) == 0:
-            raise ValueError('There are no atoms to map.')
-
-        # Check that there are no duplicate atoms.
-        if (mapped_set is not None and
-                    len(mapped_set) != len(self._mapped_atom_indices)):
-                raise ValueError('There are duplicate mapped atom indices.')
-        if (conditioning_set is not None and
-                    len(conditioning_set) != len(self._conditioning_atom_indices)):
-                raise ValueError('There are duplicate conditioning atom indices.')
-
-        # Select origin atom.
-        if origin is None:
-            self._origin_atom_idx = None
-        else:
-            self._origin_atom_idx = self._get_selected_indices(origin, sort=False)
-
-            # String selections are returned as an array containing 1 index.
-            if len(self._origin_atom_idx.shape) > 0:
-                if self._origin_atom_idx.numel() > 1:
-                    raise ValueError('Selected multiple atoms as the origin atom')
-                self._origin_atom_idx = self._origin_atom_idx[0]
-
-            # Make sure origin is a fixed atom.
-            if (self._conditioning_atom_indices is None or
-                        self._origin_atom_idx not in self._conditioning_atom_indices):
-                raise ValueError("origin_atom is not a conditioning atom. origin_atom "
-                                 "affects the mapping but its position is constrained.")
-
-        # Select axes atoms.
-        if axes is None:
-            self._axes_atoms_indices = None
-        else:
-            # In this case we must maintain the given order.
-            self._axes_atoms_indices = self._get_selected_indices(axes, sort=False)
-            if len(self._axes_atoms_indices) != 2:
-                raise ValueError('Exactly 2 axes atoms must be given.')
-
-            # Check that the atoms don't overlap.
-            reference_atoms = self._axes_atoms_indices
-            if origin is not None:
-                reference_atoms = torch.cat((self._origin_atom_idx.unsqueeze(0), reference_atoms))
-            if len(reference_atoms.unique()) != len(reference_atoms):
-                raise ValueError("center, axis, and plane atoms must be different")
-
-            # Check that the axes atoms are not flagged as fixed.
-            if self._fixed_atom_indices is None:
-                are_axes_atom_fixed = False
-            else:
-                if non_fixed_set is None:
-                    if mapped_set is None:
-                        mapped_set = set(self._mapped_atom_indices.tolist())
-                    if (conditioning_set is None) and (self._conditioning_atom_indices is not None):
-                        conditioning_set = set(self._conditioning_atom_indices.tolist())
-                        non_fixed_set = mapped_set | conditioning_set
-                    else:
-                        non_fixed_set = mapped_set
-
-                axes_atom_indices_set = set(self._axes_atoms_indices.tolist())
-                are_axes_atom_fixed = len(axes_atom_indices_set & non_fixed_set) != 2
-
-            if are_axes_atom_fixed:
-                raise ValueError("axis and plane atoms must be mapped or conditioning "
-                                 "atoms as they affect the mapping.")
 
     def _get_selected_indices(self, selection: Union[str, int, Sequence[int]], sort: bool = True) -> torch.Tensor:
         """Return selected indices as a sorted Tensor of integers.
