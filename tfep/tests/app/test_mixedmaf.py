@@ -78,13 +78,12 @@ class MyMixedMAFMap(MixedMAFMap):
 
     """
 
-    def __init__(self, coordinate_unit=UNITS.angstrom, benzoic_acid_only=False, **kwargs):
+    def __init__(self, benzoic_acid_only=False, **kwargs):
         super().__init__(
             potential_energy_func=MockPotential(),
             topology_file_path=CHLOROMETHANE_PDB_FILE_PATH,
             coordinates_file_path=CHLOROMETHANE_PDB_FILE_PATH,
             temperature=298*UNITS.kelvin,
-            coordinate_unit=coordinate_unit,
             **kwargs
         )
         self.benzoic_acid_only = benzoic_acid_only
@@ -453,9 +452,9 @@ def test_mixed_maf_flow_auto_reference_atoms():
 ])
 def test_mixed_maf_flow_get_transformer(origin_atom, axes_atoms, are_bonded):
     """The limits of the neural spline transformer are constructed correctly."""
-    coordinate_unit = UNITS.nanometer
-    bond_limits = np.array([0.04, 0.54])
-    max_cartesian_displacement = 0.2
+    # MockPotential default positions unit is angstrom.
+    bond_limits = np.array([0.2, 5.4])  # in Ansgstrom
+    max_cartesian_displacement = 2.  # in Ansgstrom
 
     mapped_atoms = 'resname BEN and element C'
     conditioning_atoms = 'resname BEN and element O'
@@ -474,9 +473,8 @@ def test_mixed_maf_flow_get_transformer(origin_atom, axes_atoms, are_bonded):
         conditioning_atoms=conditioning_atoms,
         origin_atom=origin_atom,
         axes_atoms=axes_atoms,
-        coordinate_unit=coordinate_unit,
-        bond_limits=bond_limits * 10 * UNITS.angstrom,
-        max_cartesian_displacement=0.2 * UNITS.nanometer,
+        bond_limits=bond_limits * UNITS.angstrom,
+        max_cartesian_displacement=max_cartesian_displacement / 10. * UNITS.nanometer,
     )
     tfep_map.setup()
 

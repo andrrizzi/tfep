@@ -102,9 +102,6 @@ MAP_INIT_KWARGS = dict(
 )
 MAP_INIT_KWARGS = {cls.__name__: MAP_INIT_KWARGS.copy() for cls in TESTED_TFEP_MAPS}
 
-# Map-specific kwargs.
-MAP_INIT_KWARGS['MixedMAFMap']['coordinate_unit'] = UNITS.angstrom
-
 
 # =============================================================================
 # TESTS
