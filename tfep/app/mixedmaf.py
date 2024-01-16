@@ -724,7 +724,7 @@ class MixedMAFMap(TFEPMapBase):
         partial_flow = self.create_partial_flow(identity_flow, return_partial=True)
 
         # Read the trajectory in batches.
-        dataset = self._create_dataset()
+        dataset = self.create_dataset()
         data_loader = torch.utils.data.DataLoader(
             dataset, batch_size=1024, shuffle=False, drop_last=False
         )
@@ -767,7 +767,7 @@ def _is_hydrogen(atom):
                    "This is required to infer a robust Z-matrix. You can either "
                    "provide a topology file that includes this info (e.g., a PDB) "
                    "or add this information programmatically by overwriting "
-                   "MixedMAFMap._create_universe() and set, e.g., "
+                   "MixedMAFMap.create_universe() and set, e.g., "
                    "universe.add_TopologyAttr('element', ['O', 'H', 'C', ...]).")
         raise ValueError(err_msg) from e
     else:

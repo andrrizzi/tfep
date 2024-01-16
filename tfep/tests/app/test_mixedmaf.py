@@ -89,14 +89,14 @@ class MyMixedMAFMap(MixedMAFMap):
         )
         self.benzoic_acid_only = benzoic_acid_only
 
-    def _create_universe(self):
+    def create_universe(self):
         # Load the benzoic acid
         benzoic_acid = benzoic_acid_universe()
         if self.benzoic_acid_only:
             return benzoic_acid
 
         # Load the chloromethane + fluoride system from disk.
-        chloromethane = super()._create_universe()
+        chloromethane = super().create_universe()
 
         # Load the water.
         water = water_universe(n_waters=2)
@@ -557,8 +557,8 @@ def test_error_no_element_info():
     """An error is raised if the topology has no information on atom elements."""
     # Class that removes info on atom elements.
     class _MyMixedMAFMap(MyMixedMAFMap):
-        def _create_universe(self):
-            universe = super()._create_universe()
+        def create_universe(self):
+            universe = super().create_universe()
             universe.del_TopologyAttr('element')
             return universe
 

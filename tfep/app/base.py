@@ -236,7 +236,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
         """
         # Create TrajectoryDataset. This sets self.dataset.
-        self.dataset = self._create_dataset()
+        self.dataset = self.create_dataset()
 
         # Identify mapped, conditioning, and fixed atom indices.
         self._determine_atom_indices()
@@ -500,6 +500,29 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
         return reference_atom_indices
 
+    def create_universe(self):
+        """Create and return the MDAnalysis ``Universe``.
+
+        Returns
+        -------
+        universe : MDAnalysis.Universe
+            The MDAnalysis ``Universe`` object.
+
+        """
+        return MDAnalysis.Universe(self._topology_file_path, *self._coordinates_file_path)
+
+    def create_dataset(self):
+        """Create and return the ``Dataset`` object.
+
+        Returns
+        -------
+        dataset : torch.utils.data.Dataset
+            The PyTorch dataset.
+
+        """
+        universe = self.create_universe()
+        return tfep.io.TrajectoryDataset(universe=universe)
+
     def create_partial_flow(self, flow: torch.nn.Module, return_partial: bool = False) -> torch.nn.Module:
         """Wrap the flow to remove the fixed DOFs.
 
@@ -690,15 +713,6 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
         """
         checkpoint['stateful_batch_sampler'] = self._stateful_batch_sampler.state_dict()
-
-    def _create_dataset(self):
-        """Create and return the dataset object."""
-        universe = self._create_universe()
-        return tfep.io.TrajectoryDataset(universe=universe)
-
-    def _create_universe(self):
-        """Create and return the MDAnalysis Universe."""
-        return MDAnalysis.Universe(self._topology_file_path, *self._coordinates_file_path)
 
     def _determine_atom_indices(self):
         """Determine mapped, conditioning, fixed, and reference frame atom indices.
