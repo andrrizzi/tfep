@@ -29,3 +29,5 @@ dependencies:
   - pip:
     - ase
     - torchdiffeq
+    - einops
+    - "git+https://github.com/noegroup/bgflow.git"

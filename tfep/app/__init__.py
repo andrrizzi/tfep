@@ -14,3 +14,4 @@
 
 from tfep.app.base import TFEPMapBase
 from tfep.app.cartesianmaf import CartesianMAFMap
+from tfep.app.mixedmaf import MixedMAFMap

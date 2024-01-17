@@ -33,20 +33,20 @@ _UREG = pint.UnitRegistry()
 # =============================================================================
 
 @pytest.mark.parametrize('energy_unit', [None, _UREG.kcal])
-@pytest.mark.parametrize('position_unit', [None, _UREG.nanometer])
-def test_default_units(energy_unit, position_unit):
+@pytest.mark.parametrize('positions_unit', [None, _UREG.nanometer])
+def test_default_units(energy_unit, positions_unit):
     """Test that default units work correctly."""
     class ExamplePotential(PotentialBase):
         DEFAULT_ENERGY_UNIT = 'hartree'
-        DEFAULT_POSITION_UNIT = 'angstrom'
+        DEFAULT_POSITIONS_UNIT = 'angstrom'
 
-    potential = ExamplePotential(energy_unit=energy_unit, position_unit=position_unit)
+    potential = ExamplePotential(energy_unit=energy_unit, positions_unit=positions_unit)
     if energy_unit is None:
         assert str(potential.energy_unit) == ExamplePotential.DEFAULT_ENERGY_UNIT
     else:
         assert potential.energy_unit == energy_unit
 
-    if position_unit is None:
-        assert str(potential.position_unit) == ExamplePotential.DEFAULT_POSITION_UNIT
+    if positions_unit is None:
+        assert str(potential.positions_unit) == ExamplePotential.DEFAULT_POSITIONS_UNIT
     else:
-        assert potential.position_unit == position_unit
+        assert potential.positions_unit == positions_unit

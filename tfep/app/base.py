@@ -14,7 +14,7 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import Any, Dict, Literal, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import lightning
 import pint
@@ -39,7 +39,8 @@ class TFEPMapBase(ABC, lightning.LightningModule):
     - Support correct mid-epoch resuming.
     - Log vectorial quantities such as the calculated potential energies and the
       absolute Jacobian terms that can later be used to estimate the free energy.
-    - Create a frame of reference relative to selected system atoms.
+    - Identify and perform consistency checks on three atoms (origin, axis, and
+      plane) that can be used to define a relative frame of reference for the flow.
     - Identify the mapped, conditioning, and fixed atom indices and handle fixed
       atoms.
 
@@ -47,11 +48,15 @@ class TFEPMapBase(ABC, lightning.LightningModule):
     Conditioning atoms are not mapped but are given as input to the flow to
     condition the mapping. Fixed atoms are instead ignored. Note that the flow
     defined child class must handle only the mapped and conditioning atoms. The
-    flow will be automatically wrapped in a :class:`tfep.nn.flows.PartialFlow`
-    to handle the fixed atoms. The class further provides two methods
-    :func:`~TFEPMapBase.get_mapped_indices` and :func:`~TFEPMapBase.get_conditioning_indices`
-    to recover the indices  of the mapped/conditioning degrees of freedom after
-    the fixed atoms have been removed (see example below).
+    flow will be automatically wrapped in a :class:`~tfep.nn.flows.PartialFlow`
+    to handle the fixed atoms.
+
+    The class further provides convenience methods to retrieve the indices of
+    the mapped and conditioning atoms/degrees of freedom after the fixed atoms
+    are removed through the methods :func:`~TFEPMapBase.get_mapped_indices` and
+    :func:`~TFEPMapBase.get_conditioning_indices` (see example below). A similar
+    function exist for the atom indices of the reference frame atoms called
+    :func:`~TFEPMapBase.get_reference_atoms_indices`
 
     The only required method to implement a concrete class is :func:`~TFEPMapBase.configure_flow`.
 
@@ -70,10 +75,18 @@ class TFEPMapBase(ABC, lightning.LightningModule):
     ...
     ...     def configure_flow(self):
     ...         # A simple 1-layer affine autoregressive flow.
+    ...         # The flow must fix the relative frame of reference or raise
+    ...         # an error when origin and axes atoms are set.
+    ...         reference_atoms_indices = self.get_reference_atoms_indices()
+    ...         if reference_atoms_indices is not None:
+    ...             raise NotImplementedError('Relative frame of reference is not supported.')
+    ...
     ...         # The flow must take care only of the mapped and conditioning atoms.
+    ...         conditioning_indices = self.get_conditioning_indices(
+    ...             idx_type="dof", remove_fixed=True, remove_reference=True)
     ...         return tfep.nn.flows.MAF(
-    ...             dimension_in=self.n_mapped_dofs,
-    ...             conditioning_indices=self.get_conditioning_indices(idx_type="dof", remove_constrained=True),
+    ...             dimension_in=self.n_nonfixed_dofs,
+    ...             conditioning_indices=conditioning_indices,
     ...         )
     ...
 
@@ -90,8 +103,6 @@ class TFEPMapBase(ABC, lightning.LightningModule):
     ...     batch_size=64,
     ...     mapped_atoms='resname MOL',  # MDAnalysis selection syntax.
     ...     conditioning_atoms=range(10, 20),
-    ...     origin_atom=12,  # Fix the origin of the relative reference frame on atom 123.
-    ...     axes_atoms=[13, 16],  # Determine the orientation of the reference frame.
     ... )
     >>>
     >>> # Train the flow and save the potential energies.
@@ -150,11 +161,13 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             atom by definition.
         axes_atoms : Sequence[int] or str or None, optional
             A pair of indices (0-based) or a selection string in MDAnalysis syntax
-            for the two atoms determining the relative frame of reference. The
-            ``axes_atoms[0]``-th atom will lay on the ``x`` axis , and the
-            ``axes_atoms[1]``-th atom will lay on the plane spanned by the ``x``
-            and ``y`` axes. The ``z`` axis will be set as the cross product of
-            ``x`` and ``y``.
+            for the two atoms determining the relative frame of reference.
+
+            The details of how these are used to fix the orientation of the frame
+            of reference depend on the implementation of :func:`~TFEPMapBase.configure_flow`.
+            For example, ``axes_atoms[0]``-th atom may lay on the ``z`` axis ,
+            and the ``axes_atoms[1]``-th atom may lay on the plane spanned by
+            the ``x`` and ``z`` axes.
 
             These atoms can be either conditioning or mapped. ``axes_atoms[0]``
             has only 1 degree of freedom (DOF) while ``axes_atoms[1]`` has 2.
@@ -209,7 +222,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         self._conditioning_atom_indices = None  # The indices of the conditioning atoms.
         self._fixed_atom_indices = None  # The indices of the fixed atoms.
         self._origin_atom_idx = None  # The index of the origin atom.
-        self._axes_atom_indices = None  # The indices of the axis and plane atoms.
+        self._axes_atoms_indices = None  # The indices of the axis and plane atoms.
         self._flow = None  # The normalizing flow model.
         self._stateful_batch_sampler = None  # Batch sampler for mid-epoch resuming.
         self._tfep_logger = None  # The logger where to save the potentials.
@@ -222,42 +235,17 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         and all data-dependent objects.
 
         """
-        # Create TrajectoryDataset.
-        universe = MDAnalysis.Universe(self._topology_file_path, *self._coordinates_file_path)
-        self.dataset = tfep.io.TrajectoryDataset(universe=universe)
+        # Create TrajectoryDataset. This sets self.dataset.
+        self.dataset = self.create_dataset()
 
         # Identify mapped, conditioning, and fixed atom indices.
-        self._determine_atom_indices()
+        self.determine_atom_indices()
 
         # Create model.
-        self._flow = self.configure_flow()
+        flow = self.configure_flow()
 
-        # Determine origin and axes atom indices after the fixed DOFs have been removed.
-        reference_atom_indices = self._get_passed_reference_atom_indices(remove_origin_from_axes=True)
-
-        # Set the axes orientation of the relative reference frame.
-        if self._axes_atom_indices is not None:
-            self._flow = tfep.nn.flows.OrientedFlow(
-                self._flow,
-                axis_point_idx=reference_atom_indices[-2],
-                plane_point_idx=reference_atom_indices[-1],
-            )
-
-        # Set the origin of the relative reference frame.
-        if self._origin_atom_idx is not None:
-            self._flow = tfep.nn.flows.CenteredCentroidFlow(
-                self._flow,
-                space_dimension=3,
-                subset_point_indices=[reference_atom_indices[0]],
-            )
-
-        # Wrap in a partial flow to carry over fixed degrees of freedom.
-        if self.n_fixed_atoms > 0:
-            fixed_dof_indices = atom_to_flattened_indices(self._fixed_atom_indices)
-            self._flow = tfep.nn.flows.PartialFlow(
-                self._flow,
-                fixed_indices=fixed_dof_indices,
-            )
+        # Wrap in partial flow(s) to carry over the fixed degrees of freedom.
+        self._flow = self.create_partial_flow(flow)
 
     @abstractmethod
     def configure_flow(self) -> torch.nn.Module:
@@ -265,7 +253,11 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
         Note that the flow must handle only the mapped and conditioning atoms.
         The fixed atoms will be instead automatically wrapped in a
-        :class:`tfep.nn.flows.PartialFlow`.
+        :class:`~tfep.nn.flows.PartialFlow`.
+
+        The method must also set the flow to fix the reference frame of reference
+        based on the origin and axes atoms. For example by using
+        :class`~tfep.nn.flows.OrientedFlow` and :class`~tfep.nn.flows.CenteredCentroidFlow`.
 
         Returns
         -------
@@ -292,22 +284,17 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
     @property
     def n_mapped_dofs(self) -> int:
-        """The number of mapped degrees of freedom."""
+        """The number of mapped degrees of freedom (excluding the constrained DOFs of the reference frame atoms)."""
         n_mapped_dofs = 3 * self.n_mapped_atoms
 
         # Check if the unconstrained DOFs of the axes atoms are mapped (the origin
         # atom is always conditioning).
-        if self._axes_atom_indices is not None:
-            if self.n_conditioning_atoms == 0:
-                n_mapped_dofs -= 3
-            else:
-                is_atom_0_mapped = torch.any(self._mapped_atom_indices == self._axes_atom_indices[0])
-                if is_atom_0_mapped:
-                    n_mapped_dofs -= 2
-
-                is_atom_1_mapped = torch.any(self._mapped_atom_indices == self._axes_atom_indices[1])
-                if is_atom_1_mapped:
-                    n_mapped_dofs -= 1
+        if self._axes_atoms_indices is not None:
+            is_atom_0_mapped, is_atom_1_mapped = self.are_axes_atoms_mapped()
+            if is_atom_0_mapped:
+                n_mapped_dofs -= 2
+            if is_atom_1_mapped:
+                n_mapped_dofs -= 1
 
         return n_mapped_dofs
 
@@ -319,16 +306,74 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         return len(self._conditioning_atom_indices)
 
     @property
+    def n_conditioning_dofs(self) -> int:
+        """The number of conditioning degrees of freedom (excluding the constrained DOFs of the reference frame atoms)."""
+        n_conditioning_dofs = 3 * self.n_conditioning_dofs
+
+        # Remove constrained DOFs of the origin atom which is always conditioning.
+        if self._origin_atom_idx is not None:
+            n_conditioning_dofs -= 3
+
+        # Remove constrained DOFs of the axes atoms.
+        if self._axes_atoms_indices is not None:
+            is_atom_0_mapped, is_atom_1_mapped = self.are_axes_atoms_mapped()
+            if not is_atom_0_mapped:
+                n_conditioning_dofs -= 2
+            if not is_atom_1_mapped:
+                n_conditioning_dofs -= 1
+
+        return n_conditioning_dofs
+
+    @property
     def n_fixed_atoms(self) -> int:
         """The number of fixed atoms."""
         if self._fixed_atom_indices is None:
             return 0
         return len(self._fixed_atom_indices)
 
+    @property
+    def n_nonfixed_atoms(self) -> int:
+        """Total number of mapped and conditioning atoms."""
+        return self.n_mapped_atoms + self.n_conditioning_atoms
+
+    @property
+    def n_nonfixed_dofs(self) -> int:
+        """Total number of mapped and conditioning degrees of freedom (excluding the constrained DOFs of the reference frame atoms)."""
+        n_nonfixed_dofs = 3 * self.n_nonfixed_atoms
+        if self._origin_atom_idx is not None:
+            n_nonfixed_dofs -= 3
+        if self._axes_atoms_indices is not None:
+            n_nonfixed_dofs -= 3
+        return n_nonfixed_dofs
+
+    def are_axes_atoms_mapped(self):
+        """Return whether the two axes atoms (if any) are mapped.
+
+        Returns
+        -------
+        are_mapped : None or Tuple[bool]
+            A pair ``(is_axes_atom_0_mapped, is_axes_atom_1_mapped)`` or ``None``
+            if there are no axes atoms.
+
+        """
+        if self._axes_atoms_indices is None:
+            return None
+
+        if self.n_conditioning_atoms == 0:
+            return True, True
+        elif self.n_conditioning_atoms > self.n_mapped_atoms:
+            is_atom_0_mapped = torch.any(self._mapped_atom_indices == self._axes_atoms_indices[0])
+            is_atom_1_mapped = torch.any(self._mapped_atom_indices == self._axes_atoms_indices[1])
+        else:
+            is_atom_0_mapped = not torch.any(self._conditioning_atom_indices == self._axes_atoms_indices[0])
+            is_atom_1_mapped = not torch.any(self._conditioning_atom_indices == self._axes_atoms_indices[1])
+
+        return is_atom_0_mapped, is_atom_1_mapped
+
     def get_mapped_indices(
             self,
             idx_type: Literal['atom', 'dof'],
-            remove_constrained: bool,
+            remove_fixed: bool,
     ) -> torch.Tensor:
         """Return the indices of the mapped atom or degrees of freedom (DOF).
 
@@ -343,11 +388,9 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         ----------
         idx_type : Literal['atom', 'dof']
             Whether to return the indices of the atom or the degrees of freedom.
-        remove_constrained : bool
+        remove_fixed : bool
             If ``True``, the returned tensor represent the indices after the
-            fixed atoms have been removed. Moreover, if ``idx_type == 'dof'``,
-            then also the constrained DOFs of the origin and axes atoms determining
-            the reference frame are removed as well.
+            fixed atoms have been removed.
 
         Returns
         -------
@@ -355,12 +398,12 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             The mapped atom/DOFs indices.
 
         """
-        return self._get_nonfixed_indices(self._mapped_atom_indices, idx_type, remove_constrained)
+        return self._get_nonfixed_indices(self._mapped_atom_indices, idx_type, remove_fixed)
 
     def get_conditioning_indices(
             self,
             idx_type: Literal['atom', 'dof'],
-            remove_constrained: bool,
+            remove_fixed: bool,
     ) -> torch.Tensor:
         """Return the indices of the conditioning atom or degrees of freedom (DOF).
 
@@ -371,17 +414,15 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         constrained, i.e., the ``x`` coordinate of ``axes_atoms[0]``, and the
         ``x,y`` coordinates of ``axes_atoms[1]``. The ``origin_atom`` is always
         a conditioning atom by definition, and it is thus included in the returned
-        indices unless ``remove_constrained is True``.
+        indices.
 
         Parameters
         ----------
         idx_type : Literal['atom', 'dof']
             Whether to return the indices of the atom or the degrees of freedom.
-        remove_constrained : bool
+        remove_fixed : bool
             If ``True``, the returned tensor represent the indices after the
-            fixed atoms have been removed. Moreover, if ``idx_type == 'dof'``,
-            then also the constrained DOFs of the origin and axes atoms determining
-            the reference frame are removed as well.
+            fixed atoms have been removed.
 
         Returns
         -------
@@ -392,7 +433,252 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         # Conditioning atoms might be None.
         if self.n_conditioning_atoms == 0:
             return None
-        return self._get_nonfixed_indices(self._conditioning_atom_indices, idx_type, remove_constrained)
+        return self._get_nonfixed_indices(self._conditioning_atom_indices, idx_type, remove_fixed)
+
+    def get_reference_atoms_indices(
+            self,
+            remove_fixed: bool,
+            separate_origin_axes: bool = False,
+    ) -> Union[torch.Tensor, None, List[Union[torch.Tensor, None]]]:
+        """Return the atom indices of the origin and axes atoms.
+
+        Parameters
+        ----------
+        remove_fixed : bool
+            If ``True``, the returned tensor represent the indices after the
+            fixed atoms have been removed.
+        separate_origin_axes : bool, optional
+            If ``True``, the origin and axes atoms are returned separately in
+            two ``Tensors``. Otherwise, a single ``Tensor`` is returned.
+
+        Returns
+        -------
+        reference_atom_indices : torch.Tensor or None or List[torch.Tensor | None]
+            If ``separate_origin_axes is False``, a single ``Tensor`` including
+            the indices, in this order, of the origin, axis, and plane atoms (if
+            they exist) or ``None`` if there are no origin and axes atoms.
+
+            If ``separate_origin_axes is False``, this is a pair of ``Tensors``
+            (or ``None``) holding the origin atom index and the axes atom indices.
+
+        """
+        # Shortcuts.
+        has_origin = self._origin_atom_idx is not None
+        has_axes = self._axes_atoms_indices is not None
+
+        # Return None if no origin/axes atoms are given.
+        if not (has_origin or has_axes):
+            if separate_origin_axes:
+                return [None, None]
+            return None
+
+        # Initialize return value.
+        reference_atom_indices = [
+            self._origin_atom_idx if has_origin else None,
+            self._axes_atoms_indices if has_axes else None,
+        ]
+
+        # Remove fixed atoms.
+        if remove_fixed and self.n_fixed_atoms > 0:
+            for i, atom_indices in enumerate(reference_atom_indices):
+                if atom_indices is not None:
+                    shift = torch.searchsorted(self._fixed_atom_indices, atom_indices)
+                    reference_atom_indices[i] = atom_indices - shift
+
+        # Concatenate if requested.
+        if not separate_origin_axes:
+            # The returned tensor must be at least 1D.
+            if has_origin:
+                reference_atom_indices[0] = reference_atom_indices[0].unsqueeze(0)
+
+            # Concatenate if both origin and axes are present.
+            if has_origin and has_axes:
+                reference_atom_indices = torch.cat(reference_atom_indices)
+            else:
+                reference_atom_indices.remove(None)
+                reference_atom_indices = reference_atom_indices[0]
+
+        return reference_atom_indices
+
+    def create_universe(self):
+        """Create and return the MDAnalysis ``Universe``.
+
+        Returns
+        -------
+        universe : MDAnalysis.Universe
+            The MDAnalysis ``Universe`` object.
+
+        """
+        return MDAnalysis.Universe(self._topology_file_path, *self._coordinates_file_path)
+
+    def create_dataset(self):
+        """Create and return the ``Dataset`` object.
+
+        Returns
+        -------
+        dataset : torch.utils.data.Dataset
+            The PyTorch dataset.
+
+        """
+        universe = self.create_universe()
+        return tfep.io.TrajectoryDataset(universe=universe)
+
+    def create_partial_flow(self, flow: torch.nn.Module, return_partial: bool = False) -> torch.nn.Module:
+        """Wrap the flow to remove the fixed DOFs.
+
+        Parameters
+        ----------
+        flow : torch.nn.Module
+            The flow to be wrapped in the Partial and/or Oriented/CenteredCentroid
+            flows.
+        return_partial : bool, optional
+            The ``return_partial`` flag of the :class:`~tfep.nn.flows.PartialFlow`.
+
+        Returns
+        -------
+        flow : torch.nn.Module
+            The wrapped flow.
+
+        """
+        # Wrap in a partial flow to carry over fixed degrees of freedom.
+        if self.n_fixed_atoms > 0:
+            fixed_dof_indices = atom_to_flattened_indices(self._fixed_atom_indices)
+            flow = tfep.nn.flows.PartialFlow(
+                flow,
+                fixed_indices=fixed_dof_indices,
+                return_partial=return_partial,
+            )
+
+        return flow
+
+    def determine_atom_indices(self):
+        """Determine mapped, conditioning, fixed, and reference frame atom indices.
+
+        This initializes the following attributes
+        - ``self._mapped_atom_indices``
+        - ``self._conditioning_atom_indices``
+        - ``self._fixed_atom_indices``
+        - ``self._origin_atom_idx``
+        - ``self._axes_atoms_indices``
+
+        """
+        # Shortcuts.
+        mapped = self.hparams.mapped_atoms
+        conditioning = self.hparams.conditioning_atoms
+        origin = self.hparams.origin_atom
+        axes = self.hparams.axes_atoms
+        n_atoms = self.dataset.n_atoms
+
+        # Used to check for duplicate selected atoms.
+        mapped_set = None
+        conditioning_set = None
+        non_fixed_set = None
+
+        if (mapped is None) and (conditioning is None):
+            # Everything is mapped.
+            self._mapped_atom_indices = torch.tensor(range(n_atoms))
+            self._conditioning_atom_indices = None
+            self._fixed_atom_indices = None
+        elif conditioning is None:
+            # Everything that is not mapped is fixed (no conditioning.
+            self._mapped_atom_indices = self._get_selected_indices(mapped)
+            self._conditioning_atom_indices = None
+            mapped_set = set(self._mapped_atom_indices.tolist())
+            self._fixed_atom_indices = torch.tensor([idx for idx in range(n_atoms)
+                                                    if idx not in mapped_set])
+        elif mapped is None:
+            # Everything that is not conditioning is mapped (no fixed).
+            self._conditioning_atom_indices = self._get_selected_indices(conditioning)
+            conditioning_set = set(self._conditioning_atom_indices.tolist())
+            self._mapped_atom_indices = torch.tensor([idx for idx in range(n_atoms)
+                                                      if idx not in conditioning_set])
+            self._fixed_atom_indices = None
+        else:
+            # Everything needs to be selected.
+            self._mapped_atom_indices = self._get_selected_indices(mapped)
+            self._conditioning_atom_indices = self._get_selected_indices(conditioning)
+
+            # Make sure that there are no overlapping atoms.
+            mapped_set = set(self._mapped_atom_indices.tolist())
+            conditioning_set = set(self._conditioning_atom_indices.tolist())
+            if len(mapped_set & conditioning_set) > 0:
+                raise ValueError('Mapped and conditioning selections cannot have overlapping atoms.')
+
+            non_fixed_set = mapped_set | conditioning_set
+            self._fixed_atom_indices = torch.tensor([idx for idx in range(n_atoms)
+                                                    if idx not in non_fixed_set])
+
+        # Make sure conditioning and fixed atoms are None if they are empty.
+        if (self._conditioning_atom_indices is not None) and (len(self._conditioning_atom_indices) == 0):
+            self._conditioning_atom_indices = None
+        if (self._fixed_atom_indices is not None) and (len(self._fixed_atom_indices) == 0):
+            self._fixed_atom_indices = None
+
+        # Make sure there are atoms to map.
+        if len(self._mapped_atom_indices) == 0:
+            raise ValueError('There are no atoms to map.')
+
+        # Check that there are no duplicate atoms.
+        if (mapped_set is not None and
+                    len(mapped_set) != len(self._mapped_atom_indices)):
+                raise ValueError('There are duplicate mapped atom indices.')
+        if (conditioning_set is not None and
+                    len(conditioning_set) != len(self._conditioning_atom_indices)):
+                raise ValueError('There are duplicate conditioning atom indices.')
+
+        # Select origin atom.
+        if origin is None:
+            self._origin_atom_idx = None
+        else:
+            self._origin_atom_idx = self._get_selected_indices(origin, sort=False)
+
+            # String selections are returned as an array containing 1 index.
+            if len(self._origin_atom_idx.shape) > 0:
+                if self._origin_atom_idx.numel() > 1:
+                    raise ValueError('Selected multiple atoms as the origin atom')
+                self._origin_atom_idx = self._origin_atom_idx[0]
+
+            # Make sure origin is a fixed atom.
+            if (self._conditioning_atom_indices is None or
+                        self._origin_atom_idx not in self._conditioning_atom_indices):
+                raise ValueError("origin_atom is not a conditioning atom. origin_atom "
+                                 "affects the mapping but its position is constrained.")
+
+        # Select axes atoms.
+        if axes is None:
+            self._axes_atoms_indices = None
+        else:
+            # In this case we must maintain the given order.
+            self._axes_atoms_indices = self._get_selected_indices(axes, sort=False)
+            if len(self._axes_atoms_indices) != 2:
+                raise ValueError('Exactly 2 axes atoms must be given.')
+
+            # Check that the atoms don't overlap.
+            reference_atoms = self._axes_atoms_indices
+            if origin is not None:
+                reference_atoms = torch.cat((self._origin_atom_idx.unsqueeze(0), reference_atoms))
+            if len(reference_atoms.unique()) != len(reference_atoms):
+                raise ValueError("center, axis, and plane atoms must be different")
+
+            # Check that the axes atoms are not flagged as fixed.
+            if self._fixed_atom_indices is None:
+                are_axes_atom_fixed = False
+            else:
+                if non_fixed_set is None:
+                    if mapped_set is None:
+                        mapped_set = set(self._mapped_atom_indices.tolist())
+                    if (conditioning_set is None) and (self._conditioning_atom_indices is not None):
+                        conditioning_set = set(self._conditioning_atom_indices.tolist())
+                        non_fixed_set = mapped_set | conditioning_set
+                    else:
+                        non_fixed_set = mapped_set
+
+                axes_atom_indices_set = set(self._axes_atoms_indices.tolist())
+                are_axes_atom_fixed = len(axes_atom_indices_set & non_fixed_set) != 2
+
+            if are_axes_atom_fixed:
+                raise ValueError("axis and plane atoms must be mapped or conditioning "
+                                 "atoms as they affect the mapping.")
 
     def forward(self, x):
         """Execute the normalizing flow in the forward direction.
@@ -557,248 +843,59 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         """
         checkpoint['stateful_batch_sampler'] = self._stateful_batch_sampler.state_dict()
 
-    def _determine_atom_indices(self):
-        """Determine mapped, conditioning, fixed, and reference frame atom indices.
+    def _get_selected_indices(self, selection: Union[str, int, Sequence[int]], sort: bool = True) -> torch.Tensor:
+        """Return selected indices as a sorted Tensor of integers.
 
-        This initializes the following attributes
-        - ``self._mapped_atom_indices``
-        - ``self._conditioning_atom_indices``
-        - ``self._fixed_atom_indices``
-        - ``self._origin_atom_idx``
-        - ``self._axes_atom_indices``
+        Parameters
+        ----------
+        selection : str, int, or array-like of ints
+            An MDAnalysis string selection, an integer, or a sequence of integers
+            representing the indices of the atoms.
+        sort : bool, optional
+            If ``True``, the returned atom indices are sorted.
+
+        Returns
+        -------
+        atom_indices : torch.Tensor
+            The atom indices of the selection.
 
         """
-        # Shortcuts.
-        mapped = self.hparams.mapped_atoms
-        conditioning = self.hparams.conditioning_atoms
-        origin = self.hparams.origin_atom
-        axes = self.hparams.axes_atoms
-        n_atoms = self.dataset.n_atoms
-
-        # Used to check for duplicate selected atoms.
-        mapped_set = None
-        conditioning_set = None
-        non_fixed_set = None
-
-        if (mapped is None) and (conditioning is None):
-            # Everything is mapped.
-            self._mapped_atom_indices = torch.tensor(range(n_atoms))
-            self._conditioning_atom_indices = None
-            self._fixed_atom_indices = None
-        elif conditioning is None:
-            # Everything that is not mapped is fixed (no conditioning.
-            self._mapped_atom_indices = self._get_selected_indices(mapped)
-            self._conditioning_atom_indices = None
-            mapped_set = set(self._mapped_atom_indices.tolist())
-            self._fixed_atom_indices = torch.tensor([idx for idx in range(n_atoms)
-                                                    if idx not in mapped_set])
-        elif mapped is None:
-            # Everything that is not conditioning is mapped (no fixed).
-            self._conditioning_atom_indices = self._get_selected_indices(conditioning)
-            conditioning_set = set(self._conditioning_atom_indices.tolist())
-            self._mapped_atom_indices = torch.tensor([idx for idx in range(n_atoms)
-                                                      if idx not in conditioning_set])
-            self._fixed_atom_indices = None
-        else:
-            # Everything needs to be selected.
-            self._mapped_atom_indices = self._get_selected_indices(mapped)
-            self._conditioning_atom_indices = self._get_selected_indices(conditioning)
-
-            # Make sure that there are no overlapping atoms.
-            mapped_set = set(self._mapped_atom_indices.tolist())
-            conditioning_set = set(self._conditioning_atom_indices.tolist())
-            if len(mapped_set & conditioning_set) > 0:
-                raise ValueError('Mapped and conditioning selections cannot have overlapping atoms.')
-
-            non_fixed_set = mapped_set | conditioning_set
-            self._fixed_atom_indices = torch.tensor([idx for idx in range(n_atoms)
-                                                    if idx not in non_fixed_set])
-
-        # Make sure conditioning and fixed atoms are None if they are empty.
-        if (self._conditioning_atom_indices is not None) and (len(self._conditioning_atom_indices) == 0):
-            self._conditioning_atom_indices = None
-        if (self._fixed_atom_indices is not None) and (len(self._fixed_atom_indices) == 0):
-            self._fixed_atom_indices = None
-
-        # Make sure there are atoms to map.
-        if len(self._mapped_atom_indices) == 0:
-            raise ValueError('There are no atoms to map.')
-
-        # Check that there are no duplicate atoms.
-        if (mapped_set is not None and
-                    len(mapped_set) != len(self._mapped_atom_indices)):
-                raise ValueError('There are duplicate mapped atom indices.')
-        if (conditioning_set is not None and
-                    len(conditioning_set) != len(self._conditioning_atom_indices)):
-                raise ValueError('There are duplicate conditioning atom indices.')
-
-        # Select origin atom.
-        if origin is None:
-            self._origin_atom_idx = None
-        else:
-            self._origin_atom_idx = self._get_selected_indices(origin, sort=False)
-
-            # Make sure origin is a fixed atom.
-            if (self._conditioning_atom_indices is None or
-                        self._origin_atom_idx not in self._conditioning_atom_indices):
-                raise ValueError("origin_atom is not a conditioning atom. origin_atom "
-                                 "affects the mapping but its position is constrained.")
-
-        # Select axes atoms.
-        if axes is None:
-            self._axes_atom_indices = None
-        else:
-            # In this case we must maintain the given order.
-            self._axes_atom_indices = self._get_selected_indices(axes, sort=False)
-            if len(self._axes_atom_indices) != 2:
-                raise ValueError('Exactly 2 axes atoms must be given.')
-
-            # Check that the atoms don't overlap.
-            reference_atoms = self._axes_atom_indices
-            if origin is not None:
-                reference_atoms = torch.cat((self._origin_atom_idx.unsqueeze(0), reference_atoms))
-            if len(reference_atoms.unique()) != len(reference_atoms):
-                raise ValueError("center, axis, and plane atoms must be different")
-
-            # Check that the axes atoms are not flagged as fixed.
-            if self._fixed_atom_indices is None:
-                are_axes_atom_fixed = False
-            else:
-                if non_fixed_set is None:
-                    if mapped_set is None:
-                        mapped_set = set(self._mapped_atom_indices.tolist())
-                    if (conditioning_set is None) and (self._conditioning_atom_indices is not None):
-                        conditioning_set = set(self._conditioning_atom_indices.tolist())
-                        non_fixed_set = mapped_set | conditioning_set
-                    else:
-                        non_fixed_set = mapped_set
-
-                axes_atom_indices_set = set(self._axes_atom_indices.tolist())
-                are_axes_atom_fixed = len(axes_atom_indices_set & non_fixed_set) != 2
-
-            if are_axes_atom_fixed:
-                raise ValueError("axis and plane atoms must be mapped or conditioning "
-                                 "atoms as they affect the mapping.")
-
-    def _get_selected_indices(self, selection, sort=True):
-        """Return selected indices as a sorted Tensor of integers."""
         if isinstance(selection, str):
             selection = self.dataset.universe.select_atoms(selection).ix
         if not torch.is_tensor(selection):
             selection = torch.tensor(selection)
+        if selection.numel() == 0:
+            raise ValueError('Selection contains 0 atoms.')
         if sort:
             selection = selection.sort()[0]
         return selection
-
-    def _get_passed_reference_atom_indices(self, remove_origin_from_axes: bool) -> Union[torch.Tensor, None]:
-        """Return the atom indices of the origin and axes atoms after the fixed atoms have been removed.
-
-        Parameters
-        ----------
-        remove_origin_from_axes : bool
-            If ``True``, the returned indices of the axes atoms also account for
-            the removed origin atom.
-
-        Returns
-        -------
-        reference_atom_indices : torch.Tensor or None
-            The indices of the atoms (if they exist) or ``None`` if there are no
-            origin and axes atoms.
-        """
-        # Shortcuts.
-        has_fixed = self.n_fixed_atoms > 0
-        has_origin = self._origin_atom_idx is not None
-        has_axes = self._axes_atom_indices is not None
-
-        # Initialize return value.
-        reference_atom_indices = []
-        if has_origin:
-            reference_atom_indices.append(self._origin_atom_idx.unsqueeze(0))
-        if has_axes:
-            reference_atom_indices.append(self._axes_atom_indices)
-
-        if len(reference_atom_indices) > 0:
-            reference_atom_indices = torch.cat(reference_atom_indices)
-        else:
-            return None
-
-        # Remove fixed atoms.
-        if has_fixed:
-            if has_origin:
-                shift = torch.searchsorted(self._fixed_atom_indices, self._origin_atom_idx)
-                reference_atom_indices[0] = self._origin_atom_idx - shift
-
-            # Find axes atom indices.
-            if has_axes:
-                shift = torch.searchsorted(self._fixed_atom_indices, self._axes_atom_indices)
-                reference_atom_indices[-2:] = self._axes_atom_indices - shift
-
-        # Remove origin atom from axes.
-        if remove_origin_from_axes and has_axes and has_origin:
-            if self._origin_atom_idx < self._axes_atom_indices[0]:
-                reference_atom_indices[-2] = reference_atom_indices[-2] - 1
-            if self._origin_atom_idx < self._axes_atom_indices[1]:
-                reference_atom_indices[-1] = reference_atom_indices[-1] - 1
-
-        return reference_atom_indices
 
     def _get_nonfixed_indices(
             self,
             atom_indices: torch.Tensor,
             idx_type: Literal['atom', 'dof'],
-            remove_constrained: bool,
+            remove_fixed: bool,
     ) -> torch.Tensor:
         """Return the atom/DOFs indices.
 
         atom_indices should be either self._mapped_atom_indices or self._conditioning_atom_indices.
 
         """
+        # Shortcuts.
         assert idx_type in {"atom", "dof"}
         is_dof = idx_type == "dof"
 
-        # Returned value.
+        # Returned value (could be atom or dof indices).
         indices = atom_indices
 
         # We search the fixed indices by atom index so that searchsorted takes
-        # three times less and the fixed indices are typically the most numerous.
-        if remove_constrained and self.n_fixed_atoms > 0:
+        # three times less and we expect the fixed indices (when present) to be
+        # the most numerous.
+        if remove_fixed and self.n_fixed_atoms > 0:
             indices = indices - torch.searchsorted(self._fixed_atom_indices, indices)
 
         # Convert to DOF indices.
         if is_dof:
             indices = atom_to_flattened_indices(indices)
-
-            # If DOF, remove the origin and axes atom constrained DOFs.
-            if remove_constrained:
-                # First find the indices of the reference atoms after the fixed
-                # atoms have been removed.
-                reference_atoms_indices = self._get_passed_reference_atom_indices(
-                    remove_origin_from_axes=False)
-
-                # Find all the DOFs associated with the origin and axes atoms.
-                removed_dof_indices = []
-                if self._origin_atom_idx is not None:
-                    # All DOFs of the origin atoms are constrained.
-                    removed_dof_indices.append(atom_to_flattened_indices(reference_atoms_indices[:1]))
-                if self._axes_atom_indices is not None:
-                    # axes_atom[0] is constrained on the x-axis so y,z coordinates are fixed.
-                    removed_dof_indices.append(atom_to_flattened_indices(reference_atoms_indices[-2:-1])[1:])
-                    # axes_atom[1] is constrained on the x-y plane so z coordinate is fixed.
-                    removed_dof_indices.append(atom_to_flattened_indices(reference_atoms_indices[-1:])[2:])
-
-                # No constrained DOFs to remove.
-                if len(removed_dof_indices) > 0:
-                    # removed_dof_indices must be sorted for searchsorted.
-                    removed_dof_indices = torch.cat(removed_dof_indices).sort()[0]
-
-                    # We need to first to delete the constrained reference DOFs that belong to atom_indices.
-                    mask = True
-                    for idx in removed_dof_indices:
-                        mask &= indices != idx
-                    indices = indices[mask]
-
-                    # And now shift the indices to account for the removal of the
-                    # constrained reference DOFs (even if they don't belong to atom_indices).
-                    indices = indices - torch.searchsorted(removed_dof_indices, indices)
 
         return indices

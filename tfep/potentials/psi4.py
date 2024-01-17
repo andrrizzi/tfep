@@ -167,14 +167,14 @@ class PotentialPsi4(PotentialBase):
     #: The default energy unit.
     DEFAULT_ENERGY_UNIT : str = 'hartree'
 
-    #: The default position unit.
-    DEFAULT_POSITION_UNIT : str = 'bohr'
+    #: The default positions unit.
+    DEFAULT_POSITIONS_UNIT : str = 'bohr'
 
     def __init__(
             self,
             name,
             molecule=None,
-            position_unit=None,
+            positions_unit=None,
             energy_unit=None,
             precompute_gradient=True,
             parallelization_strategy=None,
@@ -224,7 +224,7 @@ class PotentialPsi4(PotentialBase):
             ``psi4.energy``, and ``psi4.gradient``.
 
         """
-        super().__init__(position_unit=position_unit, energy_unit=energy_unit)
+        super().__init__(positions_unit=positions_unit, energy_unit=energy_unit)
 
         # Handle mutable default arguments.
         if parallelization_strategy is None:
@@ -244,8 +244,8 @@ class PotentialPsi4(PotentialBase):
         ----------
         batch_positions : torch.Tensor
             A tensor of positions in flattened format (i.e., with shape
-            ``(batch_size, 3*n_atoms)``) in units of ``self.position_unit``
-            (or Psi4 units if ``position_unit`` is not provided).
+            ``(batch_size, 3*n_atoms)``) in units of ``self.positions_unit``
+            (or Psi4 units if ``positions_unit`` is not provided).
 
         Returns
         -------
@@ -258,7 +258,7 @@ class PotentialPsi4(PotentialBase):
             batch_positions=batch_positions,
             name=self.name,
             molecule=self.molecule,
-            positions_unit=self._position_unit,
+            positions_unit=self._positions_unit,
             energy_unit=self._energy_unit,
             precompute_gradient=self.precompute_gradient,
             parallelization_strategy=self.parallelization_strategy,
@@ -275,7 +275,7 @@ class PotentialPsi4(PotentialBase):
             A batch of configurations in standard format (i.e., with shape
             ``(batch_size, n_atoms, 3)`` or ``(n_atoms, 3)``). If no units are
             attached to the array, it is assumed the positions are is in
-            ``self.position_unit`` units (or Psi4 units if ``position_unit`` is
+            ``self.positions_unit`` units (or Psi4 units if ``positions_unit`` is
             not provided).
 
         Returns
@@ -306,7 +306,7 @@ class PotentialPsi4(PotentialBase):
             A batch of configurations in standard format (i.e., with shape
             ``(batch_size, n_atoms, 3)`` or ``(n_atoms, 3)``). If no units are
             attached to the array, it is assumed the positions are is in
-            ``self.position_unit`` units (or Psi4 units if ``position_unit`` is
+            ``self.positions_unit`` units (or Psi4 units if ``positions_unit`` is
             not provided).
 
         Returns
@@ -332,7 +332,7 @@ class PotentialPsi4(PotentialBase):
         try:
             batch_positions.units
         except AttributeError:
-            return batch_positions * self.position_unit
+            return batch_positions * self.positions_unit
         return batch_positions
 
 
@@ -526,7 +526,7 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
         # Convert tensor to numpy array with shape (batch_size, n_atoms, 3) with attached units.
         batch_positions_arr = flattened_to_atom(batch_positions.detach().numpy())
         if positions_unit is None:
-            batch_positions_arr *= PotentialPsi4.default_position_unit(unit_registry)
+            batch_positions_arr *= PotentialPsi4.default_positions_unit(unit_registry)
         else:
             batch_positions_arr *= positions_unit
 
@@ -713,13 +713,13 @@ class _PotentialEnergyPsi4FuncBackward(torch.autograd.Function):
             # TODO: Make this a parameter?
             max_disp = 1e-3
             ureg = ctx.batch_positions_arr._REGISTRY
-            default_position_unit = PotentialPsi4.default_position_unit(ureg)
+            default_positions_unit = PotentialPsi4.default_positions_unit(ureg)
             if ctx.positions_unit is None:
-                positions_unit = default_position_unit
+                positions_unit = default_positions_unit
             else:
                 # batch_positions is not in bohr.
                 positions_unit = ctx.positions_unit
-                max_disp = (max_disp * default_position_unit).to(positions_unit).magnitude
+                max_disp = (max_disp * default_positions_unit).to(positions_unit).magnitude
 
             # epsilon[i] is the scalar multiplying the displacement for batch i.
             # shape: (batch_size, 1).
@@ -828,9 +828,9 @@ def _run_psi4(
 
     This function is a wrapper of ``psi4.energy`` and ``psi4.gradient`` that
     handles:
-    - Position and energy units.
+    - Positions and energy units.
     - Batches of positions.
-    - Position with ``Tensor`` (flattened) or numpy (standard 2D) shape.
+    - Positions with ``Tensor`` (flattened) or numpy (standard 2D) shape.
     - Restart/write wavefunction that is sample-specific within a batch.
     - Batch parallelization implementation through ``ParallelizationStrategy``
       objects.
@@ -979,7 +979,7 @@ def _run_psi4(
         # Convert to a list to avoid code branching.
         batch_positions_bohr = [None]
     else:
-        batch_positions_bohr = batch_positions.to(PotentialPsi4.DEFAULT_POSITION_UNIT).magnitude
+        batch_positions_bohr = batch_positions.to(PotentialPsi4.DEFAULT_POSITIONS_UNIT).magnitude
         if len(batch_positions.shape) < 3:
             # Convert batch_positions to a unitless (in Psi4 units) numpy array
             # of shape (batch_size, n_atoms, 3).
@@ -1039,7 +1039,7 @@ def _run_psi4(
     if return_energy:
         returned_values.append(energies * PotentialPsi4.default_energy_unit(unit_registry))
     if return_force:
-        returned_values.append(forces * PotentialPsi4.default_energy_unit(unit_registry) / PotentialPsi4.default_position_unit(unit_registry))
+        returned_values.append(forces * PotentialPsi4.default_energy_unit(unit_registry) / PotentialPsi4.default_positions_unit(unit_registry))
     if return_wfn:
         returned_values.append(wavefunctions)
 

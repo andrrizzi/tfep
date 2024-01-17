@@ -44,13 +44,13 @@ jobs:
           df -h
           ulimit -a
 
-      # More info on options: https://github.com/marketplace/actions/provision-with-micromamba
+      # More info on options: https://github.com/mamba-org/setup-micromamba
       - uses: mamba-org/setup-micromamba@v1
         with:
+          # conda-forge is the default channel so we don't specify channels
           environment-file: devtools/conda-envs/test_env.yaml
           environment-name: test
-          channels: conda-forge
-          extra-specs: |
+          create-args: >-
             python=${{ matrix.python-version }}
 
       - name: Install package
