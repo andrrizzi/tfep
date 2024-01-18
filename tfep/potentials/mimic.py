@@ -32,7 +32,7 @@ import os
 import re
 import shutil
 import subprocess
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import pint
@@ -341,7 +341,7 @@ class PotentialMiMiC(PotentialBase):
         self.on_unconverged = on_unconverged
         self.on_local_error = on_local_error
 
-    def forward(self, batch_positions, batch_cell):
+    def forward(self, batch_positions: torch.Tensor, batch_cell: torch.Tensor) -> torch.Tensor:
         """Compute a differential potential energy for a batch of configurations.
 
         Parameters
@@ -352,7 +352,7 @@ class PotentialMiMiC(PotentialBase):
 
             Note that the order of the atoms is assumed to be that of the GROMACS
             input files, not the one used internally by CPMD.
-        batch_cell : torch.Tensor, optional
+        batch_cell : torch.Tensor
             An tensor of box vectors with shape ``(batch_size, 3)`` defining the
             orthorhombic box side lengths (the only one currently supported in MiMiC)
             in units of ``self.positions_unit``.
@@ -388,12 +388,12 @@ class PotentialMiMiC(PotentialBase):
             on_local_error=self.on_local_error,
         )
 
-    def energy(self, batch_positions, batch_cell):
+    def energy(self, batch_positions: pint.Quantity, batch_cell: pint.Quantity) -> pint.Quantity:
         """Compute a the potential energy of a batch of configurations.
 
         Parameters
         ----------
-        batch_positions : pint.Quantity, optional
+        batch_positions : pint.Quantity
             An array of positions with units and shape: ``(batch_size, n_atoms, 3)``
             or ``(n_atoms, 3)``. If no units are attached to the array, it is
             assumed the positions are is in ``self.positions_unit`` units (or MiMiC
@@ -401,7 +401,7 @@ class PotentialMiMiC(PotentialBase):
 
             Note that the order of the atoms is assumed to be that of the GROMACS
             input files, not the one used internally by CPMD.
-        batch_cell : pint.Quantity, optional
+        batch_cell : pint.Quantity
             An array of box vectors with units and shape: ``(batch_size, 3)`` or
             ``(3,)`` defining the orthorhombic box side lengths (the only one currently
             supported in MiMiC). If no units are attached to the array, it is
@@ -440,12 +440,12 @@ class PotentialMiMiC(PotentialBase):
             on_local_error=self.on_local_error,
         )
 
-    def force(self, batch_positions, batch_cell):
+    def force(self, batch_positions: pint.Quantity, batch_cell: pint.Quantity) -> pint.Quantity:
         """Compute the force for a batch of configurations.
 
         Parameters
         ----------
-        batch_positions : pint.Quantity, optional
+        batch_positions : pint.Quantity
             An array of positions with units and shape: ``(batch_size, n_atoms, 3)``
             or ``(n_atoms, 3)``. If no units are attached to the array, it is
             assumed the positions are is in ``self.positions_unit`` units (or MiMiC
@@ -453,7 +453,7 @@ class PotentialMiMiC(PotentialBase):
 
             Note that the order of the atoms is assumed to be that of the GROMACS
             input files, not the one used internally by CPMD.
-        batch_cell : pint.Quantity, optional
+        batch_cell : pint.Quantity
             An array of box vectors with units and shape: ``(batch_size, 3)`` or
             ``(3,)`` defining the orthorhombic box side lengths (the only one currently
             supported in MiMiC). If no units are attached to the array, it is
@@ -492,7 +492,7 @@ class PotentialMiMiC(PotentialBase):
             on_local_error=self.on_local_error,
         )
 
-    def _ensure_positions_has_units(self, batch_positions):
+    def _ensure_positions_has_units(self, batch_positions) -> pint.Quantity:
         """Add units to an array of positions."""
         try:
             batch_positions.units
@@ -667,26 +667,26 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
 
     @staticmethod
     def forward(
-            ctx,
-            batch_positions,
-            batch_cell,
-            cpmd_cmd,
-            mdrun_cmd,
-            grompp_cmd,
-            gromacs_to_cpmd_atom_indices,
-            launcher=None,
-            grompp_launcher=None,
-            positions_unit=None,
-            energy_unit=None,
-            precompute_gradient=True,
-            working_dir_path=None,
-            cleanup_working_dir=False,
-            parallelization_strategy=None,
-            launcher_kwargs=None,
-            grompp_launcher_kwargs=None,
-            n_attempts=1,
-            on_unconverged='raise',
-            on_local_error='raise',
+            ctx: torch.autograd.function._ContextMethodMixin,
+            batch_positions: torch.Tensor,
+            batch_cell: torch.Tensor,
+            cpmd_cmd: Cpmd,
+            mdrun_cmd: GmxMdrun,
+            grompp_cmd: GmxGrompp,
+            gromacs_to_cpmd_atom_indices: Dict[int, int],
+            launcher: Optional[Launcher] = None,
+            grompp_launcher: Optional[Launcher] = None,
+            positions_unit: Optional[pint.Unit] = None,
+            energy_unit: Optional[pint.Unit] = None,
+            precompute_gradient: bool = True,
+            working_dir_path: Optional[Union[str, List[str]]]=None,
+            cleanup_working_dir: bool = False,
+            parallelization_strategy: Optional[tfep.utils.parallel.ParallelizationStrategy] = None,
+            launcher_kwargs: Optional[Dict[str, Any]] = None,
+            grompp_launcher_kwargs: Optional[Dict[str, Any]] = None,
+            n_attempts: int = 1,
+            on_unconverged: str = 'raise',
+            on_local_error: str = 'raise',
     ):
         """Compute the potential energy of the molecule with MiMiC."""
         # Check for unit registry.
@@ -778,25 +778,25 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
 
 
 def potential_energy_mimic(
-        batch_positions,
-        batch_cell,
-        cpmd_cmd,
-        mdrun_cmd,
-        grompp_cmd,
-        gromacs_to_cpmd_atom_indices,
-        launcher=None,
-        grompp_launcher=None,
-        positions_unit=None,
-        energy_unit=None,
-        precompute_gradient=True,
-        working_dir_path=None,
-        cleanup_working_dir=False,
-        parallelization_strategy=None,
-        launcher_kwargs=None,
-        grompp_launcher_kwargs=None,
-        n_attempts=1,
-        on_unconverged='raise',
-        on_local_error='raise',
+        batch_positions: torch.Tensor,
+        batch_cell: torch.Tensor,
+        cpmd_cmd: Cpmd,
+        mdrun_cmd: GmxMdrun,
+        grompp_cmd: GmxGrompp,
+        gromacs_to_cpmd_atom_indices: Dict[int, int],
+        launcher: Optional[Launcher] = None,
+        grompp_launcher: Optional[Launcher] = None,
+        positions_unit: Optional[pint.Unit] = None,
+        energy_unit: Optional[pint.Unit] = None,
+        precompute_gradient: bool = True,
+        working_dir_path: Optional[Union[str, List[str]]]=None,
+        cleanup_working_dir: bool = False,
+        parallelization_strategy: Optional[tfep.utils.parallel.ParallelizationStrategy] = None,
+        launcher_kwargs: Optional[Dict[str, Any]] = None,
+        grompp_launcher_kwargs: Optional[Dict[str, Any]] = None,
+        n_attempts: int = 1,
+        on_unconverged: str = 'raise',
+        on_local_error: str = 'raise',
 ):
     """PyTorch-differentiable QM/MM potential energy using MiMIC.
 
@@ -839,25 +839,25 @@ def potential_energy_mimic(
 # =============================================================================
 
 def _run_mimic(
-        cpmd_cmd,
-        mdrun_cmd,
-        grompp_cmd,
-        gromacs_to_cpmd_atom_indices,
-        batch_positions=None,
-        batch_cell=None,
-        launcher=None,
-        grompp_launcher=None,
-        return_energy=False,
-        return_force=False,
-        unit_registry=None,
-        working_dir_path=None,
-        cleanup_working_dir=False,
-        parallelization_strategy=None,
-        launcher_kwargs=None,
-        grompp_launcher_kwargs=None,
-        n_attempts=1,
-        on_unconverged='raise',
-        on_local_error='raise',
+        cpmd_cmd: Cpmd,
+        mdrun_cmd: GmxMdrun,
+        grompp_cmd: GmxGrompp,
+        gromacs_to_cpmd_atom_indices: Dict[int, int],
+        batch_positions: Optional[pint.Quantity] = None,
+        batch_cell: Optional[pint.Quantity] = None,
+        launcher: Optional[Launcher] = None,
+        grompp_launcher: Optional[Launcher] = None,
+        return_energy: bool = False,
+        return_force: bool = False,
+        unit_registry: pint.UnitRegistry = None,
+        working_dir_path: Optional[Union[str, List[str]]]=None,
+        cleanup_working_dir: bool = False,
+        parallelization_strategy: Optional[tfep.utils.parallel.ParallelizationStrategy] = None,
+        launcher_kwargs: Optional[Dict[str, Any]] = None,
+        grompp_launcher_kwargs: Optional[Dict[str, Any]] = None,
+        n_attempts: int = 1,
+        on_unconverged: str = 'raise',
+        on_local_error: str = 'raise',
 ):
     """Run MiMiC.
 
