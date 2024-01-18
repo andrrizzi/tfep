@@ -248,6 +248,10 @@ class SRunLauncher(Launcher):
     ``--multi-prog`` feature. The launcher assigns contiguous task ranks to each
     command.
 
+    The class also has a ``GLOBAL_SRUN_OPTIONS`` attribute holding a dictionary
+    where options for ``srun`` that are shared across all executions of ``srun``
+    can be specified.
+
     Parameters
     ----------
     time : str or None
@@ -331,12 +335,14 @@ class SRunLauncher(Launcher):
     a list and is used to determine the task ranks assigned to each program.
 
     The following example configures the launcher to run three programs on 4
-    nodes, and 8 tasks. It assigns 3 tasks to the second process and 2 tasks to
+    nodes, and 7 tasks. It assigns 3 tasks to the second process and 2 tasks to
     the others.
 
     >>> launcher = SRunLauncher(n_nodes=4, n_tasks=[2, 3, 2], multiprog=True)
 
     """
+
+    GLOBAL_SRUN_OPTIONS = {}
 
     def __init__(self, time=None, n_nodes=None, n_tasks=None, n_tasks_per_node=None, n_cpus_per_task=None,
                  relative_node_idx=None, multiprog=False, multiprog_config_file_path='srun-job.conf'):
@@ -431,8 +437,7 @@ class SRunLauncher(Launcher):
         # Prepend srun to all commands.
         srun_commands = []
         for cmd_idx, cmd in enumerate(commands):
-            # Create srun execution
-            srun = SRunTool(
+            kwargs = dict(
                 time=self.time,
                 n_nodes=n_nodes[cmd_idx],
                 n_tasks=n_tasks[cmd_idx],
@@ -441,7 +446,14 @@ class SRunLauncher(Launcher):
                 relative_node_idx=relative_node_idx[cmd_idx],
             )
 
-            # Prepend the srun command.
+            # If we have global options, use them, but options specified in the
+            # constructor have priority.
+            for k, v in self.GLOBAL_SRUN_OPTIONS.items():
+                if kwargs.get(k, None) is None:
+                    kwargs[k] = v
+
+            # Create and prepend srun command.
+            srun = SRunTool(**kwargs)
             srun_commands.append(srun.to_subprocess() + cmd)
 
         return srun_commands
@@ -454,7 +466,7 @@ class SRunLauncher(Launcher):
         # We run a single job with a total number of tasks given by
         # the sum of the number of tasks assigned to each command.
         # We also ignore n_tasks_per_node since it's overwritten by n_tasks.
-        srun = SRunTool(
+        kwargs = dict(
             time=self.time,
             n_nodes=self.n_nodes,
             n_tasks=sum(n_tasks),
@@ -462,6 +474,14 @@ class SRunLauncher(Launcher):
             relative_node_idx=self.relative_node_idx,
             multiprog_config_file_path=self.multiprog_config_file_path,
         )
+
+        # If we have global options, use them, but options specified in the
+        # constructor have priority.
+        for k, v in self.GLOBAL_SRUN_OPTIONS.items():
+            if kwargs.get(k, None) is None:
+                kwargs[k] = v
+
+        srun = SRunTool(**kwargs)
         return [srun.to_subprocess()]
 
     def _create_multiprog_config_file(self, commands):
