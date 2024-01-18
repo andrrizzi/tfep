@@ -15,7 +15,6 @@ The code interfaces with the molecular dynamics software through the command lin
 import warnings
 warnings.warn('The potential interface for MiMiC is still experimental and under heavy development.')
 
-# TODO: THE FORCES OF THE QM REGION ATOMS ARE OK BUT CPMD CHANGES THE ORDER OF THE OTHER ATOMS AS WELL WHICH NEED RE-SORTING
 # TODO: UNDERSTAND KINETIC ENERGY PRINTING IN WAVEFUNCTION OPTIMIZATION
 # TODO: THE PV CONTRIBUTION IS NOT COMPUTED! THE RETURNED ENERGY IS NOT THE REDUCED POTENTIAL.
 # TODO: USE logging MODULE INSTEAD OF print()
@@ -33,6 +32,7 @@ import os
 import re
 import shutil
 import subprocess
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pint
@@ -212,22 +212,23 @@ class PotentialMiMiC(PotentialBase):
 
     def __init__(
             self,
-            cpmd_cmd,
-            mdrun_cmd,
-            grompp_cmd,
-            launcher=None,
-            grompp_launcher=None,
-            positions_unit=None,
-            energy_unit=None,
-            precompute_gradient=True,
-            working_dir_path=None,
-            cleanup_working_dir=False,
-            parallelization_strategy=None,
-            launcher_kwargs=None,
-            grompp_launcher_kwargs=None,
-            n_attempts=1,
-            on_unconverged='raise',
-            on_local_error='raise',
+            cpmd_cmd: Cpmd,
+            mdrun_cmd: GmxMdrun,
+            grompp_cmd: GmxGrompp,
+            gromacs_to_cpmd_atom_indices: Dict[int, int],
+            launcher: Optional[Launcher] = None,
+            grompp_launcher: Optional[Launcher] = None,
+            positions_unit: Optional[pint.Unit] = None,
+            energy_unit: Optional[pint.Unit] = None,
+            precompute_gradient: bool = True,
+            working_dir_path: Optional[Union[str, List[str]]]=None,
+            cleanup_working_dir: bool = False,
+            parallelization_strategy: Optional[tfep.utils.parallel.ParallelizationStrategy] = None,
+            launcher_kwargs: Optional[Dict[str, Any]] = None,
+            grompp_launcher_kwargs: Optional[Dict[str, Any]] = None,
+            n_attempts: int = 1,
+            on_unconverged: str = 'raise',
+            on_local_error: str = 'raise',
     ):
         """Constructor.
 
@@ -250,11 +251,13 @@ class PotentialMiMiC(PotentialBase):
             ``.tpr`` file with the correct positions is automatically generated
             with ``gromp_cmd``.
         grompp_cmd : tfep.potentials.mimic.GmxGrompp, optional
-            This command is used to generate the the ``.tpr`` file with the correct
+            This command is used to generate the ``.tpr`` file with the correct
             coordinates. To do so, the batch positions are first stored in a
             ``.trr`` file which is then passed to grompp. Thus, the
             ``GmxGrompp.tpr_output_file_path`` and ``GmxGrompp.trajectory_input_file_path``
             options can be ``None``.
+        gromacs_to_cpmd_atom_indices : Dict[int, int]
+            A dictionary associating atom indices in GROMACS to atom indices in CPMD.
         launcher : tfep.utils.cli.Launcher, optional
             The ``Launcher`` to use to run the ``cpmd_cmd`` and ``mdrun_cmd``.
             If not passed, a new :class:`tfep.utils.cli.Launcher` is created.
@@ -325,6 +328,7 @@ class PotentialMiMiC(PotentialBase):
         self.cpmd_cmd = cpmd_cmd
         self.mdrun_cmd = mdrun_cmd
         self.grompp_cmd = grompp_cmd
+        self.gromacs_to_cpmd_atom_indices = gromacs_to_cpmd_atom_indices
         self.launcher = launcher
         self.grompp_launcher = grompp_launcher
         self.precompute_gradient = precompute_gradient
@@ -347,9 +351,7 @@ class PotentialMiMiC(PotentialBase):
             ``(batch_size, 3*n_atoms)``) in units of ``self.positions_unit``.
 
             Note that the order of the atoms is assumed to be that of the GROMACS
-            input files, not the one used internally by CPMD (which always puts the
-            QM atoms first). The atom map used to match them is based on the CPMD
-            input script option ``&MIMIC.OVERLAPS``.
+            input files, not the one used internally by CPMD.
         batch_cell : torch.Tensor, optional
             An tensor of box vectors with shape ``(batch_size, 3)`` defining the
             orthorhombic box side lengths (the only one currently supported in MiMiC)
@@ -370,6 +372,7 @@ class PotentialMiMiC(PotentialBase):
             cpmd_cmd=self.cpmd_cmd,
             mdrun_cmd=self.mdrun_cmd,
             grompp_cmd=self.grompp_cmd,
+            gromacs_to_cpmd_atom_indices=self.gromacs_to_cpmd_atom_indices,
             launcher=self.launcher,
             grompp_launcher=self.grompp_launcher,
             positions_unit=self._positions_unit,
@@ -397,9 +400,7 @@ class PotentialMiMiC(PotentialBase):
             units if ``positions_unit`` was not provided).
 
             Note that the order of the atoms is assumed to be that of the GROMACS
-            input files, not the one used internally by CPMD (which always puts the
-            QM atoms first). The atom map used to match them is based on the CPMD
-            input script option ``&MIMIC.OVERLAPS``.
+            input files, not the one used internally by CPMD.
         batch_cell : pint.Quantity, optional
             An array of box vectors with units and shape: ``(batch_size, 3)`` or
             ``(3,)`` defining the orthorhombic box side lengths (the only one currently
@@ -420,7 +421,8 @@ class PotentialMiMiC(PotentialBase):
         return _run_mimic(
             self.cpmd_cmd,
             self.mdrun_cmd,
-            grompp_cmd=self.grompp_cmd,
+            self.grompp_cmd,
+            self.gromacs_to_cpmd_atom_indices,
             batch_positions=batch_positions,
             batch_cell=batch_cell,
             launcher=self.launcher,
@@ -450,9 +452,7 @@ class PotentialMiMiC(PotentialBase):
             units if ``positions_unit`` was not provided).
 
             Note that the order of the atoms is assumed to be that of the GROMACS
-            input files, not the one used internally by CPMD (which always puts the
-            QM atoms first). The atom map used to match them is based on the CPMD
-            input script option ``&MIMIC.OVERLAPS``.
+            input files, not the one used internally by CPMD.
         batch_cell : pint.Quantity, optional
             An array of box vectors with units and shape: ``(batch_size, 3)`` or
             ``(3,)`` defining the orthorhombic box side lengths (the only one currently
@@ -473,7 +473,8 @@ class PotentialMiMiC(PotentialBase):
         return _run_mimic(
             self.cpmd_cmd,
             self.mdrun_cmd,
-            grompp_cmd=self.grompp_cmd,
+            self.grompp_cmd,
+            self.gromacs_to_cpmd_atom_indices,
             batch_positions=batch_positions,
             batch_cell=batch_cell,
             launcher=self.launcher,
@@ -568,9 +569,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
         ``(batch_size, 3*n_atoms)``).
 
         Note that the order of the atoms is assumed to be that of the GROMACS
-        input files, not the one used internally by CPMD (which always puts the
-        QM atoms first). The atom map used to match them is based on the CPMD
-        input script option ``&MIMIC.OVERLAPS``.
+        input files, not the one used internally by CPMD.
     batch_cell : pint.Quantity, optional
         An tensor of box vectors with shape ``(batch_size, 3)`` defining the
         orthorhombic box side lengths (the only one currently supported in MiMiC).
@@ -589,6 +588,8 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
         The ``mdrun_cmd.tpr_input_file_path`` can be left unset since a new
         ``.tpr`` file with the correct positions is automatically generated with
         ``gromp_cmd``.
+    gromacs_to_cpmd_atom_indices : Dict[int, int]
+        A dictionary associating atom indices in GROMACS to atom indices in CPMD.
     grompp_cmd : tfep.potentials.mimic.GmxGrompp, optional
         This command is used to generate the the ``.tpr`` file with the correct
         coordinates. To do so, the batch positions are first stored in a ``.trr``
@@ -672,6 +673,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
             cpmd_cmd,
             mdrun_cmd,
             grompp_cmd,
+            gromacs_to_cpmd_atom_indices,
             launcher=None,
             grompp_launcher=None,
             positions_unit=None,
@@ -720,6 +722,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
             cpmd_cmd,
             mdrun_cmd,
             grompp_cmd,
+            gromacs_to_cpmd_atom_indices,
             batch_positions=batch_positions_arr,
             batch_cell=batch_cell_arr,
             launcher=launcher,
@@ -780,6 +783,7 @@ def potential_energy_mimic(
         cpmd_cmd,
         mdrun_cmd,
         grompp_cmd,
+        gromacs_to_cpmd_atom_indices,
         launcher=None,
         grompp_launcher=None,
         positions_unit=None,
@@ -813,6 +817,7 @@ def potential_energy_mimic(
         cpmd_cmd,
         mdrun_cmd,
         grompp_cmd,
+        gromacs_to_cpmd_atom_indices,
         launcher,
         grompp_launcher,
         positions_unit,
@@ -836,7 +841,8 @@ def potential_energy_mimic(
 def _run_mimic(
         cpmd_cmd,
         mdrun_cmd,
-        grompp_cmd=None,
+        grompp_cmd,
+        gromacs_to_cpmd_atom_indices,
         batch_positions=None,
         batch_cell=None,
         launcher=None,
@@ -861,8 +867,8 @@ def _run_mimic(
 
     The input batch_positions are passed in GROMACS order (which is likely the most
     common user case), but the CPMD output files (e.g., FTRAJECTORY, GEOMETRY)
-    use the CPMD order. Thus the function must map the atom positions back and
-    forth using the atom map in &MIMIC.OVERLAPS.
+    use the CPMD order. Thus the function must have a map of the atom indices
+    between GROMACS and CPMD.
 
     MiMiC centers the QM atoms in the box with a translation. This means that
     the positions passed do not correspond to those evaluated, but because only
@@ -897,15 +903,13 @@ def _run_mimic(
         batch positions are first stored in a ``.trr`` file which is then passed
         to grompp. Thus, the ``GmxGrompp.tpr_output_file_path`` and
         ``GmxGrompp.trajectory_input_file_path`` options can be ``None``.
+    gromacs_to_cpmd_atom_indices : Dict[int, int]
+        A dictionary associating atom indices in GROMACS to atom indices in CPMD.
     batch_positions : pint.Quantity, optional
         An array of positions with units and shape: ``(batch_size, n_atoms, 3)``
         or ``(n_atoms, 3)``. If ``None``, the coordinates in the input files are
-        evaluated.
-
-        Note that the order of the atoms is assumed to be that of the GROMACS
-        input files, not the one used internally by CPMD (which always puts the
-        QM atoms first). The atom map used to match them is based on the CPMD
-        input script option ``&MIMIC.OVERLAPS``.
+        evaluated. Note that the order of the atoms is assumed to be that of the
+        GROMACS input files, not the one used internally by CPMD.
     batch_cell : pint.Quantity, optional
         An array of box vectors with units and shape: ``(batch_size, 3)`` or
         ``(3,)`` defining the orthorhombic box side lengths (the only one currently
@@ -983,8 +987,7 @@ def _run_mimic(
 
         As with the ``batch_positions``, the order of the atoms in each force
         follows that of the GROMACS input files, not the one used internally by
-        CPMD (which always puts the QM atoms first). The atom map used to match
-        them is based on the CPMD input script option ``&MIMIC.OVERLAPS``.
+        CPMD.
 
     """
     # Mutable default arguments.
@@ -1020,8 +1023,8 @@ def _run_mimic(
 
     # Run the command.
     task = functools.partial(
-        _run_mimic_task, cpmd_cmd, mdrun_cmd, grompp_cmd, grompp_launcher,
-        return_energy, return_force, cleanup_working_dir, launcher_kwargs,
+        _run_mimic_task, cpmd_cmd, mdrun_cmd, grompp_cmd, gromacs_to_cpmd_atom_indices,
+        grompp_launcher, return_energy, return_force, cleanup_working_dir, launcher_kwargs,
         grompp_launcher_kwargs, n_attempts, on_unconverged, on_local_error,
     )
     distributed_args = zip(batch_positions, batch_cell, launcher, working_dir_path)
@@ -1051,6 +1054,7 @@ def _run_mimic_task(
         cpmd_cmd,
         mdrun_cmd,
         grompp_cmd,
+        gromacs_to_cpmd_atom_indices,
         grompp_launcher,
         return_energy,
         return_force,
@@ -1096,8 +1100,7 @@ def _run_mimic_task(
     working_dir_path = os.path.realpath(working_dir_path)
 
     # Prepare the cpmd command.
-    cpmd_cmd, gromacs_to_cpmd_atom_map = _prepare_cpmd_command(
-        cpmd_cmd, working_dir_path, positions, box_vectors)
+    cpmd_cmd = _prepare_cpmd_command(cpmd_cmd, working_dir_path, positions, box_vectors)
 
     # Prepare the mdrun command.
     mdrun_cmd = _prepare_mdrun_command(
@@ -1134,7 +1137,7 @@ def _run_mimic_task(
                     energy = _read_first_energy(working_dir_path)
                     returned_values.append(energy)
                 if return_force:
-                    force = _read_first_force(working_dir_path, gromacs_to_cpmd_atom_map)
+                    force = _read_first_force(working_dir_path, gromacs_to_cpmd_atom_indices)
                     returned_values.append(force)
 
             # Stop the attempts if the calculation was successful or if is_unconverged is True.
@@ -1194,8 +1197,6 @@ def _prepare_cpmd_command(cpmd_cmd, working_dir_path, positions=None, box_vector
       working directory used for the execution.
     - Sets the positions and box vectors in the CPMD input script based to those
       in ``positions`` (if the positions are passed).
-    - Returns an atom map of the QM atoms mapping the atom index in GROMACS to
-      its corresponding atom index in CPMD.
 
     At the time of writing the keyword &SYSTEM.ANGSTROM is not supported in
     MiMiC so all positions are written in Bohr. Moreover, only orthorhombic boxes
@@ -1228,9 +1229,6 @@ def _prepare_cpmd_command(cpmd_cmd, working_dir_path, positions=None, box_vector
     -------
     cpmd_cmd : tfep.potentials.mimic.Cpmd
         A CPMD commandthat points to the correct (original or copied) input file.
-    gromacs_to_cpmd_atom_map : Dict[int, int]
-        Associates a GROMACS atom index to a CPMD atom index (as given by
-        ``&MIMIC.OVERLAPS``).
 
     """
     OUTPUT_CPMD_FILE_NAME = 'cpmd.inp'
@@ -1241,7 +1239,7 @@ def _prepare_cpmd_command(cpmd_cmd, working_dir_path, positions=None, box_vector
         cpmd_input_file_path = os.path.realpath(cpmd_cmd.args[0])
 
     # Parse the file.
-    (cpmd_file_lines, path_line_idx, box_vectors_line_idx, gromacs_to_cpmd_atom_map,
+    (cpmd_file_lines, path_line_idx, box_vectors_line_idx, gromacs_to_cpmd_qm_atom_indices,
         cpmd_atom_to_line_idx) = _parse_cpmd_input(cpmd_input_file_path)
 
     # If the path is incorrect, update it.
@@ -1257,7 +1255,7 @@ def _prepare_cpmd_command(cpmd_cmd, working_dir_path, positions=None, box_vector
             cpmd_file_lines[box_vectors_line_idx] = ' '.join([str(x) for x in box_vectors_bohr]) + '\n'
 
         # Cycle through all atoms and update their lines one by one.
-        for gromacs_atom_idx, cpmd_atom_idx in gromacs_to_cpmd_atom_map.items():
+        for gromacs_atom_idx, cpmd_atom_idx in gromacs_to_cpmd_qm_atom_indices.items():
             line_idx = cpmd_atom_to_line_idx[cpmd_atom_idx]
             atom_position = positions[gromacs_atom_idx].to(PotentialMiMiC.DEFAULT_POSITIONS_UNIT).magnitude
             cpmd_file_lines[line_idx] = ' '.join([str(x) for x in atom_position]) + '\n'
@@ -1273,7 +1271,7 @@ def _prepare_cpmd_command(cpmd_cmd, working_dir_path, positions=None, box_vector
         cpmd_cmd = copy.deepcopy(cpmd_cmd)
         cpmd_cmd.args = [OUTPUT_CPMD_FILE_NAME] + list(cpmd_cmd.args)[1:]
 
-    return cpmd_cmd, gromacs_to_cpmd_atom_map
+    return cpmd_cmd
 
 
 def _prepare_mdrun_command(mdrun_cmd, grompp_cmd, working_dir_path,
@@ -1379,9 +1377,9 @@ def _parse_cpmd_input(cpmd_input_file_path):
         The line index where the path to the working directory should be.
     box_vectors_line_idx : int
         The line index where the box is specified in &MIMIC.BOX.
-    gromacs_to_cpmd_atom_map : Dict[int, int]
-        Associates a GROMACS atom index to a CPMD atom index (as given by
-        ``&MIMIC.OVERLAPS``).
+    gromacs_to_cpmd_qm_atom_indices : Dict[int, int]
+        Associates a GROMACS atom index to a CPMD atom index for the QM atoms
+        (as given by ``&MIMIC.OVERLAPS``).
     cpmd_atom_to_line_idx : Dict[int, int]
         Associates a CPMD atom index to the line index where its coordinates
         are stored.
@@ -1408,7 +1406,7 @@ def _parse_cpmd_input(cpmd_input_file_path):
 
     return (cpmd_file_lines, parsed['paths_line_idx'],
             parsed['box_vectors_line_idx'],
-            parsed['gromacs_to_cpmd_atom_map'],
+            parsed['gromacs_to_cpmd_qm_atom_indices'],
             parsed['cpmd_atom_to_line_idx'])
 
 
@@ -1419,8 +1417,8 @@ def _parse_cpmd_mimic_block(lines, line_idx, parsed):
     - paths_line_idx: the line index where the path to the working dir is.
     - box_vectors_line_idx: the line index where the box is defined in
       &MIMIC.BOX.
-    - gromacs_to_cpmd_atom_map: a Dict[Int, Int] that associate a GROMACS
-      atom index to a CPMD atom index (as given by &MIMIC.OVERLAPS).
+    - gromacs_to_cpmd_qm_atom_indices: a Dict[Int, Int] that associate a GROMACS
+      atom index to a CPMD atom index for the QM atoms (as given by &MIMIC.OVERLAPS).
 
     Parameters
     ----------
@@ -1439,7 +1437,7 @@ def _parse_cpmd_mimic_block(lines, line_idx, parsed):
     """
     parsed['paths_line_idx'] = None
     parsed['box_vectors_line_idx'] = None
-    parsed['gromacs_to_cpmd_atom_map'] = {}
+    parsed['gromacs_to_cpmd_qm_atom_indices'] = {}
 
     while line_idx < len(lines):
         line = lines[line_idx].strip()
@@ -1465,7 +1463,7 @@ def _parse_cpmd_mimic_block(lines, line_idx, parsed):
                 if line[0] == 1:
                     gromacs_idx, cpmd_idx = cpmd_idx, gromacs_idx
 
-                parsed['gromacs_to_cpmd_atom_map'][gromacs_idx] = cpmd_idx
+                parsed['gromacs_to_cpmd_qm_atom_indices'][gromacs_idx] = cpmd_idx
 
             # Update first line.
             line_idx += n_atoms
@@ -1545,14 +1543,14 @@ def _read_first_energy(cpmd_dir_path):
                 return energy
 
 
-def _read_first_force(cpmd_dir_path, gromacs_to_cpmd_atom_map):
+def _read_first_force(cpmd_dir_path, gromacs_to_cpmd_atom_indices):
     """Read the first force from the FTRAJECTORY trajectory file.
 
     Parameters
     ----------
     cpmd_dir_path : str
         The directory where the FTRAJECTORY file is stored.
-    gromacs_to_cpmd_atom_map : Dict[int, int], optional
+    gromacs_to_cpmd_atom_indices : Dict[int, int], optional
         Associates a GROMACS atom index to a CPMD atom index. This must be passed
         with ``positions``.
 
@@ -1575,7 +1573,7 @@ def _read_first_force(cpmd_dir_path, gromacs_to_cpmd_atom_map):
 
     # Convert from CPMD to GROMACS atom order.
     n_atoms = len(force)
-    force = [force[gromacs_to_cpmd_atom_map.get(i, i)] for i in range(n_atoms)]
+    force = [force[gromacs_to_cpmd_atom_indices.get(i, i)] for i in range(n_atoms)]
 
     # Convert to array.
     return np.array(force)
