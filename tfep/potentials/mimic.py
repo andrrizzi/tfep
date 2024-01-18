@@ -42,7 +42,7 @@ from tfep.potentials.base import PotentialBase
 from tfep.utils.cli import Launcher, CLITool, KeyValueOption
 from tfep.utils.misc import (
     flattened_to_atom, energies_array_to_tensor, forces_array_to_tensor, temporary_cd)
-from tfep.utils.parallel import SerialStrategy
+from tfep.utils.parallel import ParallelizationStrategy, SerialStrategy
 
 
 # =============================================================================
@@ -223,7 +223,7 @@ class PotentialMiMiC(PotentialBase):
             precompute_gradient: bool = True,
             working_dir_path: Optional[Union[str, List[str]]]=None,
             cleanup_working_dir: bool = False,
-            parallelization_strategy: Optional[tfep.utils.parallel.ParallelizationStrategy] = None,
+            parallelization_strategy: Optional[ParallelizationStrategy] = None,
             launcher_kwargs: Optional[Dict[str, Any]] = None,
             grompp_launcher_kwargs: Optional[Dict[str, Any]] = None,
             n_attempts: int = 1,
@@ -681,7 +681,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
             precompute_gradient: bool = True,
             working_dir_path: Optional[Union[str, List[str]]]=None,
             cleanup_working_dir: bool = False,
-            parallelization_strategy: Optional[tfep.utils.parallel.ParallelizationStrategy] = None,
+            parallelization_strategy: Optional[ParallelizationStrategy] = None,
             launcher_kwargs: Optional[Dict[str, Any]] = None,
             grompp_launcher_kwargs: Optional[Dict[str, Any]] = None,
             n_attempts: int = 1,
@@ -791,7 +791,7 @@ def potential_energy_mimic(
         precompute_gradient: bool = True,
         working_dir_path: Optional[Union[str, List[str]]]=None,
         cleanup_working_dir: bool = False,
-        parallelization_strategy: Optional[tfep.utils.parallel.ParallelizationStrategy] = None,
+        parallelization_strategy: Optional[ParallelizationStrategy] = None,
         launcher_kwargs: Optional[Dict[str, Any]] = None,
         grompp_launcher_kwargs: Optional[Dict[str, Any]] = None,
         n_attempts: int = 1,
@@ -852,7 +852,7 @@ def _run_mimic(
         unit_registry: pint.UnitRegistry = None,
         working_dir_path: Optional[Union[str, List[str]]]=None,
         cleanup_working_dir: bool = False,
-        parallelization_strategy: Optional[tfep.utils.parallel.ParallelizationStrategy] = None,
+        parallelization_strategy: Optional[ParallelizationStrategy] = None,
         launcher_kwargs: Optional[Dict[str, Any]] = None,
         grompp_launcher_kwargs: Optional[Dict[str, Any]] = None,
         n_attempts: int = 1,
