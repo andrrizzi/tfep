@@ -14,6 +14,8 @@ Math and geometry utility functions to manipulate coordinates.
 # GLOBAL IMPORTS
 # =============================================================================
 
+from typing import Optional
+
 import torch
 
 from tfep.utils.math import batchwise_dot, batchwise_outer
@@ -258,3 +260,116 @@ def batchwise_rotate(x, rotation_matrices, inverse=False):
         return torch.bmm(x, rotation_matrices)
     else:
         return torch.bmm(x, rotation_matrices.permute(0, 2, 1))
+
+
+def reference_frame_rotation_matrix(
+        axis_atom_positions: torch.Tensor,
+        plane_atom_positions: torch.Tensor,
+        axis: torch.Tensor,
+        plane_axis: torch.Tensor,
+        plane_normal: Optional[torch.Tensor] = None,
+        project_on_positive_axis: bool = False
+) -> torch.Tensor:
+    """Return the rotation matrix required to rotate the frame of reference based on two atoms.
+
+    After the rotation matrix is applied to the coordinates, ``axis_atom_positions``
+    lie on the given ``axis`` vector while ``plane_atom_positions`` lie on the
+    plane spanned by the ``axis`` and ``plane_axis`` vectors.
+
+    Parameters
+    ----------
+    axis_atom_positions : torch.Tensor
+        Shape ``(batch_size, 3)``. The position of the atom placed on ``axis``.
+    plane_atom_positions : torch.Tensor
+        Shape ``(batch_size, 3)``. The position of the atom placed on the
+        ``axis``-``plane_axis`` plane.
+    axis : torch.Tensor
+        Shape ``(3,)``. The axis on which to the axis atom is placed. Must be
+        a unit vector.
+    plane_axis : torch.Tensor,
+        Shape ``(3,)``. The second axis used to determine the plane where the
+        plane atom is placed. Must be a unit vector and not parallel to ``axis``.
+    plane_normal : Optional[torch.Tensor]
+        The vector normal to ``axis`` and ``plane_axis``. If not given, it is
+        computed here.
+    project_on_positive_axis : bool
+        If ``True``, the axis atom is rotated so that it always lies on the positive
+        ``axis``. Otherwise, it is rotated on the positive or negative ``axis`` based
+        on whichever is closest.
+
+        Note that if this is ``True`` and the position of the axis atom is flipped,
+        the returned rotation matrix cannot recover the original coordinates.
+
+    Returns
+    -------
+    rotation_matrices : torch.Tensor
+        Shape ``(batch_size, 3, 3)``. The rotation matrices.
+
+    Examples
+    --------
+
+    >>> # Initialize the coordinates.
+    >>> batch_size, n_atoms = 2, 4
+    >>> coordinates = torch.randn(batch_size, n_atoms, 3)
+
+    >>> # Fix the orientation of the coordiante frames based on the 2nd and 4th atoms.
+    >>> axis_atom_pos = coordinates[:, 1]
+    >>> plane_atom_pos = coordinates[:, 3]
+    >>> rotation_matrices = get_reference_frame_rotation_matrix(
+    ...     axis_atom_pos,
+    ...     plane_atom_pos,
+    ...     axis=torch.tensor([1.0, 0, 0]),  # axis atom lies on x-axis
+    ...     plane_axis=torch.tensor([0.0, 0, 1]),  # plane atomlies on x-z plane
+    ... )
+    ...
+
+    >>> # Rotate the coordinates.
+    >>> new_coordinates = batchwise_rotate(coordinates, rotation_matrices)
+    >>> # Reverse the change of reference frame.
+    >>> old_coordinates = batchwise_rotate(new_coordinates, rotation_matrices, inverse=True)
+
+    """
+    # Default argument.
+    if plane_normal is None:
+        plane_normal = torch.cross(axis, plane_axis)
+
+    # Find the direction perpendicular to the plane formed by the axis atom,
+    # and the axis. rotation_vectors has shape (batch_size, 3).
+    rotation_vectors = torch.cross(axis_atom_positions, axis.unsqueeze(0), dim=1)
+
+    # Find the first rotation angle. r1_angle has shape (batch_size,).
+    r1_angles = vector_vector_angle(axis_atom_positions, axis)
+
+    # r1_angles goes from 0 to pi. We want to rotate the point onto the
+    # negative/positive axis, depending which is closest.
+    if not project_on_positive_axis:
+        r1_angles = r1_angles - torch.pi * (r1_angles > torch.pi/2).to(r1_angles.dtype)
+
+    # This are the rotation matrices that bring the axis points onto the axis.
+    r1_rotation_matrices = rotation_matrix_3d(r1_angles, rotation_vectors)
+
+    # To bring the plane atom in position, we perform a rotation about
+    # axis so that we don't modify the position of the axis atom. We
+    # perform the first rotation only on the atom position that will
+    # determine the next rotation matrix for now so that we run only
+    # a single matmul on all atoms.
+    plane_points = plane_atom_positions.unsqueeze(1)
+    plane_points = batchwise_rotate(plane_points, r1_rotation_matrices)
+    plane_points = plane_points.squeeze(1)
+
+    # Project the atom on the plane perpendicular to the rotation axis plane
+    # to measure the rotation angle.
+    plane_points = plane_points - axis*batchwise_dot(plane_points, axis, keepdim=True)
+    r2_angles = vector_plane_angle(plane_points, plane_normal)
+
+    # r2_angles will be positive in the octants where plane_normal lies
+    # and negative in the opposite direction but the rotation happens
+    # counterclockwise/clockwise with positive/negative angle so we need
+    # to fix the sign of the angle based on where it is.
+    r2_angles_sign = -torch.sign(batchwise_dot(plane_points, plane_axis))
+    r2_rotation_matrices = rotation_matrix_3d(r2_angles_sign * r2_angles, axis)
+
+    # Now build the rotation composition.
+    rotation_matrices = torch.bmm(r2_rotation_matrices, r1_rotation_matrices)
+
+    return rotation_matrices
