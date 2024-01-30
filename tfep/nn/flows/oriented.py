@@ -20,13 +20,15 @@ import torch
 
 from tfep.nn.flows.partial import PartialFlow
 from tfep.utils.geometry import (
-    vector_vector_angle, vector_plane_angle,
-    rotation_matrix_3d, batchwise_rotate,
+    batchwise_rotate,
+    get_axis_from_name,
     reference_frame_rotation_matrix,
 )
-from tfep.utils.math import batchwise_dot
 from tfep.utils.misc import (
-    flattened_to_atom, atom_to_flattened, atom_to_flattened_indices)
+    flattened_to_atom,
+    atom_to_flattened,
+    atom_to_flattened_indices,
+)
 
 
 # =============================================================================
@@ -55,13 +57,6 @@ class OrientedFlow(PartialFlow):
     z coordinates (in this order) of the ``i``-th point for batch sample ``b``.
 
     """
-
-    # Conversion string representation to vector representation.
-    _AXES = {
-        'x': torch.tensor([1.0, 0.0, 0.0]),
-        'y': torch.tensor([0.0, 1.0, 0.0]),
-        'z': torch.tensor([0.0, 0.0, 1.0]),
-    }
 
     def __init__(
             self,
@@ -133,11 +128,11 @@ class OrientedFlow(PartialFlow):
                              "'axis_atom_idx' must be constrained on an axis on the same plane.")
 
         # Save the axis used for contraining the first point as a vector.
-        self._axis = self._AXES[axis].type(torch.get_default_dtype())
+        self._axis = get_axis_from_name(axis)
 
         # Save the axis that together with self._axis defines the plane on which
         # the second point is contrained.
-        self._plane_axis = [x.type(self._axis.dtype) for name, x in self._AXES.items()
+        self._plane_axis = [get_axis_from_name(name) for name in ['x', 'y', 'z']
                             if (name not in axis) and (name in plane)][0]
 
         # Save the plane used for constraining the second point as its normal vector.

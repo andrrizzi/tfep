@@ -14,7 +14,7 @@ Math and geometry utility functions to manipulate coordinates.
 # GLOBAL IMPORTS
 # =============================================================================
 
-from typing import Optional
+from typing import Dict, List, Literal, Optional, Tuple
 
 import torch
 
@@ -262,6 +262,37 @@ def batchwise_rotate(x, rotation_matrices, inverse=False):
         return torch.bmm(x, rotation_matrices.permute(0, 2, 1))
 
 
+# =============================================================================
+# COORDINATE TRANSFORMATIONS
+# =============================================================================
+
+# Map the name of an axis to its 3D unit vector representation. We instantiate
+# the tensor in get_axis_from_name to make sure it is represented by the default
+# floating type, which might not be set on import.
+_AXIS_NAME_TO_VECTOR: Dict[Literal['x', 'y', 'z'], List] = {
+    'x': [1.0, 0.0, 0.0],
+    'y': [0.0, 1.0, 0.0],
+    'z': [0.0, 0.0, 1.0],
+}
+
+
+def get_axis_from_name(name: Literal['x', 'y', 'z']) -> torch.Tensor:
+    """Return the 3D vector representation of an axis.
+
+    Parameters
+    ----------
+    name : Literal['x', 'y', 'z']
+        The name of the axis.
+
+    Returns
+    -------
+    axis : torch.Tensor
+        Shape ``(3,)``. The unit vector representation of the axis.
+
+    """
+    return torch.tensor(_AXIS_NAME_TO_VECTOR[name])
+
+
 def reference_frame_rotation_matrix(
         axis_atom_positions: torch.Tensor,
         plane_atom_positions: torch.Tensor,
@@ -297,8 +328,8 @@ def reference_frame_rotation_matrix(
         ``axis``. Otherwise, it is rotated on the positive or negative ``axis`` based
         on whichever is closest.
 
-        Note that if this is ``True`` and the position of the axis atom is flipped,
-        the returned rotation matrix cannot recover the original coordinates.
+        Note that if this is ``True``, a transformation that flips the sign of
+        the coordinate of the axis atom might become impossible to invert in practice.
 
     Returns
     -------
