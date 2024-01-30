@@ -404,3 +404,63 @@ def reference_frame_rotation_matrix(
     rotation_matrices = torch.bmm(r2_rotation_matrices, r1_rotation_matrices)
 
     return rotation_matrices
+
+
+def cartesian_to_polar(x: torch.Tensor, y: torch.Tensor, return_log_det_J: bool = False) -> Tuple[torch.Tensor]:
+    """Transform Cartesian coordinates into polar.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Shape ``(batch_size,)``. The x Cartesian coordinate.
+    y : torch.Tensor
+        Shape ``(batch_size,)``. The y Cartesian coordinate.
+    return_log_det_J: bool, optional
+        If ``True``, the absolute value of the Jacobian determinant of the
+        transformation is also returned.
+
+    Returns
+    -------
+    r : torch.Tensor
+        Shape ``(batch_size,)``. The radius coordinate.
+    angle : torch.Tensor
+        Shape ``(batch_size,)``. The angle coordinate in radians.
+    log_det_J : torch.Tensor, optional
+        The absolute value of the Jacobian determinant of the transformation.
+
+    """
+    r = (x.pow(2) + y.pow(2)).sqrt()
+    angle = torch.atan2(y, x)
+    if return_log_det_J:
+        return r, angle, -torch.log(r)
+    return r, angle
+
+
+def polar_to_cartesian(r: torch.Tensor, angle: torch.Tensor, return_log_det_J: bool = False) -> Tuple[torch.Tensor]:
+    """Transform polar coordinates into Cartesian.
+
+    Parameters
+    ----------
+    r : torch.Tensor
+        Shape ``(batch_size,)``. The radius coordinate.
+    angle : torch.Tensor
+        Shape ``(batch_size,)``. The angle coordinate in radians.
+    return_log_det_J: bool, optional
+        If ``True``, the absolute value of the Jacobian determinant of the
+        transformation is also returned.
+
+    Returns
+    -------
+    x : torch.Tensor
+        Shape ``(batch_size,)``. The x Cartesian coordinate.
+    y : torch.Tensor
+        Shape ``(batch_size,)``. The y Cartesian coordinate.
+    log_det_J : torch.Tensor, optional
+        The absolute value of the Jacobian determinant of the transformation.
+
+    """
+    x = r * torch.cos(angle)
+    y = r * torch.sin(angle)
+    if return_log_det_J:
+        return x, y, torch.log(r)
+    return x, y

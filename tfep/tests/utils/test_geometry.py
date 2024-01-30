@@ -14,14 +14,23 @@ Test objects and function in tfep.utils.geometry.
 # GLOBAL IMPORTS
 # =============================================================================
 
+import cmath
+
 import MDAnalysis.lib
 import numpy as np
 import pytest
 import torch
 
+from tfep.utils.math import batch_autograd_log_abs_det_J
 from tfep.utils.geometry import (
-    pdist, vector_vector_angle, vector_plane_angle, proper_dihedral_angle,
-    rotation_matrix_3d, batchwise_rotate
+    pdist,
+    vector_vector_angle,
+    vector_plane_angle,
+    proper_dihedral_angle,
+    rotation_matrix_3d,
+    batchwise_rotate,
+    cartesian_to_polar,
+    polar_to_cartesian,
 )
 
 
@@ -115,6 +124,16 @@ def reference_batchwise_rotate(x, rotation_matrices):
     for i in range(len(x_np)):
         y[i] = x_np[i] @ rotation_matrices_np[i].T
     return torch.tensor(y, dtype=x.dtype)
+
+
+def reference_cartesian_to_polar(x, y):
+    x, y = x.tolist(), y.tolist()
+    r, angle = [], []
+    for xi, yi in zip(x, y):
+        polar = cmath.polar(complex(xi, yi))
+        r.append(polar[0])
+        angle.append(polar[1])
+    return torch.tensor(r), torch.tensor(angle)
 
 
 # =============================================================================
@@ -280,3 +299,30 @@ def test_batchwise_rotate_against_reference(batch_size, n_vectors):
     y = batchwise_rotate(x, rotation_matrices)
     ref_y = reference_batchwise_rotate(x, rotation_matrices)
     assert torch.allclose(y, ref_y)
+
+
+@pytest.mark.parametrize('batch_size', [1, 10])
+def test_cartesian_to_polar_conversion(batch_size):
+    """Test cartesian_to_polar and polar_to_cartesian against reference."""
+    # Create Cartesian input.
+    input = torch.randn(batch_size, 2, requires_grad=True)
+    x, y = input[:, 0], input[:, 1]
+
+    # Convert to polar.
+    r, angle, log_det_J = cartesian_to_polar(x, y, return_log_det_J=True)
+    output = torch.cat([r.unsqueeze(0), angle.unsqueeze(0)], dim=0).T
+
+    # First test against implementation based on standard python library.
+    r_ref, angle_ref = reference_cartesian_to_polar(x, y)
+    assert torch.allclose(r, r_ref)
+    assert torch.allclose(angle, angle_ref)
+
+    # Test inverse.
+    x_inv, y_inv, log_det_J_inv = polar_to_cartesian(r, angle, return_log_det_J=True)
+    assert torch.allclose(x, x_inv)
+    assert torch.allclose(y, y_inv)
+    assert torch.allclose(log_det_J + log_det_J_inv, torch.zeros_like(log_det_J))
+
+    # Test log det J.
+    log_det_J_ref = batch_autograd_log_abs_det_J(input, output)
+    assert torch.allclose(log_det_J, log_det_J_ref)
