@@ -124,7 +124,7 @@ def check_atom_groups(
     # The flow doesn't alter but still depends on the conditioning DOFs.
     if expected_conditioning is not None:
         assert torch.allclose(x[:, expected_conditioning], y[:, expected_conditioning])
-        assert torch.all(~torch.isclose(x_grad[:, expected_conditioning], torch.ones(*x[:, expected_conditioning].shape)))
+        assert torch.all(~torch.isclose(x_grad[:, expected_conditioning], torch.ones(*x[:, expected_conditioning].shape), rtol=0.0))
 
     # The flow doesn't alter and doesn't depend on the fixed DOFs.
     if expected_fixed is not None:

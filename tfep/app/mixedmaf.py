@@ -24,7 +24,13 @@ import torch
 
 import tfep.nn.flows
 from tfep.app.base import TFEPMapBase
-from tfep.utils.geometry import batchwise_rotate
+from tfep.utils.geometry import (
+    batchwise_rotate,
+    get_axis_from_name,
+    reference_frame_rotation_matrix,
+    cartesian_to_polar,
+    polar_to_cartesian,
+)
 from tfep.utils.misc import atom_to_flattened_indices, atom_to_flattened, flattened_to_atom
 
 
@@ -335,8 +341,7 @@ class MixedMAFMap(TFEPMapBase):
             means that the distance, angle, and dihedral for atom ``7`` must be
             computed between atoms ``7-2``, ``7-2-4``, and ``7-2-4-8`` respectively.
         are_axes_atoms_bonded : List[bool] or None
-            Whether the first and second axes atoms are bonded to the origin
-            and first axes atom, respectively.
+            Whether the first and second axes atoms are bonded to the origin atom.
 
         """
         # First we need to create a graph representation of all the molecules
@@ -376,15 +381,9 @@ class MixedMAFMap(TFEPMapBase):
             graph = system_graph.subgraph(graph_nodes).copy()
 
             # Update are_axes_atoms_bonded. The origin atom can belong only to a molecule.
-            # Both origin and axes atoms need to be passed.
-            if are_axes_atoms_bonded is None and len(ref_atoms) > 1:
-                if len(ref_atoms) == 3:
-                    # There is an origin atom.
-                    axis_atom_bonded = graph.has_edge(ref_atoms[0], ref_atoms[1])
-                else:
-                    axis_atom_bonded = False
-                plane_atom_bonded = graph.has_edge(ref_atoms[-2], ref_atoms[-1])
-                are_axes_atoms_bonded = [axis_atom_bonded, plane_atom_bonded]
+            # Both origin and axes atoms need to be passed for this to be != None.
+            if are_axes_atoms_bonded is None and len(ref_atoms) == 3 and ref_atoms[0] in graph:
+                are_axes_atoms_bonded = [graph.has_edge(ref_atoms[0], ref_atoms[1]), graph.has_edge(ref_atoms[0], ref_atoms[2])]
 
             # Check if this molecule is composed only by conditioning atoms.
             graph_atom_indices = [node.ix for node in graph]
@@ -629,8 +628,7 @@ class MixedMAFMap(TFEPMapBase):
             The indices of the periodic DOFs after the conversion to mixed
             coordinates.
         are_axes_atoms_bonded : Tuple[bool] or None
-            Whether the first and second axes atoms are bonded to the origin
-            and first axes atom, respectively.
+            Whether the first and second axes atoms are bonded to the origin atom..
 
         """
         # Compute the minimum and maximum value of all DOFs in mixed coordinates.
@@ -813,7 +811,7 @@ class _CartesianToMixedFlow(torch.nn.Module):
             before being passed to the MAF.
 
         """
-        from bgflow.nn.flow.crd_transform.ic import RelativeInternalCoordinateTransformation, ReferenceSystemTransformation
+        from bgflow.nn.flow.crd_transform.ic import RelativeInternalCoordinateTransformation
 
         super().__init__()
 
@@ -826,12 +824,6 @@ class _CartesianToMixedFlow(torch.nn.Module):
             fixed_atoms=cartesian_atom_indices,
             normalize_angles=True,
         )
-
-        # We need to perform the rototranslation only if there are axes atoms.
-        if axes_atoms_indices is None:
-            self._ref_ic = None
-        else:
-            self._ref_ic = ReferenceSystemTransformation(normalize_angles=True)
 
         # Find the indices of the reference atoms in the cartesian tensor after
         # cartesian_to_mixed() is called.
@@ -987,7 +979,7 @@ class _CartesianToMixedFlow(torch.nn.Module):
 
     def _pass(self, x, inverse):
         # Convert from Cartesian to mixed coordinates.
-        y, cumulative_log_det_J, origin_atom_position, euler_angles, rotation_matrix = self._cartesian_to_mixed(x)
+        y, cumulative_log_det_J, origin_atom_position, rotation_matrix = self._cartesian_to_mixed(x)
 
         # Run flow.
         if inverse:
@@ -997,17 +989,18 @@ class _CartesianToMixedFlow(torch.nn.Module):
         cumulative_log_det_J = cumulative_log_det_J + log_det_J
 
         # Convert from mixed to Cartesian coordinates.
-        y, log_det_J = self._mixed_to_cartesian(y, origin_atom_position, euler_angles, rotation_matrix)
+        y, log_det_J = self._mixed_to_cartesian(y, origin_atom_position, rotation_matrix)
         cumulative_log_det_J = cumulative_log_det_J + log_det_J
 
         return y, cumulative_log_det_J
 
     def _cartesian_to_mixed(self, x: torch.Tensor) -> Tuple[torch.Tensor]:
         """Convert from Cartesian to mixed coordinates."""
-        from bgflow.nn.flow.crd_transform.ic_helper import _from_euler_angles
-
         # Convert to mixed coordinates.
         bonds, angles, torsions, x_cartesian, cumulative_log_det_J = self._rel_ic(x)
+
+        # From (batch, 1) to (batch,).
+        cumulative_log_det_J = cumulative_log_det_J.squeeze(-1)
 
         # From flattened to atom representation.
         x_cartesian = flattened_to_atom(x_cartesian)
@@ -1026,42 +1019,60 @@ class _CartesianToMixedFlow(torch.nn.Module):
             kept_atoms_mask[origin_atom_idx] = False
 
             # Save the position to restore it later.
-            origin_atom_position = x_cartesian[:, [origin_atom_idx]]
-            x_cartesian = x_cartesian - origin_atom_position
+            origin_atom_position = x_cartesian[:, origin_atom_idx]
+            x_cartesian = x_cartesian - origin_atom_position.unsqueeze(1)
 
         # Re-orient the frame of reference.
         if not self.has_axes_atoms:
-            euler_angles = None
             rotation_matrix = None
             axes_atoms_dof = [torch.empty(0)]
         else:
-            # After translation, the origin is in zero.
-            origin = torch.zeros_like(x_cartesian[0, 0]).expand(batch_size, 1, 3)
-            z_axis_atom = x_cartesian[:, [self._reference_atoms_indices_in_cartesian[-2]]]
-            xz_plane_atom = x_cartesian[:, [self._reference_atoms_indices_in_cartesian[-1]]]
+            axis_atom_idx = self._reference_atoms_indices_in_cartesian[-2]
+            plane_atom_idx = self._reference_atoms_indices_in_cartesian[-1]
+            axis_atom_pos = x_cartesian[:, axis_atom_idx]
+            plane_atom_pos = x_cartesian[:, plane_atom_idx]
 
-            # Compute constrained and unconstrained DOFs.
-            _, euler_angles, d01, d12, a012, log_det_J = self._ref_ic(
-                origin, z_axis_atom, xz_plane_atom)
-            axes_atoms_dof = [d01, d12, a012]
+            # Find rotation matrix.
+            rotation_matrix = reference_frame_rotation_matrix(
+                axis_atom_positions=axis_atom_pos,
+                plane_atom_positions=plane_atom_pos,
+                axis=get_axis_from_name('x'),
+                plane_axis=get_axis_from_name('y'),
+                # We can project on positive axis since the neural spline
+                # never makes the coordinate negative.
+                project_on_positive_axis=True,
+            )
+
+            # Rotate all Cartesian coordinates.
+            x_cartesian = batchwise_rotate(x_cartesian, rotation_matrix)
+
+            # The (positive) x-coordinate of the axis atom is the distance from the origin.
+            dist_axis_atom = x_cartesian[:, axis_atom_idx, 0]
+
+            # Transform the coordinates on the x-y plane to polar (distance, angle) from the origin.
+            dist_plane_atom, angle, log_det_J = cartesian_to_polar(
+                x_cartesian[:, plane_atom_idx, 0],
+                x_cartesian[:, plane_atom_idx, 1],
+                return_log_det_J=True
+            )
+            cumulative_log_det_J = cumulative_log_det_J + log_det_J
+
+            # Normalize the angle. angle is in [-pi, pi] so we use normalize_torsions().
+            # Normalize torsion takes and return shape (batch_size, 1), not (batch_size,).
+            from bgflow.nn.flow.crd_transform.ic import normalize_torsions
+            angle, log_det_J = normalize_torsions(angle.unsqueeze(-1))
+            angle = angle.squeeze(-1)
+            cumulative_log_det_J = cumulative_log_det_J + log_det_J.squeeze(-1)
+
+            # Group the axes atoms DOFs. From shape (batch,) to (batch, 1).
+            axes_atoms_dof = [dist_axis_atom.unsqueeze(1), dist_plane_atom.unsqueeze(1), angle.unsqueeze(1)]
 
             # Flag axes atoms to be removed.
             kept_atoms_mask[self._reference_atoms_indices_in_cartesian[-2:]] = False
 
-            # Rotate all Cartesian coordinates.
-            alpha, beta, gamma = euler_angles.chunk(3, dim=-1)
-            rotation_matrix = _from_euler_angles(alpha, beta, gamma)
-            x_cartesian = batchwise_rotate(x_cartesian, rotation_matrix, inverse=True)
-
-            # Update log_det_J.
-            cumulative_log_det_J = cumulative_log_det_J + log_det_J
-
         # Remove reference atoms.
         if self.has_origin_atom or self.has_axes_atoms:
             x_cartesian = x_cartesian[:, kept_atoms_mask]
-
-        # From (batch, 1) to (batch,).
-        cumulative_log_det_J = cumulative_log_det_J.squeeze(-1)
 
         # From (batch, n_atoms, 3) to (batch, n_atoms*3).
         x_cartesian = atom_to_flattened(x_cartesian)
@@ -1069,13 +1080,12 @@ class _CartesianToMixedFlow(torch.nn.Module):
         # Concatenate all DOFs.
         y = torch.cat([bonds, angles, torsions] + axes_atoms_dof + [x_cartesian], dim=-1)
 
-        return y, cumulative_log_det_J, origin_atom_position, euler_angles, rotation_matrix
+        return y, cumulative_log_det_J, origin_atom_position, rotation_matrix
 
     def _mixed_to_cartesian(
             self,
             y: torch.Tensor,
             origin_atom_position: torch.Tensor,
-            euler_angles: torch.Tensor,
             rotation_matrix: torch.Tensor,
     ) -> Tuple[torch.Tensor]:
         """Convert from mixed to Cartesian."""
@@ -1089,34 +1099,45 @@ class _CartesianToMixedFlow(torch.nn.Module):
 
         # Separate the axes atoms DOFs.
         if self.has_axes_atoms:
-            d01, d12, a012, y_cartesian = y_cartesian.split([1, 1, 1, y_cartesian.shape[-1]-3], dim=-1)
+            dist_axis_atom, dist_plane_atom, angle, y_cartesian = y_cartesian.split(
+                [1, 1, 1, y_cartesian.shape[-1]-3], dim=-1)
+
+            # Unnormalize the angle.
+            from bgflow.nn.flow.crd_transform.ic import unnormalize_torsions
+            angle, log_det_J = unnormalize_torsions(angle)
+            cumulative_log_det_J = cumulative_log_det_J + log_det_J
+
+            # From shape (batch_size, 1) to (batch_size,).
+            dist_axis_atom = dist_axis_atom.squeeze(-1)
+            dist_plane_atom = dist_plane_atom.squeeze(-1)
+            angle = angle.squeeze(-1)
 
         # From (batch, n_atoms*3) to (batch, n_atoms, 3).
         y_cartesian = flattened_to_atom(y_cartesian)
-
-        # Rotate and translate back to the global frame of reference.
-        if self.has_axes_atoms:
-            y_cartesian = batchwise_rotate(y_cartesian, rotation_matrix)
-        if self.has_origin_atom:
-            y_cartesian = y_cartesian + origin_atom_position
 
         # Find the positions of the reference atoms.
         batch_size, n_cartesian_atoms, _ = y_cartesian.shape
         reference_atom_positions = []
         if self.has_origin_atom:
-            reference_atom_positions.append(origin_atom_position)
+            # We insert the origin since we'll translate also this later.
+            reference_atom_positions.append(torch.zeros_like(origin_atom_position))
         if self.has_axes_atoms:
-            # x0 is always the origin (0, 0, 0) since in the forward pass we translated before rotating.
-            origin = torch.zeros_like(y[0, :3]).expand(batch_size, 1, 3)
-            _, z_axis_atom, xz_plane_atom, log_det_J = self._ref_ic(
-                origin, euler_angles, d01, d12, a012, inverse=True)
+            # The axis atom lies on the x-axis.
+            axis_atom_pos = torch.zeros(batch_size, 3, dtype=y_cartesian.dtype)
+            axis_atom_pos[:, 0] = dist_axis_atom
 
-            # We need to translate also the axes atom which are not yet in y_cartesian.
-            if self.has_origin_atom:
-                z_axis_atom = z_axis_atom + origin_atom_position
-                xz_plane_atom = xz_plane_atom + origin_atom_position
+            # The plane atom lies on the xy-plane.
+            x, y, log_det_J = polar_to_cartesian(
+                dist_plane_atom,
+                angle,
+                return_log_det_J=True,
+            )
+            plane_atom_pos = torch.zeros_like(axis_atom_pos)
+            plane_atom_pos[:, 0] = x
+            plane_atom_pos[:, 1] = y
 
-            reference_atom_positions.extend([z_axis_atom, xz_plane_atom])
+            # Update.
+            reference_atom_positions.extend([axis_atom_pos, plane_atom_pos])
             cumulative_log_det_J = cumulative_log_det_J + log_det_J
 
         # Insert back into y_cartesian the reference atoms.
@@ -1125,8 +1146,7 @@ class _CartesianToMixedFlow(torch.nn.Module):
 
             # Start by setting the reference atom positions.
             for idx, ref_atom_idx in enumerate(self._reference_atoms_indices_in_cartesian):
-                # Each atom position has shape (batch, 1, 3).
-                y_cartesian_tmp[:, ref_atom_idx] = reference_atom_positions[idx][:, 0]
+                y_cartesian_tmp[:, ref_atom_idx] = reference_atom_positions[idx]
 
             # Now set the other Cartesian coordinates.
             mask = torch.full(y_cartesian_tmp.shape[1:2], fill_value=True)
@@ -1135,10 +1155,14 @@ class _CartesianToMixedFlow(torch.nn.Module):
 
             y_cartesian = y_cartesian_tmp
 
-        x, log_det_J = self._rel_ic(bonds, angles, torsions, y_cartesian, inverse=True)
-        cumulative_log_det_J = cumulative_log_det_J + log_det_J
+        # Rotate and translate the Cartesian back to the global frame of reference.
+        if self.has_axes_atoms:
+            y_cartesian = batchwise_rotate(y_cartesian, rotation_matrix, inverse=True)
+        if self.has_origin_atom:
+            y_cartesian = y_cartesian + origin_atom_position.unsqueeze(1)
 
-        # From (batch, 1) to (batch,).
-        cumulative_log_det_J = cumulative_log_det_J.squeeze(-1)
+        # Convert internal coords back to Cartesian.
+        x, log_det_J = self._rel_ic(bonds, angles, torsions, y_cartesian, inverse=True)
+        cumulative_log_det_J = cumulative_log_det_J + log_det_J.squeeze(-1)
 
         return x, cumulative_log_det_J

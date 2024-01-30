@@ -20,11 +20,15 @@ import torch
 
 from tfep.nn.flows.partial import PartialFlow
 from tfep.utils.geometry import (
-    vector_vector_angle, vector_plane_angle,
-    rotation_matrix_3d, batchwise_rotate)
-from tfep.utils.math import batchwise_dot
+    batchwise_rotate,
+    get_axis_from_name,
+    reference_frame_rotation_matrix,
+)
 from tfep.utils.misc import (
-    flattened_to_atom, atom_to_flattened, atom_to_flattened_indices)
+    flattened_to_atom,
+    atom_to_flattened,
+    atom_to_flattened_indices,
+)
 
 
 # =============================================================================
@@ -53,13 +57,6 @@ class OrientedFlow(PartialFlow):
     z coordinates (in this order) of the ``i``-th point for batch sample ``b``.
 
     """
-
-    # Conversion string representation to vector representation.
-    _AXES = {
-        'x': torch.tensor([1.0, 0.0, 0.0]),
-        'y': torch.tensor([0.0, 1.0, 0.0]),
-        'z': torch.tensor([0.0, 0.0, 1.0]),
-    }
 
     def __init__(
             self,
@@ -131,11 +128,11 @@ class OrientedFlow(PartialFlow):
                              "'axis_atom_idx' must be constrained on an axis on the same plane.")
 
         # Save the axis used for contraining the first point as a vector.
-        self._axis = self._AXES[axis].type(torch.get_default_dtype())
+        self._axis = get_axis_from_name(axis)
 
         # Save the axis that together with self._axis defines the plane on which
         # the second point is contrained.
-        self._plane_axis = [x.type(self._axis.dtype) for name, x in self._AXES.items()
+        self._plane_axis = [get_axis_from_name(name) for name in ['x', 'y', 'z']
                             if (name not in axis) and (name in plane)][0]
 
         # Save the plane used for constraining the second point as its normal vector.
@@ -181,54 +178,21 @@ class OrientedFlow(PartialFlow):
 
     def _transform(self, x, inverse=False):
         """Apply the forward/inverse transformation."""
-        batch_size = x.shape[0]
-
         # Reshape coordinates to be in standard atom format.
         x = flattened_to_atom(x)
 
-        # Find the direction perpendicular to the plane formed by the axis atom,
-        # and the axis. torch.cross() requires tensors of same size but at least
-        # torch.expand() does not allocate new memory.
-        axis = self._axis.expand((batch_size, 3))
+        # Find the rotation matrices.
+        rotation_matrices = reference_frame_rotation_matrix(
+            axis_atom_positions=x[:, self._axis_point_idx],
+            plane_atom_positions=x[:, self._plane_point_idx],
+            axis=self._axis,
+            plane_axis=self._plane_axis,
+            plane_normal=self._plane_normal,
+            # We need this to be invertible if the axis atom is flipped.
+            project_on_positive_axis=False,
+        )
 
-        # rotation_vectors has shape (batch_size, 3).
-        rotation_vectors = torch.cross(x[:, self._axis_point_idx], axis, dim=1)
-
-        # Find the first rotation angle. r1_angle has shape (batch_size,).
-        r1_angles = vector_vector_angle(
-            x[:, self._axis_point_idx], self._axis)
-
-        # r1_angles goes from 0 to pi. We want to rotate the point onto the
-        # negative/positive axis, depending which is closest.
-        r1_angles = r1_angles - torch.pi * (r1_angles > torch.pi/2).to(r1_angles.dtype)
-
-        # This are the rotation matrices that bring the axis points onto the axis.
-        r1_rotation_matrices = rotation_matrix_3d(r1_angles, rotation_vectors)
-
-        # To bring the plane atom in position, we perform a rotation about
-        # self._axis so that we don't modify the position of the axis atom.
-        # We perform the first rotation only on the atom position that will
-        # determine the next rotation matrix for now so that we run only
-        # a single matmul on all atoms.
-        plane_points = x[:, self._plane_point_idx].unsqueeze(1)
-        plane_points = batchwise_rotate(plane_points, r1_rotation_matrices)
-        plane_points = plane_points.squeeze(1)
-
-        # Project the atom on the plane perpendicular to the rotation axis plane
-        # to measure the rotation angle.
-        plane_points = plane_points - self._axis*batchwise_dot(plane_points, self._axis, keepdim=True)
-        r2_angles = vector_plane_angle(plane_points, self._plane_normal)
-
-        # r2_angles will be positive in the octants where self._plane_normal
-        # lies and negative in the opposite direction but the rotation happens
-        # counterclockwise/clockwise with positive/negative angle so we need
-        # to fix the sign of the angle based on where it is.
-        r2_angles_sign = -torch.sign(batchwise_dot(plane_points, self._plane_axis))
-        r2_rotation_matrices = rotation_matrix_3d(
-            r2_angles_sign * r2_angles, self._axis)
-
-        # Now build the rotation composition before applying the transformation.
-        rotation_matrices = torch.bmm(r2_rotation_matrices, r1_rotation_matrices)
+        # Rotate frame of reference.
         x = batchwise_rotate(x, rotation_matrices)
 
         # Re-shape back to flattened format.

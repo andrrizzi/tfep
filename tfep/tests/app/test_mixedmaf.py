@@ -209,7 +209,7 @@ def test_cartesian_to_mixed_flow_conversion(origin, axes):
 
     # Forward pass.
     x = torch.rand(batch_size, n_atoms*3)
-    y, log_det_J, origin_atom_position, euler_angles, rotation_matrix = flow._cartesian_to_mixed(x)
+    y, log_det_J, origin_atom_position, rotation_matrix = flow._cartesian_to_mixed(x)
 
     # Bonds and distances are greater than 0.
     distance_dofs = flow.get_maf_distance_dof_indices()
@@ -235,7 +235,7 @@ def test_cartesian_to_mixed_flow_conversion(origin, axes):
         assert torch.allclose(x_cartesian, y_cartesian)
 
     # Test inversion.
-    x_inv, log_det_J_inv = flow._mixed_to_cartesian(y, origin_atom_position, euler_angles, rotation_matrix)
+    x_inv, log_det_J_inv = flow._mixed_to_cartesian(y, origin_atom_position, rotation_matrix)
     assert torch.allclose(x, x_inv)
 
     # Total Jacobian determinant of forward+inverse without a flow should be one.
@@ -306,14 +306,14 @@ def test_cartesian_to_mixed_flow_conversion(origin, axes):
     # Set as axes atom the C3 and C5 atoms of benzoic acid.
     ('resname BEN and element C',
      None,
-     None, 'resname BEN and (name C3 or name C5)', [False, False],
+     None, 'resname BEN and (name C3 or name C5)', None,
       [[4, 5, 3, 2], [1, 2, 3, 5], [0, 1, 2, 5], [6, 1, 5, 0]]
      ),
     # Axes atom bonded.
     ('resname BEN and element C and not name C6',
      'resname BEN and name C6',
-     'resname BEN and name C6', 'resname BEN and (name C1 or name C2)', [True, True],
-      [[5, 6, 1, 2], [0, 1, 2, 6], [4, 5, 6, 2], [3, 4, 2, 5]]
+     'resname BEN and name C6', 'resname BEN and (name C1 or name C5)', [True, True],
+      [[0, 1, 6, 5], [2, 1, 0, 6], [4, 5, 6, 2], [3, 4, 2, 5]],
      ),
     # Origin and axes are distant on the same molecule.
     ('resname BEN and element C and not name C1',
@@ -324,13 +324,13 @@ def test_cartesian_to_mixed_flow_conversion(origin, axes):
     # Origin and axes are on different mapped molecules.
     ('(resname BEN and element C) or (resname CLMET and not name C1)',
      'resname CLMET and name C1',
-     'resname CLMET and name C1', 'resname BEN and (name C1 or name C6)', [False, True],
+     'resname CLMET and name C1', 'resname BEN and (name C1 or name C6)', [False, False],
       [[2, 1, 0, 6], [3, 2, 1, 0], [5, 6, 1, 3], [4, 5, 3, 6], [10, 7, 9, 8], [11, 7, 10, 9]]
      ),
     # Origin and bonded axes atom are different conditioning molecules.
     ('resname CLMET',
      'resname WAT1',
-     'resname WAT1 and name O', '(resname CLMET and name H3) or (resname WAT1 and name H2)', [False, False],
+     'resname WAT1 and name O', '(resname CLMET and name H3) or (resname WAT1 and name H2)', [False, True],
       [[2, 0, 1, 4], [3, 0, 2, 1]]
      ),
 ])
@@ -445,16 +445,16 @@ def test_mixed_maf_flow_auto_reference_atoms():
 @pytest.mark.parametrize('origin_atom', [False, True])
 @pytest.mark.parametrize('axes_atoms,are_bonded', [
     (None, None),
-    ('resname BEN and (name C5 or name C6)', [True, True]),
-    ('resname BEN and (name C3 or name C5)', [True, False]),
+    ('resname BEN and (name C3 or name C5)', [True, True]),
+    ('resname BEN and (name C3 or name C6)', [True, False]),
     ('resname BEN and (name C2 or name C3)', [False, True]),
-    ('resname BEN and (name C2 or name C5)', [False, False]),
+    ('resname BEN and (name C2 or name C1)', [False, False]),
 ])
 def test_mixed_maf_flow_get_transformer(origin_atom, axes_atoms, are_bonded):
     """The limits of the neural spline transformer are constructed correctly."""
     # MockPotential default positions unit is angstrom.
-    bond_limits = np.array([0.2, 5.4])  # in Ansgstrom
-    max_cartesian_displacement = 2.  # in Ansgstrom
+    bond_limits = np.array([0.2, 5.4])  # in Angstrom
+    max_cartesian_displacement = 2.  # in Angstrom
 
     mapped_atoms = 'resname BEN and element C'
     conditioning_atoms = 'resname BEN and element O'
@@ -464,8 +464,7 @@ def test_mixed_maf_flow_get_transformer(origin_atom, axes_atoms, are_bonded):
         conditioning_atoms += ' or ' + origin_atom
     else:
         origin_atom = None
-        if are_bonded is not None:
-            are_bonded = [False, are_bonded[1]]
+        are_bonded = [False, False]
 
     tfep_map = MyMixedMAFMap(
         batch_size=2,
@@ -510,9 +509,7 @@ def test_mixed_maf_flow_get_transformer(origin_atom, axes_atoms, are_bonded):
                 axes_pos = positions[tfep_map._axes_atoms_indices[i].tolist()]
 
                 # Find distance.
-                if i == 1:
-                    axes_pos = axes_pos - positions[tfep_map._axes_atoms_indices[i-1].tolist()]
-                elif origin_atom is not None:
+                if origin_atom is not None:
                     axes_pos = axes_pos - positions[tfep_map._origin_atom_idx.tolist()]
                 axes_dist = np.linalg.norm(axes_pos).tolist()
 

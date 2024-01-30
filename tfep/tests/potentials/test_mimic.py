@@ -228,7 +228,7 @@ def test_prepare_cpmd_command(update_positions):
         tmp_dir_path = os.path.realpath(tmp_dir_path)
 
         # Run the tested function
-        new_cpmd_cmd, _ = _prepare_cpmd_command(cpmd_cmd, tmp_dir_path, new_positions, new_box_vectors)
+        new_cpmd_cmd = _prepare_cpmd_command(cpmd_cmd, tmp_dir_path, new_positions, new_box_vectors)
 
         # Test that the commands were updated.
         assert new_cpmd_cmd != cpmd_cmd
@@ -275,7 +275,7 @@ def test_prepare_cpmd_command(update_positions):
 
         # Now, if we re-prepare the new command without asking for updated
         # positions, it should not change it.
-        new_new_cpmd_cmd, _ = _prepare_cpmd_command(new_cpmd_cmd, tmp_dir_path)
+        new_new_cpmd_cmd = _prepare_cpmd_command(new_cpmd_cmd, tmp_dir_path)
         assert new_new_cpmd_cmd == new_cpmd_cmd
 
 
