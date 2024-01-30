@@ -346,7 +346,7 @@ def reference_frame_rotation_matrix(
     >>> # Fix the orientation of the coordiante frames based on the 2nd and 4th atoms.
     >>> axis_atom_pos = coordinates[:, 1]
     >>> plane_atom_pos = coordinates[:, 3]
-    >>> rotation_matrices = get_reference_frame_rotation_matrix(
+    >>> rotation_matrices = reference_frame_rotation_matrix(
     ...     axis_atom_pos,
     ...     plane_atom_pos,
     ...     axis=torch.tensor([1.0, 0, 0]),  # axis atom lies on x-axis
