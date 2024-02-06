@@ -15,10 +15,10 @@ The code interfaces with the molecular dynamics software through the command lin
 import warnings
 warnings.warn('The potential interface for MiMiC is still experimental and under heavy development.')
 
-# TODO: UNDERSTAND KINETIC ENERGY PRINTING IN WAVEFUNCTION OPTIMIZATION
+# TODO: STANDARDIZE BATCH_CELL FORMAT THROUGHOUT. FORWARD TAKES ALSO ANGLES, ENERGY/FORCE() ONLY LENGTHS.
 # TODO: THE PV CONTRIBUTION IS NOT COMPUTED! THE RETURNED ENERGY IS NOT THE REDUCED POTENTIAL.
+# TODO: UNDERSTAND KINETIC ENERGY PRINTING IN WAVEFUNCTION OPTIMIZATION
 # TODO: USE logging MODULE INSTEAD OF print()
-# TODO: CHANGE CELL -> 3 BY 3 DIMENSIONS
 
 
 # =============================================================================
@@ -353,9 +353,10 @@ class PotentialMiMiC(PotentialBase):
             Note that the order of the atoms is assumed to be that of the GROMACS
             input files, not the one used internally by CPMD.
         batch_cell : torch.Tensor
-            An tensor of box vectors with shape ``(batch_size, 3)`` defining the
-            orthorhombic box side lengths (the only one currently supported in MiMiC)
-            in units of ``self.positions_unit``.
+            Shape ``(batch_size, 6)``. Unitcell dimensions. For each data point,
+            the first 3 elements represent the vector lengths in units of
+            ``self.positions_unit`` and the last 3 their respective angles (in
+            degrees).
 
         Returns
         -------
@@ -570,9 +571,11 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
 
         Note that the order of the atoms is assumed to be that of the GROMACS
         input files, not the one used internally by CPMD.
-    batch_cell : pint.Quantity, optional
-        An tensor of box vectors with shape ``(batch_size, 3)`` defining the
-        orthorhombic box side lengths (the only one currently supported in MiMiC).
+    batch_cell : torch.Tensor, optional
+        Shape ``(batch_size, 6)``. Unitcell dimensions. For each data point,
+        the first 3 elements represent the vector lengths in units of
+        ``self.positions_unit`` and the last 3 their respective angles (in
+        degrees).
     cpmd_cmd : tfep.potentials.mimic.Cpmd
         The CPMD command to be run for MiMiC's execution that encapsulates the
         path to the CPMD input script and options.
@@ -708,7 +711,10 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
         if batch_cell is None:
             batch_cell_arr = None
         else:
-            batch_cell_arr = batch_cell.detach().numpy()
+            cell_lengths, cell_angles = batch_cell[:, :3], batch_cell[:, 3:]
+            if not torch.allclose(cell_angles, torch.tensor(90.)):
+                raise ValueError('MiMiC supports only orthorombic boxes')
+            batch_cell_arr = cell_lengths.detach().numpy()
             batch_cell_arr *= positions_unit
 
         # Determine whether we need forces.
