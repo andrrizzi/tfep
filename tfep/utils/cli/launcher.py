@@ -221,6 +221,8 @@ class SRunTool(CLITool):
     n_tasks_per_node = KeyValueOption('--ntasks-per-node')
     n_cpus_per_task = KeyValueOption('--cpus-per-task')
     relative_node_idx = KeyValueOption('--relative')
+    cpu_bind = KeyValueOption('--cpu-bind')
+    distribution = KeyValueOption('--distribution')
     multiprog_config_file_path = KeyValueOption('--multi-prog')
 
     def to_subprocess(self):
