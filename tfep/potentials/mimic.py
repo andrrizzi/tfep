@@ -1131,9 +1131,15 @@ def _run_mimic_task(
         try:
             result = launcher.run(cpmd_cmd, mdrun_cmd, cwd=working_dir_path, **launcher_kwargs)
 
+            # With multiprog, only a single result is returned.
+            try:
+                result_cpmd = result[0]
+            except TypeError:
+                result_cpmd = result
+
             # Check if it is unconverged.
             if check_convergence:
-                is_unconverged = re.search(b'DENSITY NOT CONVERGED', result[0].stdout) is not None
+                is_unconverged = re.search(b'DENSITY NOT CONVERGED', result_cpmd.stdout) is not None
             else:
                 is_unconverged = False
 
@@ -1165,8 +1171,8 @@ def _run_mimic_task(
     # Handle errors.
     if is_unconverged or has_local_error:
         # Log the full stdout.
-        if result[0].stdout is not None:
-            print(result[0].stdout.decode('utf-8'), flush=True)
+        if result_cpmd.stdout is not None:
+            print(result_cpmd.stdout.decode('utf-8'), flush=True)
 
         # Return nan if requested.
         if ((is_unconverged and on_unconverged == 'nan') or
@@ -1543,9 +1549,10 @@ def _read_first_energy(cpmd_dir_path):
     energies_traj_file_path = os.path.join(cpmd_dir_path, 'ENERGIES')
     with open(energies_traj_file_path, 'r') as f:
         for line in f:
-            step = int(line[:10])
+            line = line.split()
+            step = int(line[0])
             if step == 1:
-                energy = float(line[31:49])
+                energy = float(line[3])
                 return energy
 
 
