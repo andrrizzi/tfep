@@ -16,7 +16,7 @@ All strategies must implement a new parallelization strategy compatible with the
 
 See Also
 --------
-:class:``tfep.potentials.psi4.PotentialEnergyPsi4Func``
+:class:``tfep.potentials.psi4.Psi4PotentialEnergyFunc``
     A potential energy function supporting parallelization strategies with usage
     example.
 

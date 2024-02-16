@@ -57,11 +57,11 @@ class CartesianMAFMap(TFEPMapBase):
     Examples
     --------
 
-    >>> from tfep.potentials.psi4 import PotentialPsi4
+    >>> from tfep.potentials.psi4 import Psi4Potential
     >>> units = pint.UnitRegistry()
     >>>
     >>> tfep_map = CartesianMAFMap(
-    ...     potential_energy_func=PotentialPsi4(name='mp2'),
+    ...     potential_energy_func=Psi4Potential(name='mp2'),
     ...     topology_file_path='path/to/topology.psf',
     ...     coordinates_file_path='path/to/trajectory.dcd',
     ...     temperature=300*units.kelvin,
@@ -100,7 +100,7 @@ class CartesianMAFMap(TFEPMapBase):
         ----------
         potential_energy_func : torch.nn.Module
             A PyTorch module encapsulating the target potential energy function
-            (e.g. :class:`tfep.potentials.psi4.PotentialASE`).
+            (e.g. :class:`tfep.potentials.psi4.ASEPotential`).
         topology_file_path : str
             The path to the topology file. The file can be in `any format supported
             by MDAnalysis <https://docs.mdanalysis.org/stable/documentation_pages/topology/init.html#supported-topology-formats>`__

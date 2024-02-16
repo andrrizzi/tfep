@@ -193,10 +193,10 @@ class GmxMdrun(CLITool):
 # TORCH MODULE API
 # =============================================================================
 
-class PotentialMiMiC(PotentialBase):
+class MiMiCPotential(PotentialBase):
     """Potential energy and forces with MiMiC.
 
-    This ``Module`` wraps :class:``.PotentialEnergyMiMiCFunc`` to provide a
+    This ``Module`` wraps :class:``.MiMiCPotentialEnergyFunc`` to provide a
     differentiable potential energy function for training. It also provides an
     API to compute energies and forces with MiMiC from batches of coordinates in
     ``numpy`` arrays in standard format (i.e., shape ``(n_atoms, 3)``) rather
@@ -319,7 +319,7 @@ class PotentialMiMiC(PotentialBase):
 
         See Also
         --------
-        :class:`.PotentialEnergyMiMiCFunc`
+        :class:`.MiMiCPotentialEnergyFunc`
             More details on input parameters and implementation details.
 
         """
@@ -367,7 +367,7 @@ class PotentialMiMiC(PotentialBase):
             provided).
 
         """
-        return potential_energy_mimic(
+        return mimic_potential_energy(
             batch_positions=batch_positions,
             batch_cell=batch_cell,
             cpmd_cmd=self.cpmd_cmd,
@@ -506,7 +506,7 @@ class PotentialMiMiC(PotentialBase):
 # TORCH FUNCTIONAL API
 # =============================================================================
 
-class PotentialEnergyMiMiCFunc(torch.autograd.Function):
+class MiMiCPotentialEnergyFunc(torch.autograd.Function):
     """PyTorch-differentiable QM/MM potential energy function wrapped around MiMiC.
 
     The function calls MiMiC through the command line interface using user-prepared
@@ -663,7 +663,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
 
     See Also
     --------
-    :class:`.PotentialMiMiC`
+    :class:`.MiMiCPotential`
         ``Module`` API for computing potential energies with MiMiC.
 
     """
@@ -703,7 +703,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
         # Convert flattened positions tensor to numpy array of shape
         # (batch_size, n_atoms, 3) and attach units.
         if positions_unit is None:
-            positions_unit = PotentialMiMiC.default_positions_unit(unit_registry)
+            positions_unit = MiMiCPotential.default_positions_unit(unit_registry)
 
         batch_positions_arr = flattened_to_atom(batch_positions.detach().numpy())
         batch_positions_arr *= positions_unit
@@ -783,7 +783,7 @@ class PotentialEnergyMiMiCFunc(torch.autograd.Function):
         return tuple(grad_input)
 
 
-def potential_energy_mimic(
+def mimic_potential_energy(
         batch_positions: torch.Tensor,
         batch_cell: torch.Tensor,
         cpmd_cmd: Cpmd,
@@ -807,17 +807,17 @@ def potential_energy_mimic(
     """PyTorch-differentiable QM/MM potential energy using MiMIC.
 
     PyTorch ``Function``s do not accept keyword arguments. This function wraps
-    :func:`.PotentialEnergyMiMiCFunc.apply` to enable standard functional notation.
+    :func:`.MiMiCPotentialEnergyFunc.apply` to enable standard functional notation.
     See the documentation on the original function for the input parameters.
 
     See Also
     --------
-    :class:`.PotentialEnergyMiMiCFunc`
+    :class:`.MiMiCPotentialEnergyFunc`
         More details on input parameters and implementation details.
 
     """
     # apply() does not accept keyword arguments.
-    return PotentialEnergyMiMiCFunc.apply(
+    return MiMiCPotentialEnergyFunc.apply(
         batch_positions,
         batch_cell,
         cpmd_cmd,
@@ -867,7 +867,7 @@ def _run_mimic(
 ):
     """Run MiMiC.
 
-    See also the docstring of ``PotentialEnergyMiMiCFunc``.
+    See also the docstring of ``MiMiCPotentialEnergyFunc``.
 
     Some notes to remember about the implementation.
 
@@ -1046,8 +1046,8 @@ def _run_mimic(
         returned_values = [res[0] for res in returned_values]
 
     # Add units.
-    default_energy_unit = PotentialMiMiC.default_energy_unit(unit_registry)
-    default_potential_unit = PotentialMiMiC.default_positions_unit(unit_registry)
+    default_energy_unit = MiMiCPotential.default_energy_unit(unit_registry)
+    default_potential_unit = MiMiCPotential.default_positions_unit(unit_registry)
     if return_energy:
         returned_values[0] = returned_values[0] * default_energy_unit
     if return_force:
@@ -1263,13 +1263,13 @@ def _prepare_cpmd_command(cpmd_cmd, working_dir_path, positions=None, box_vector
     # Update the box vectors and positions.
     if positions is not None:
         if box_vectors is not None:
-            box_vectors_bohr = box_vectors.to(PotentialMiMiC.DEFAULT_POSITIONS_UNIT).magnitude
+            box_vectors_bohr = box_vectors.to(MiMiCPotential.DEFAULT_POSITIONS_UNIT).magnitude
             cpmd_file_lines[box_vectors_line_idx] = ' '.join([str(x) for x in box_vectors_bohr]) + '\n'
 
         # Cycle through all atoms and update their lines one by one.
         for gromacs_atom_idx, cpmd_atom_idx in gromacs_to_cpmd_qm_atom_indices.items():
             line_idx = cpmd_atom_to_line_idx[cpmd_atom_idx]
-            atom_position = positions[gromacs_atom_idx].to(PotentialMiMiC.DEFAULT_POSITIONS_UNIT).magnitude
+            atom_position = positions[gromacs_atom_idx].to(MiMiCPotential.DEFAULT_POSITIONS_UNIT).magnitude
             cpmd_file_lines[line_idx] = ' '.join([str(x) for x in atom_position]) + '\n'
 
     # Create a modified copy of the file and update the command to point to it.

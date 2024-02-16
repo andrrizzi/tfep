@@ -40,10 +40,10 @@ from tfep.potentials.base import PotentialBase
 # TORCH MODULE API
 # =============================================================================
 
-class PotentialASE(PotentialBase):
+class ASEPotential(PotentialBase):
     """Potential energy and forces with ASE.
 
-    This ``Module`` wraps :class:``.PotentialEnergyASEFunc`` to provide a
+    This ``Module`` wraps :class:``.ASEPotentialEnergyFunc`` to provide a
     differentiable potential energy function for training.
 
     .. warning::
@@ -105,7 +105,7 @@ class PotentialASE(PotentialBase):
 
         See Also
         --------
-        :class:`.PotentialEnergyASEFunc`
+        :class:`.ASEPotentialEnergyFunc`
             More details on input parameters and implementation details.
 
         """
@@ -151,7 +151,7 @@ class PotentialASE(PotentialBase):
             ``batch_positions[i]`` in units of ``self.energy_unit``.
 
         """
-        return potential_energy_ase(
+        return ase_potential_energy(
             batch_positions,
             atoms=self.atoms,
             batch_cell=batch_cell,
@@ -165,7 +165,7 @@ class PotentialASE(PotentialBase):
 # TORCH FUNCTIONAL API
 # =============================================================================
 
-class PotentialEnergyASEFunc(torch.autograd.Function):
+class ASEPotentialEnergyFunc(torch.autograd.Function):
     """PyTorch-differentiable potential energy using ASE.
 
     This wraps an ASE calculator to perform batchwise energy and forces calculation
@@ -219,7 +219,7 @@ class PotentialEnergyASEFunc(torch.autograd.Function):
 
     See Also
     --------
-    :class:`.PotentialASE`
+    :class:`.ASEPotential`
         ``Module`` API for computing potential energies with ASE.
 
     """
@@ -275,7 +275,7 @@ class PotentialEnergyASEFunc(torch.autograd.Function):
         if energy_unit is None:
             energies = torch.tensor(energies)
         else:
-            energies *= PotentialASE.default_energy_unit(energy_unit._REGISTRY)
+            energies *= ASEPotential.default_energy_unit(energy_unit._REGISTRY)
             energies = energies_array_to_tensor(energies, energy_unit, batch_positions.dtype)
 
         # Save the Atoms objects with the results of the calculation (including
@@ -308,8 +308,8 @@ class PotentialEnergyASEFunc(torch.autograd.Function):
                 forces = torch.from_numpy(atom_to_flattened(forces))
             else:
                 ureg = ctx.energy_unit._REGISTRY
-                default_positions_unit = PotentialASE.default_positions_unit(ureg)
-                default_energy_unit = PotentialASE.default_energy_unit(ureg)
+                default_positions_unit = ASEPotential.default_positions_unit(ureg)
+                default_energy_unit = ASEPotential.default_energy_unit(ureg)
                 forces *= default_energy_unit / default_positions_unit
                 forces = forces_array_to_tensor(forces, ctx.positions_unit,
                                                 ctx.energy_unit, dtype=ctx.dtype)
@@ -320,7 +320,7 @@ class PotentialEnergyASEFunc(torch.autograd.Function):
         return tuple(grad_input)
 
 
-def potential_energy_ase(
+def ase_potential_energy(
         batch_positions,
         atoms,
         batch_cell=None,
@@ -331,17 +331,17 @@ def potential_energy_ase(
     """PyTorch-differentiable potential energy using ASE.
 
     PyTorch ``Function``s do not accept keyword arguments. This function wraps
-    :func:`.PotentialEnergyASEFunc.apply` to enable standard functional notation.
+    :func:`.ASEPotentialEnergyFunc.apply` to enable standard functional notation.
     See the documentation on the original function for the input parameters.
 
     See Also
     --------
-    :class:`.PotentialEnergyASEFunc`
+    :class:`.ASEPotentialEnergyFunc`
         More details on input parameters and implementation details.
 
     """
     # apply() does not accept keyword arguments.
-    return PotentialEnergyASEFunc.apply(
+    return ASEPotentialEnergyFunc.apply(
         batch_positions,
         atoms,
         batch_cell,
@@ -357,7 +357,7 @@ def potential_energy_ase(
 
 def _to_ase_units(x, positions_unit):
     """Convert x from positions_unit to angstroms."""
-    default_positions_unit = PotentialASE.default_positions_unit(positions_unit._REGISTRY)
+    default_positions_unit = ASEPotential.default_positions_unit(positions_unit._REGISTRY)
     return (x * positions_unit).to(default_positions_unit).magnitude
 
 
