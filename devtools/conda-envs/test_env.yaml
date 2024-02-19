@@ -16,7 +16,7 @@ dependencies:
   - codecov
 
     # External packages.
-  - pytorch >=1.11
+  - pytorch >=2.1
   - mdanalysis >=2.0
   - numpy
   - pint
@@ -24,6 +24,7 @@ dependencies:
 
     # Optional packages.
   - psi4
+  - openmm
 
     # Pip-only installs optional dependencies
   - pip:

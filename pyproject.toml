@@ -21,7 +21,7 @@ classifiers = [
 requires-python = ">=3.9"
 # Declare any run-time dependencies that should be installed with the package.
 dependencies = [
-    "torch>=1.11",
+    "torch>=2.1",
     "mdanalysis>=2.0",
     "numpy",
     "pint",
