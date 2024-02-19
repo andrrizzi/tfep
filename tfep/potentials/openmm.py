@@ -355,9 +355,9 @@ def _run_single_point_calculation(openmm_context, positions, box_vectors, return
     Returns energy and forces in OpenMM units (stripped of OpenMM units).
 
     """
-    openmm_context.setPositions(positions)
     if box_vectors is not None:
         openmm_context.setPeriodicBoxVectors(*box_vectors)
+    openmm_context.setPositions(positions)
     state = openmm_context.getState(getEnergy=True, getForces=return_forces)
 
     energy = state.getPotentialEnergy()._value
