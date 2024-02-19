@@ -16,6 +16,7 @@ Modules and functions to compute energies and gradients with OpenMM.
 # DO NOT IMPORT OpenMM HERE! OpenMM is an optional dependency of tfep.
 from typing import Optional
 
+from MDAnalysis.lib.mdamath import triclinic_vectors
 import numpy as np
 import pint
 import torch
@@ -236,7 +237,6 @@ class OpenMMPotentialEnergyFunc(torch.autograd.Function):
                 batch_cell_arr_nm[:, :3] = _to_openmm_units(batch_cell_arr_nm[:, :3], positions_unit)
 
             # From lengths+angles to box vectors.
-            from MDAnalysis.lib.mdamath import triclinic_vectors
             box_vectors_nm = [triclinic_vectors(x) for x in batch_cell_arr_nm]
 
         # Compute energies (and optionally forces).
@@ -355,10 +355,12 @@ def _run_single_point_calculation(openmm_context, positions, box_vectors, return
     Returns energy and forces in OpenMM units (stripped of OpenMM units).
 
     """
-    if box_vectors is not None:
-        openmm_context.setPeriodicBoxVectors(*box_vectors)
-    openmm_context.setPositions(positions)
-    state = openmm_context.getState(getEnergy=True, getForces=return_forces)
+    # Temporarily enable grad to support energy/force calculations with OpenMM-ML.
+    with torch.enable_grad():
+        if box_vectors is not None:
+            openmm_context.setPeriodicBoxVectors(*box_vectors)
+        openmm_context.setPositions(positions)
+        state = openmm_context.getState(getEnergy=True, getForces=return_forces)
 
     energy = state.getPotentialEnergy()._value
     if return_forces:
