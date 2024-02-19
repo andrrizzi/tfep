@@ -43,6 +43,7 @@ lightning >= 2.0
 ```
 and the following optional dependencies
 ```
+openmm       # To evaluate the target potentials using the OpenMM Python library.
 psi4         # To evaluate the target potentials using the psi4 Python library.
 ase          # To evaluate the target potentials using the Atomistic Simulation Environment (ASE) Python library.
 torchdiffeq  # To use continuous normalizing flows.
