@@ -89,7 +89,11 @@ class StatefulBatchSampler(torch.utils.data.Sampler):
             attribute.
 
         """
-        super().__init__()
+        try:
+            super().__init__()
+        except TypeError:
+            # PyTorch < 2.1 requires passing a dataset but Pytorch > 2.1 requires not passing it.
+            super().__init__(dataset)
 
         self._dataset = dataset
         self._batch_size = batch_size

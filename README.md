@@ -35,7 +35,7 @@ The library also includes several utilities:
 The library has the following required dependencies
 ```
 python >= 3.9
-pytorch >= 2.1
+pytorch >= 1.11
 mdanalysis >= 2.0
 pint
 numpy
