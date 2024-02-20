@@ -31,8 +31,8 @@ from ..utils import create_random_input
 
 def reference_sos_polynomial_transformer(x, coefficients):
     """Reference implementation of SOSPolynomialTransformer for testing."""
-    x = x.detach().numpy()
-    coefficients = coefficients.detach().numpy()
+    x = x.detach().cpu().numpy()
+    coefficients = coefficients.detach().cpu().numpy()
     batch_size, n_coefficients, n_features = coefficients.shape
     n_polynomials = (n_coefficients - 1) // 2
 
@@ -84,8 +84,8 @@ def test_sos_polynomial_transformer_reference(batch_size, n_features, n_polynomi
     ref_y, ref_log_det_J = reference_sos_polynomial_transformer(x, coefficients)
     torch_y, torch_log_det_J = sos_polynomial_transformer(x, coefficients)
 
-    assert np.allclose(ref_y, torch_y.detach().numpy())
-    assert np.allclose(ref_log_det_J, torch_log_det_J.detach().numpy())
+    assert np.allclose(ref_y, torch_y.detach().cpu().numpy())
+    assert np.allclose(ref_log_det_J, torch_log_det_J.detach().cpu().numpy())
 
     # Compute the reference log_det_J also with autograd and numpy.
     ref_log_det_J2 = batch_autograd_log_abs_det_J(x, torch_y)

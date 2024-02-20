@@ -49,12 +49,12 @@ def teardown_module(module):
 
 def reference_neural_spline(x, x0, y0, widths, heights, slopes):
     """Reference implementation of neural_spline_transformer for testing."""
-    x = x.detach().numpy()
-    x0 = x0.detach().numpy()
-    y0 = y0.detach().numpy()
-    widths = widths.detach().numpy()
-    heights = heights.detach().numpy()
-    slopes = slopes.detach().numpy()
+    x = x.detach().cpu().numpy()
+    x0 = x0.detach().cpu().numpy()
+    y0 = y0.detach().cpu().numpy()
+    widths = widths.detach().cpu().numpy()
+    heights = heights.detach().cpu().numpy()
+    slopes = slopes.detach().cpu().numpy()
 
     batch_size, n_bins, n_features = widths.shape
     n_knots = n_bins + 1
@@ -136,8 +136,8 @@ def test_neural_spline_transformer_reference(batch_size, n_features, x0, y0, n_b
     ref_y, ref_log_det_J = reference_neural_spline(x, x0, y0, widths, heights, slopes)
     torch_y, torch_log_det_J = neural_spline_transformer(x, x0, y0, widths, heights, slopes)
 
-    assert np.allclose(ref_y, torch_y.detach().numpy())
-    assert np.allclose(ref_log_det_J, torch_log_det_J.detach().numpy())
+    assert np.allclose(ref_y, torch_y.detach().cpu().numpy())
+    assert np.allclose(ref_log_det_J, torch_log_det_J.detach().cpu().numpy())
 
     # Check y0, yf boundaries are satisfied
     assert torch.all(y0 < torch_y)

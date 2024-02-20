@@ -214,7 +214,7 @@ def rotation_matrix_3d(angles, directions):
     cosa = cosa.unsqueeze(-1).unsqueeze(-1)
 
     # R[i] is cosa[i] * torch.eye(3).
-    R = cosa * torch.eye(3).expand(batch_size, 3, 3)
+    R = cosa * torch.eye(3).expand(batch_size, 3, 3).to(cosa)
 
     # New term of R[i] is outer(k[i], k[i]) * (1 - cosa[i]).
     R = R + (1 - cosa) * batchwise_outer(k, k)

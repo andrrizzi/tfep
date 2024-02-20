@@ -524,7 +524,7 @@ class Psi4PotentialEnergyFunc(torch.autograd.Function):
             unit_registry = pint.UnitRegistry()
 
         # Convert tensor to numpy array with shape (batch_size, n_atoms, 3) with attached units.
-        batch_positions_arr = flattened_to_atom(batch_positions.detach().numpy())
+        batch_positions_arr = flattened_to_atom(batch_positions.detach().cpu().numpy())
         if positions_unit is None:
             batch_positions_arr *= Psi4Potential.default_positions_unit(unit_registry)
         else:
@@ -551,8 +551,7 @@ class Psi4PotentialEnergyFunc(torch.autograd.Function):
             energies, forces = _run_psi4(return_force=True, **run_psi4_kwargs)
 
             # Save the pre-computed forces used for backpropagation.
-            forces = forces_array_to_tensor(forces, positions_unit, energy_unit,
-                                            dtype=batch_positions.dtype)
+            forces = forces_array_to_tensor(forces, positions_unit, energy_unit).to(batch_positions)
 
             # In this case we won't need the SCF wavefunctions.
             ctx.wavefunctions = None
@@ -587,7 +586,7 @@ class Psi4PotentialEnergyFunc(torch.autograd.Function):
         ctx.kwargs = kwargs
 
         # Convert to unitless tensor.
-        energies = energies_array_to_tensor(energies, energy_unit, batch_positions.dtype)
+        energies = energies_array_to_tensor(energies, energy_unit).to(batch_positions)
         return energies
 
     @staticmethod
@@ -673,8 +672,7 @@ class _Psi4PotentialEnergyFuncBackward(torch.autograd.Function):
 
             # From Quantity[numpy] to Tensor and fix units.
             precomputed_forces = forces_array_to_tensor(
-                precomputed_forces, positions_unit, energy_unit,
-                dtype=back_grad_output.dtype)
+                precomputed_forces, positions_unit, energy_unit).to(back_grad_output)
 
         # We shouldn't pass an SCF wavefunction here since we need the wave
         # function for a perturbed configuration.
@@ -728,9 +726,9 @@ class _Psi4PotentialEnergyFuncBackward(torch.autograd.Function):
             # espilon_v shape: (batch_size, n_atoms*3).
             epsilon_v = epsilon * v
             batch_positions_plus = flattened_to_atom(batch_positions + epsilon_v)
-            batch_positions_plus = batch_positions_plus.detach().numpy() * positions_unit
+            batch_positions_plus = batch_positions_plus.detach().cpu().numpy() * positions_unit
             batch_positions_minus = flattened_to_atom(batch_positions - epsilon_v)
-            batch_positions_minus = batch_positions_minus.detach().numpy() * positions_unit
+            batch_positions_minus = batch_positions_minus.detach().cpu().numpy() * positions_unit
 
             # Shared kwargs for _run_psi().
             run_psi4_kwargs = dict(
@@ -751,9 +749,9 @@ class _Psi4PotentialEnergyFuncBackward(torch.autograd.Function):
 
             # Convert units.
             forces_plus = forces_array_to_tensor(
-                forces_plus, ctx.positions_unit, ctx.energy_unit, dtype=forces.dtype)
+                forces_plus, ctx.positions_unit, ctx.energy_unit).to(forces)
             forces_minus = forces_array_to_tensor(
-                forces_minus, ctx.positions_unit, ctx.energy_unit, dtype=forces.dtype)
+                forces_minus, ctx.positions_unit, ctx.energy_unit).to(forces)
 
             # Compute the Hessian-vector product.
             hessian_v = (forces_plus - forces_minus) / (2 * epsilon)

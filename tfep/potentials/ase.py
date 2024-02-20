@@ -240,13 +240,13 @@ class ASEPotentialEnergyFunc(torch.autograd.Function):
             parallelization_strategy = SerialStrategy()
 
         # Convert tensor to numpy array with shape (batch_size, n_atoms, 3) and in ASE units (angstrom).
-        batch_positions_arr_ang = flattened_to_atom(batch_positions.detach().numpy())
+        batch_positions_arr_ang = flattened_to_atom(batch_positions.detach().cpu().numpy())
         if positions_unit is not None:
             batch_positions_arr_ang = _to_ase_units(batch_positions_arr_ang, positions_unit)
 
         # We need to convert also the cells in Angstroms.
         if batch_cell is not None:
-            batch_cell_arr_ang = flattened_to_atom(batch_positions.detach().numpy())
+            batch_cell_arr_ang = batch_cell.detach().cpu().numpy()
             if positions_unit is not None:
                 if batch_cell.shape[1:] == (6,):
                     # The last 3 entires of each batch cell are angles, not lengths.
@@ -276,14 +276,14 @@ class ASEPotentialEnergyFunc(torch.autograd.Function):
             energies = torch.tensor(energies)
         else:
             energies *= ASEPotential.default_energy_unit(energy_unit._REGISTRY)
-            energies = energies_array_to_tensor(energies, energy_unit, batch_positions.dtype)
+            energies = energies_array_to_tensor(energies, energy_unit)
+        energies.to(batch_positions)
 
         # Save the Atoms objects with the results of the calculation (including
         # forces) for backward propagation.
         ctx.batch_atoms = batch_atoms
         ctx.energy_unit = energy_unit
         ctx.positions_unit = positions_unit
-        ctx.dtype = batch_positions.dtype
         ctx.parallelization_strategy = parallelization_strategy
 
         return energies
@@ -311,8 +311,8 @@ class ASEPotentialEnergyFunc(torch.autograd.Function):
                 default_positions_unit = ASEPotential.default_positions_unit(ureg)
                 default_energy_unit = ASEPotential.default_energy_unit(ureg)
                 forces *= default_energy_unit / default_positions_unit
-                forces = forces_array_to_tensor(forces, ctx.positions_unit,
-                                                ctx.energy_unit, dtype=ctx.dtype)
+                forces = forces_array_to_tensor(forces, ctx.positions_unit, ctx.energy_unit)
+            forces = forces.to(grad_output)
 
             # Accumulate gradient
             grad_input[0] = -forces * grad_output[:, None]

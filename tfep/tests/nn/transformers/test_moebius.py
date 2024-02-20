@@ -68,8 +68,8 @@ def reference_moebius_transformer(x, w, dimension):
     See tfep.nn.transformers.moebius_transformer for the documentation.
 
     """
-    x = x.detach().numpy()
-    w = w.detach().numpy()
+    x = x.detach().cpu().numpy()
+    w = w.detach().cpu().numpy()
     batch_size, n_features = x.shape
     n_vectors = n_features // dimension
 
@@ -184,7 +184,7 @@ def test_moebius_transformer_reference(batch_size, n_features, dimension, unit_s
         ref_y, ref_x_norm, ref_y_norm = reference_moebius_transformer(x, w[:, 0], dimension)
     else:
         ref_y, ref_x_norm, ref_y_norm = reference_symmetrized_moebius_transformer(x, w[:, 0], dimension)
-    assert np.allclose(ref_y, torch_y.detach().numpy())
+    assert np.allclose(ref_y, torch_y.detach().cpu().numpy())
 
     # Make sure the transform doesn't alter the distance from the center of the sphere.
     assert np.allclose(ref_x_norm, ref_y_norm)

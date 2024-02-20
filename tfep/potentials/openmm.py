@@ -223,7 +223,7 @@ class OpenMMPotentialEnergyFunc(torch.autograd.Function):
 
         # Convert tensor with shape (batch_size, n_atoms*3) to numpy array with
         # shape (batch_size, n_atoms, 3) in OpenMM units (nanometer).
-        batch_positions_arr_nm = flattened_to_atom(batch_positions.detach().numpy())
+        batch_positions_arr_nm = flattened_to_atom(batch_positions.detach().cpu().numpy())
         if positions_unit is not None:
             batch_positions_arr_nm = _to_openmm_units(batch_positions_arr_nm, positions_unit)
 
@@ -232,7 +232,7 @@ class OpenMMPotentialEnergyFunc(torch.autograd.Function):
             box_vectors_nm = [None for _ in range(batch_size)]
         else:
             # To nm. The last 3 entires of each batch cell are angles, not lengths.
-            batch_cell_arr_nm = batch_cell.detach().numpy()
+            batch_cell_arr_nm = batch_cell.detach().cpu().numpy()
             if positions_unit is not None:
                 batch_cell_arr_nm[:, :3] = _to_openmm_units(batch_cell_arr_nm[:, :3], positions_unit)
 
@@ -258,7 +258,8 @@ class OpenMMPotentialEnergyFunc(torch.autograd.Function):
             energies = torch.tensor(energies)
         else:
             energies *= OpenMMPotential.default_energy_unit(energy_unit._REGISTRY)
-            energies = energies_array_to_tensor(energies, energy_unit, batch_positions.dtype)
+            energies = energies_array_to_tensor(energies, energy_unit)
+        energies = energies.to(batch_positions)
 
         # Save the forces for backward propagation. We do not support backward
         # passes with precompute_gradient=False.
@@ -266,7 +267,6 @@ class OpenMMPotentialEnergyFunc(torch.autograd.Function):
             ctx.forces = forces
             ctx.energy_unit = energy_unit
             ctx.positions_unit = positions_unit
-            ctx.dtype = batch_positions.dtype
         else:
             ctx.forces = None
 
@@ -288,14 +288,14 @@ class OpenMMPotentialEnergyFunc(torch.autograd.Function):
 
             # Convert to unitless tensors.
             if (ctx.energy_unit is None) and (ctx.positions_unit is None):
-                forces = torch.tensor(atom_to_flattened(ctx.forces))
+                forces = torch.from_numpy(atom_to_flattened(ctx.forces))
             else:
                 ureg = ctx.energy_unit._REGISTRY
                 default_positions_unit = OpenMMPotential.default_positions_unit(ureg)
                 default_energy_unit = OpenMMPotential.default_energy_unit(ureg)
                 forces = ctx.forces * default_energy_unit / default_positions_unit
-                forces = forces_array_to_tensor(forces, ctx.positions_unit,
-                                                ctx.energy_unit, dtype=ctx.dtype)
+                forces = forces_array_to_tensor(forces, ctx.positions_unit, ctx.energy_unit)
+            forces = forces.to(grad_output)
 
             # Accumulate gradient
             grad_input[0] = -forces * grad_output[:, None]

@@ -89,6 +89,7 @@ def test_lift_periodic(n_periodic, limits):
     """Test that _LiftPeriodic lifts the correct degrees of freedom."""
     batch_size = 3
     dimension_in = 5
+    limits = torch.tensor(limits)
 
     # Select a few random indices for sampling.
     periodic_indices = torch.sort(torch.randperm(dimension_in)[:n_periodic]).values
@@ -180,7 +181,7 @@ def test_periodic_blocks_and_conditioning_MAF(conditioning_indices, periodic_ind
     AffineTransformer(),
     SOSPolynomialTransformer(2),
     SOSPolynomialTransformer(3),
-    NeuralSplineTransformer(x0=torch.tensor(-2), xf=torch.tensor(2), n_bins=3),
+    NeuralSplineTransformer(x0=torch.tensor(-2., dtype=torch.double), xf=torch.tensor(2., dtype=torch.double), n_bins=3),
     MoebiusTransformer(dimension=3)
 ])
 def test_identity_initialization_MAF(dimensions_hidden, conditioning_indices, periodic_indices, degrees_in,

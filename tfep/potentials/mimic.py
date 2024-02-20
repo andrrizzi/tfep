@@ -705,16 +705,16 @@ class MiMiCPotentialEnergyFunc(torch.autograd.Function):
         if positions_unit is None:
             positions_unit = MiMiCPotential.default_positions_unit(unit_registry)
 
-        batch_positions_arr = flattened_to_atom(batch_positions.detach().numpy())
+        batch_positions_arr = flattened_to_atom(batch_positions.detach().cpu().numpy())
         batch_positions_arr *= positions_unit
 
         if batch_cell is None:
             batch_cell_arr = None
         else:
             cell_lengths, cell_angles = batch_cell[:, :3], batch_cell[:, 3:]
-            if not torch.allclose(cell_angles, torch.tensor(90.)):
+            if not torch.allclose(cell_angles, torch.tensor(90.).to(cell_angles)):
                 raise ValueError('MiMiC supports only orthorombic boxes')
-            batch_cell_arr = cell_lengths.detach().numpy()
+            batch_cell_arr = cell_lengths.detach().cpu().numpy()
             batch_cell_arr *= positions_unit
 
         # Determine whether we need forces.
@@ -752,12 +752,11 @@ class MiMiCPotentialEnergyFunc(torch.autograd.Function):
             energies, forces = result
             # Convert the force to a flattened tensor before storing it in ctx.
             # to compute the gradient during backpropagation.
-            forces = forces_array_to_tensor(forces, positions_unit, energy_unit,
-                                            dtype=batch_positions.dtype)
+            forces = forces_array_to_tensor(forces, positions_unit, energy_unit).to(batch_positions)
             ctx.save_for_backward(forces)
 
         # Convert to unitless Tensor.
-        energies = energies_array_to_tensor(energies, energy_unit, batch_positions.dtype)
+        energies = energies_array_to_tensor(energies, energy_unit).to(batch_positions)
         return energies
 
     @staticmethod

@@ -395,7 +395,7 @@ class TFEPLogger:
 
         # Convert everything to numpy arrays.
         try:
-            tensors = {n: tensors[n].detach().numpy() for n in names}
+            tensors = {n: tensors[n].detach().cpu().numpy() for n in names}
         except KeyError:
             raise KeyError("'tensors' must include all the following Tensors: " + str(list(names)))
 
@@ -698,7 +698,7 @@ class TFEPLogger:
         mask = train_data[self.MASK_NAME]
         for name, value in tensors.items():
             # Convert from tensor to array.
-            value = value.detach().numpy()
+            value = value.detach().cpu().numpy()
 
             if batch_idx is None:
                 # Assume data is for the entire epoch.
