@@ -277,7 +277,7 @@ class ASEPotentialEnergyFunc(torch.autograd.Function):
         else:
             energies *= ASEPotential.default_energy_unit(energy_unit._REGISTRY)
             energies = energies_array_to_tensor(energies, energy_unit)
-        energies.to(batch_positions)
+        energies = energies.to(batch_positions)
 
         # Save the Atoms objects with the results of the calculation (including
         # forces) for backward propagation.
