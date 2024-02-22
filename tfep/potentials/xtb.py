@@ -250,7 +250,7 @@ class XTBPotentialEnergyFunc(torch.autograd.Function):
         else:
             energies *= XTBPotential.default_energy_unit(energy_unit._REGISTRY)
             energies = energies_array_to_tensor(energies, energy_unit)
-        energies.to(batch_positions)
+        energies = energies.to(batch_positions)
 
         # Save the gradients for backward propagation. We do not support backward
         # passes with precompute_gradient=False.
