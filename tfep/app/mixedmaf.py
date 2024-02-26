@@ -754,18 +754,22 @@ def _is_hydrogen(atom):
     Raises an exception if the atom has no information on the element.
 
     """
+    err_msg = ("The topology files have no information on the atom elements. "
+               "This is required to infer a robust Z-matrix. You can either "
+               "provide a topology file that includes this info (e.g., a PDB) "
+               "or add this information programmatically by overwriting "
+               "MixedMAFMap.create_universe() and set, e.g., "
+               "universe.add_TopologyAttr('element', ['O', 'H', 'C', ...]).")
+
     try:
         element = atom.element
     except MDAnalysis.exceptions.NoDataError as e:
-        err_msg = ("The topology files have no information on the atom elements. "
-                   "This is required to infer a robust Z-matrix. You can either "
-                   "provide a topology file that includes this info (e.g., a PDB) "
-                   "or add this information programmatically by overwriting "
-                   "MixedMAFMap.create_universe() and set, e.g., "
-                   "universe.add_TopologyAttr('element', ['O', 'H', 'C', ...]).")
         raise ValueError(err_msg) from e
     else:
         element = element.upper()
+    # In some cases there is an element attribute but it's empty.
+    if element == '':
+        raise ValueError(err_msg)
     return element == 'H'
 
 
