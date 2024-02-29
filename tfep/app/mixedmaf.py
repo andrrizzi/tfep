@@ -14,7 +14,7 @@
 
 from collections.abc import Sequence
 import logging
-from typing import List, Optional, Set, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 import MDAnalysis
 import networkx as nx
@@ -137,6 +137,7 @@ class MixedMAFMap(TFEPMapBase):
             n_maf_layers: int = 6,
             bond_limits: Optional[Tuple[pint.Quantity]] = None,
             max_cartesian_displacement: Optional[pint.Quantity] = None,
+            dataloader_kwargs: Optional[Dict] = None,
             **kwargs,
     ):
         """Constructor.
@@ -210,6 +211,8 @@ class MixedMAFMap(TFEPMapBase):
             ``max_value-max_cartesian_displacement``, where ``min/max_value`` are
             the minimum and maximum value observed in the entire dataset for that
             particular degree of freedom. Default is 3.0 Angstrom.
+        dataloader_kwargs : Dict, optional
+            Extra keyword arguments to pass to ``torch.utils.data.DataLoader``.
         **kwargs
             Other keyword arguments to pass to the constructor of :class:`tfep.nn.flows.MAF`.
 
@@ -241,6 +244,7 @@ class MixedMAFMap(TFEPMapBase):
             origin_atom=origin_atom,
             axes_atoms=axes_atoms,
             tfep_logger_dir_path=tfep_logger_dir_path,
+            dataloader_kwargs=dataloader_kwargs,
         )
         self.save_hyperparameters('n_maf_layers')
         self._auto_reference_frame = auto_reference_frame

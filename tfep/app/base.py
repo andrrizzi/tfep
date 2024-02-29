@@ -123,6 +123,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             origin_atom: Optional[Union[int, str]] = None,
             axes_atoms: Optional[Union[Sequence[int], str]] = None,
             tfep_logger_dir_path: str = 'tfep_logs',
+            dataloader_kwargs: Optional[Dict] = None,
     ):
         """Constructor.
 
@@ -176,6 +177,8 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         tfep_logger_dir_path : str, optional
             The path where to save TFEP-related information (potential energies,
             sample indices, etc.).
+        dataloader_kwargs : Dict, optional
+            Extra keyword arguments to pass to ``torch.utils.data.DataLoader``.
 
         See Also
         --------
@@ -210,6 +213,9 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
         # KL divergence loss function.
         self._loss_func = tfep.loss.BoltzmannKLDivLoss()
+
+        # Dataloader kwargs.
+        self._dataloader_kwargs = dataloader_kwargs
 
         # The following variables can be data-dependent and are thus initialized
         # dynamically in setup(), which is called by Lightning by all processes.
@@ -820,9 +826,15 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             self._stateful_batch_sampler.load_state_dict(batch_sampler_state)
 
         # Create the training dataloader.
+        if self._dataloader_kwargs is None:
+            dataloader_kwargs = {}
+        else:
+            dataloader_kwargs = self._dataloader_kwargs
+
         data_loader = torch.utils.data.DataLoader(
             self.dataset,
             batch_sampler=self._stateful_batch_sampler,
+            **dataloader_kwargs,
         )
 
         # Initialize the TFEPLogger.

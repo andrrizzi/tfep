@@ -44,12 +44,18 @@ UNITS = pint.UnitRegistry()
 # TEST MODULE CONFIGURATION
 # =============================================================================
 
+def set_worker_default_dtype(worker):
+    """Passed as init function to DataLoader workers."""
+    torch.set_default_dtype(torch.double)
+
+
 _old_default_dtype = None
+
 
 def setup_module(module):
     global _old_default_dtype
     _old_default_dtype = torch.get_default_dtype()
-    torch.set_default_dtype(torch.double)
+    set_worker_default_dtype(None)
 
 
 def teardown_module(module):
@@ -215,7 +221,8 @@ def test_handling_energy_unit(tfep_map_cls):
 
 
 @pytest.mark.parametrize('tfep_map_cls', TESTED_TFEP_MAPS)
-def test_resuming_mid_epoch(tfep_map_cls):
+@pytest.mark.parametrize('num_workers', [0, 2])
+def test_resuming_mid_epoch(tfep_map_cls, num_workers):
     """Test that resuming mid-epoch works correctly.
 
     In particular, that training does not restart from the next epoch, and that
@@ -268,7 +275,11 @@ def test_resuming_mid_epoch(tfep_map_cls):
     max_epochs = 2
 
     def init_map_and_trainer(tmp_dir_path):
-        tfep_map = InterruptableTFEPMap(tfep_logger_dir_path=tmp_dir_path, **MAP_INIT_KWARGS[tfep_map_cls.__name__])
+        tfep_map = InterruptableTFEPMap(
+            tfep_logger_dir_path=tmp_dir_path,
+            dataloader_kwargs=dict(num_workers=num_workers, worker_init_fn=set_worker_default_dtype),
+            **MAP_INIT_KWARGS[tfep_map_cls.__name__],
+        )
 
         # This first training should fail.
         checkpoint_callback = lightning.pytorch.callbacks.ModelCheckpoint(
