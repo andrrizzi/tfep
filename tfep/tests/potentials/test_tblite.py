@@ -30,7 +30,7 @@ import pint
 import pytest
 import torch
 
-from tfep.potentials.xtb import TBLitePotential, tblite_potential_energy
+from tfep.potentials.tblite import TBLitePotential, tblite_potential_energy
 from tfep.utils.misc import atom_to_flattened, flattened_to_atom
 from tfep.utils.parallel import SerialStrategy, ProcessPoolStrategy
 
