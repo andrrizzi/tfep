@@ -22,6 +22,7 @@ but they can handle running multiple commands in parallel.
 
 import contextlib
 import subprocess
+from typing import Union, Optional
 
 from tfep.utils.cli import CLITool, KeyValueOption
 from tfep.utils.misc import temporary_cd
@@ -213,7 +214,13 @@ class Launcher:
 # =============================================================================
 
 class SRunTool(CLITool):
-    """SLURM srun command line utility."""
+    """SLURM srun command line utility.
+
+    See Also
+    --------
+    :class:`.SRunLauncher`
+
+    """
     EXECUTABLE_PATH = 'srun'
     time = KeyValueOption('--time')
     n_nodes = KeyValueOption('--nodes')
@@ -244,7 +251,9 @@ class SRunLauncher(Launcher):
     """Launch a command through SLURM's srun.
 
     The launcher simply prepends ``"srun"`` to each given command, setting the
-    specified number of nodes, tasks per node, and cpus per task.
+    specified number of nodes, tasks per node, and cpus per task. Except for
+    ``multiprog`` and ``multiprog_config_file_path``, any parameter can be passed
+    as a list of values, one for each command.
 
     The launcher also supports running multiple commands in parallel using the
     ``--multi-prog`` feature. The launcher assigns contiguous task ranks to each
@@ -256,61 +265,39 @@ class SRunLauncher(Launcher):
 
     Parameters
     ----------
-    time : str or None
-        The maximum time before the job step is terminated as a string in the same
-        format used by SLURM (e.g., ``'1-00:06:00'``).
-    n_nodes : int or List[int], optional
-        The number of nodes to pass to ``srun``. If multiple commands are executed
-        in parallel, it is possible to specify the number of nodes for each command
-        as a list.
     n_tasks : int or List[int], optional
-        The number of tasks to pass to ``srun``. If multiple commands are executed
-        in parallel, it is possible to specify the number of tasks for each
-        command as a list.
-    n_tasks_per_node : int or List[int], optional
-        The number of tasks per node to pass to ``srun``. If multiple commands
-        executed in parallel, it is possible to specify the number of tasks per
-        node for each command as a list. Note that ``n_tasks`` takes precedence
-        over this.
-    n_cpus_per_task : int or List[int], optional
-        The number of cpus per task to pass to ``srun``. If multiple commands
-        are executed in parallel, it is possible to specify the number of cpus
-        per task for each command as a list.
-    relative_node_idx : int or List[int], optional
-        Run a job step relative the ``relative_node_idx``-th node (starting from
-        node 0) of the current allocation. If multiple commands are executed in
-        parallel, it is possible to specify one relative node for each command
-        as a list.
+        The number of tasks to pass to ``srun``. When ``multiprog`` is ``True``,
+        this must be given as a list with length equal to the number of commands.
     multiprog : bool, optional
         If ``True`` multiple commands are run in parallel using the ``--multi-prog``
-        argument. In this case, ``srun`` is invoked only once, and thus ``n_nodes``
-        ``n_tasks_per_node``, etc. must be integers.
+        argument. In this case, ``srun`` is invoked only once, and thus all parameters
+        (``n_nodes``, ``n_tasks_per_node``, etc.) cannot be list except for ``n_tasks``.
     multiprog_config_file_path : str, optional
         The file path (relative to the working directory) where the multiprog
         configuration file is created.
-
-    Attributes
-    ----------
-    time : str or None
-        The maximum time before the job step is terminated.
-    n_nodes : int or List[int] or None
-        The number of nodes to pass to ``srun`` for each command.
-    n_tasks : int or List[int] or None
-        The number of tasks to pass to ``srun`` for each command.
-    n_tasks_per_node : int or List[int] or None
-        The number of tasks per node to pass to ``srun`` for each command.
-    n_cpus_per_task : int or List[int] or None
-        The number of cpus per task to pass to ``srun`` for each command.
-    multiprog : bool
-        Whether the ``--multi-prog`` feature should be used to run multiple
-        commands.
-    multiprog_config_file_path : str
-        The file path (relative to the working directory) where the multiprog
-        configuration file is created.
+    time : str or List[str], optional
+        The maximum time before the job step is terminated as a string in the same
+        format used by SLURM (e.g., ``'1-00:06:00'``).
+    n_nodes : int or List[int], optional
+        The number of nodes to pass to ``srun``.
+    n_tasks_per_node : int or List[int], optional
+        The number of tasks per node to pass to ``srun``. Note that ``n_tasks``
+        takes precedence over this.
+    n_cpus_per_task : int or List[int], optional
+        The number of cpus per task to pass to ``srun``.
+    relative_node_idx : int or List[int], optional
+        Run a job step relative the ``relative_node_idx``-th node (starting from
+        node 0) of the current allocation.
+    cpu_bind : str or List[str], optional
+        How to bind tasks to CPU (e.g., ``'threads'``). Corresponds to the
+        ``srun --cpu-bind`` option.
+    distribution : str or List[str], optional
+        Specify how to distribute tasks among cores (e.g., ``'block:block:fcyclic'``).
+        Corresponds to the ``srun --distribution`` option.
 
     See Also
     --------
-    Launcher : Standard launcher class.
+    :class:`.Launcher` : Standard launcher class.
 
     Examples
     --------
@@ -346,17 +333,25 @@ class SRunLauncher(Launcher):
 
     GLOBAL_SRUN_OPTIONS = {}
 
-    def __init__(self, time=None, n_nodes=None, n_tasks=None, n_tasks_per_node=None, n_cpus_per_task=None,
-                 relative_node_idx=None, multiprog=False, multiprog_config_file_path='srun-job.conf'):
+    def __init__(
+            self,
+            n_tasks: Optional[Union[int, list[int]]] = None,
+            multiprog: bool = False,
+            multiprog_config_file_path: str = 'srun-job.conf',
+            **kwargs
+    ):
         super().__init__()
-        self.time = time
-        self.n_nodes = n_nodes
+        #: The number of tasks to pass to ``srun`` for each command.
         self.n_tasks = n_tasks
-        self.n_tasks_per_node = n_tasks_per_node
-        self.n_cpus_per_task = n_cpus_per_task
-        self.relative_node_idx = relative_node_idx
+
+        #: Whether the ``--multi-prog`` feature should be used to run multiple commands.
         self.multiprog = multiprog
+
+        #: The file path (relative to the working directory) where the multiprog configuration file is created.
         self.multiprog_config_file_path = multiprog_config_file_path
+
+        #: Other keword arguments for :class:`.SRunTool`.
+        self.srun_kwargs = kwargs
 
     def run(self, *commands, **kwargs):
         """Run one or more commands with srun.
@@ -377,7 +372,8 @@ class SRunLauncher(Launcher):
         result : subprocess.CompletedProcess or List[subprocess.CompletedProcess]
             The object encapsulating the results of the project. If multiple
             processes are run in parallel, this is a ``list`` of results, one
-            for each process.
+            for each process. Note that when running with multiprog only a single
+            result is returned.
 
         See Also
         --------
@@ -392,16 +388,18 @@ class SRunLauncher(Launcher):
         # is ignored.
         run_with_multiprog = n_commands > 1 and self.multiprog
         if run_with_multiprog:
-            for attr_name in ['n_nodes', 'n_cpus_per_task', 'relative_node_idx']:
-                if isinstance(getattr(self, attr_name), list):
-                    raise ValueError(f'With multiprog execution, "{attr_name}" must be an integer.')
+            if not isinstance(self.n_tasks, list):
+                raise ValueError('With multiprog execution, "n_tasks" must be a list.')
+            for name, value in self.srun_kwargs.items():
+                if isinstance(value, list):
+                    raise ValueError(f'With multiprog execution, "{name}" cannot be a list.')
 
         # List options (one value for each command) must have the right length.
-        for attr_name in ['n_nodes', 'n_tasks', 'n_tasks_per_node', 'n_cpus_per_task', 'relative_node_idx']:
-            attr_val = getattr(self, attr_name)
-            if isinstance(attr_val, list) and len(attr_val) != n_commands:
-                raise ValueError(f'Passed {n_commands} commands but '
-                                 f'{len(attr_val)} {attr_name}: {attr_val}')
+        if isinstance(self.n_tasks, list) and len(self.n_tasks) != n_commands:
+            raise ValueError(f'Passed {n_commands} commands but {len(self.n_tasks)} {n_tasks}: {self.n_tasks}')
+        for name, value in self.srun_kwargs.items():
+            if isinstance(value, list) and len(value) != n_commands:
+                raise ValueError(f'Passed {n_commands} commands but {len(value)} {name}: {value}')
 
         # Prepend srun to all commands.
         srun_commands = self._create_srun_commands(commands)
@@ -431,22 +429,14 @@ class SRunLauncher(Launcher):
         ``commands`` must already be a list of commands in list format (not CLITool).
         """
         # Convert arguments to list format.
-        n_nodes, n_tasks, n_tasks_per_node, n_cpus_per_task, relative_node_idx = _ensure_lists(
-            len(commands),
-            [self.n_nodes, self.n_tasks, self.n_tasks_per_node, self.n_cpus_per_task, self.relative_node_idx]
-        )
+        n_commands = len(commands)
+        srun_kwargs_lists = {name: _ensure_lists(n_commands, [val])[0] for name, val in self.srun_kwargs.items()}
+        srun_kwargs_lists['n_tasks'] = _ensure_lists(n_commands, [self.n_tasks])[0]
 
         # Prepend srun to all commands.
         srun_commands = []
         for cmd_idx, cmd in enumerate(commands):
-            kwargs = dict(
-                time=self.time,
-                n_nodes=n_nodes[cmd_idx],
-                n_tasks=n_tasks[cmd_idx],
-                n_tasks_per_node=n_tasks_per_node[cmd_idx],
-                n_cpus_per_task=n_cpus_per_task[cmd_idx],
-                relative_node_idx=relative_node_idx[cmd_idx],
-            )
+            kwargs = {name: val_list[cmd_idx] for name, val_list in srun_kwargs_lists.items()}
 
             # If we have global options, use them, but options specified in the
             # constructor have priority.
@@ -462,20 +452,10 @@ class SRunLauncher(Launcher):
 
     def _create_srun_multiprog_command(self, commands):
         """Return the srun command in list format for the 'srun --multi-prog' case."""
-        # Make sure n_tasks is a list.
-        n_tasks = _ensure_lists(len(commands), [self.n_tasks])[0]
-
         # We run a single job with a total number of tasks given by
         # the sum of the number of tasks assigned to each command.
         # We also ignore n_tasks_per_node since it's overwritten by n_tasks.
-        kwargs = dict(
-            time=self.time,
-            n_nodes=self.n_nodes,
-            n_tasks=sum(n_tasks),
-            n_cpus_per_task=self.n_cpus_per_task,
-            relative_node_idx=self.relative_node_idx,
-            multiprog_config_file_path=self.multiprog_config_file_path,
-        )
+        kwargs = {name: val for name, val in self.srun_kwargs.items() if name != 'n_tasks_per_node'}
 
         # If we have global options, use them, but options specified in the
         # constructor have priority.
@@ -483,7 +463,11 @@ class SRunLauncher(Launcher):
             if kwargs.get(k, None) is None:
                 kwargs[k] = v
 
-        srun = SRunTool(**kwargs)
+        srun = SRunTool(
+            n_tasks=sum(self.n_tasks),
+            multiprog_config_file_path=self.multiprog_config_file_path,
+            **kwargs
+        )
         return [srun.to_subprocess()]
 
     def _create_multiprog_config_file(self, commands):
@@ -491,14 +475,13 @@ class SRunLauncher(Launcher):
         # Convert commands to list format.
         commands = [cmd if not isinstance(cmd, CLITool) else cmd.to_subprocess() for cmd in commands]
 
-        # Make sure n_tasks is a list.
-        n_tasks = _ensure_lists(len(commands), [self.n_tasks])[0]
-
         # Determine the task ranks to assign to each command.
         task_ranks = []
         current_task_rank = 0
-        for n_tasks in n_tasks:
-            ranks = str(current_task_rank) + '-' + str(current_task_rank+n_tasks-1)
+        for n_tasks in self.n_tasks:
+            ranks = str(current_task_rank)
+            if n_tasks > 1:
+                ranks += '-' + str(current_task_rank+n_tasks-1)
             task_ranks.append(ranks)
             current_task_rank += n_tasks
 
