@@ -278,10 +278,10 @@ class TBLitePotentialEnergyFunc(torch.autograd.Function):
             energies = energies_array_to_tensor(energies, energy_unit)
         energies = energies.to(batch_positions)
 
-        if logger.isEnabledFor(logging.INFO):
+        if logger.isEnabledFor(logging.WARNING):
             nan_energies = torch.isnan(energies)
             if nan_energies.any():
-                logger.info(f'Found {torch.sum(nan_energies)} NaN {method} energies.')
+                logger.warning(f'Found {torch.sum(nan_energies)} NaN {method} energies.')
 
         # Save the gradients for backward propagation. We do not support backward
         # passes with precompute_gradient=False.
