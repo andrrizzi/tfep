@@ -291,8 +291,8 @@ def test_batchwise_rotate_axes():
 @pytest.mark.parametrize('n_vectors', [1, 5])
 def test_batchwise_rotate_against_reference(batch_size, n_vectors):
     """Test the batchwise_rotate() function on random tensors against a reference implementation."""
-    angles = -4*np.pi * torch.rand(batch_size, generator=_GENERATOR, dtype=torch.float) + 2*np.pi
-    directions = torch.randn(batch_size, 3, generator=_GENERATOR, dtype=torch.float)
+    angles = -4*np.pi * torch.rand(batch_size, generator=_GENERATOR) + 2*np.pi
+    directions = torch.randn(batch_size, 3, generator=_GENERATOR)
     rotation_matrices = rotation_matrix_3d(angles, directions)
     x = torch.randn(batch_size, n_vectors, 3)
 
