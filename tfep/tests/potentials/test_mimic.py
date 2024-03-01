@@ -14,6 +14,7 @@ Test objects and function in the module ``tfep.potentials.mimic``.
 # GLOBAL IMPORTS
 # =============================================================================
 
+import json
 import os
 import shutil
 import tempfile
@@ -24,7 +25,7 @@ import pint
 import pytest
 import torch
 
-from tfep.potentials.mimic import (Cpmd, GmxGrompp, GmxMdrun, potential_energy_mimic,
+from tfep.potentials.mimic import (Cpmd, GmxGrompp, GmxMdrun, mimic_potential_energy,
                                    _run_mimic, _prepare_cpmd_command, _prepare_mdrun_command)
 from tfep.utils.cli import SRunLauncher
 from tfep.utils.parallel import ProcessPoolStrategy
@@ -135,6 +136,12 @@ def mimic_srun_commands(parallel_strategy=False):
     # Check if we are testing within a SLURM environment or not.
     use_dummy_launcher = os.getenv('SLURM_JOB_NUM_NODES') is None
 
+    # Load atom map.
+    with open(os.path.join(MIMIC_INPUT_DIR_PATH, 'gmx_to_cpmd_atom_indices.json'), 'r') as f:
+        # JSON saves keys always as strings. Convert them to integers.
+        gromacs_to_cpmd_atom_indices = json.load(f)
+        gromacs_to_cpmd_atom_indices = {int(k): v for k, v in gromacs_to_cpmd_atom_indices.items()}
+
     # Load batch positions and box vectors.
     batch_positions = np.empty((batch_size, EXPECTED_N_ATOMS, 3), dtype=float)
     batch_cell = np.empty((batch_size, 3), dtype=float)
@@ -162,8 +169,7 @@ def mimic_srun_commands(parallel_strategy=False):
             n_tasks_per_node = n_tasks_per_node // batch_size
         n_tasks_cpmd = n_tasks_per_node * (n_nodes-1)
         srun_launcher = SRunLauncher(
-            # n_nodes=n_nodes, n_tasks=[n_tasks_cpmd, n_tasks_per_node], multiprog=True
-            n_nodes=[n_nodes-1, 1], n_tasks=[n_tasks_cpmd, n_tasks_per_node], multiprog=False
+            n_nodes=n_nodes, n_tasks=[n_tasks_cpmd, n_tasks_per_node], multiprog=True
         )
 
     if isinstance(srun_launcher, DummySRunLauncher):
@@ -174,7 +180,7 @@ def mimic_srun_commands(parallel_strategy=False):
     # Initialize commands pointing to the correct scripts.
     cpmd = Cpmd(
         os.path.join(MIMIC_INPUT_DIR_PATH, 'cpmd.inp'),
-        '/p/project/cias-5/ippoliti/PROGRAMS/ARCHIVE/CPMD/PP/',
+        '/p/usersoftware/ias-5/ARCHIVE/CPMD/PP/',
         executable_path=CPMD_EXECUTABLE,
     )
     mdrun = GmxMdrun(
@@ -192,7 +198,7 @@ def mimic_srun_commands(parallel_strategy=False):
         n_max_warnings=1,
     )
 
-    return cpmd, mdrun, grompp, srun_launcher, grompp_launcher, batch_positions, batch_cell
+    return cpmd, mdrun, grompp, gromacs_to_cpmd_atom_indices, srun_launcher, grompp_launcher, batch_positions, batch_cell
 
 
 # =============================================================================
@@ -211,7 +217,7 @@ def test_prepare_cpmd_command(update_positions):
     - The positions in the script are updated correctly.
 
     """
-    cpmd_cmd, _, _, _, _, _, _ = mimic_srun_commands()
+    cpmd_cmd, _, _, _, _, _, _, _ = mimic_srun_commands()
 
     # Check if we need new positions.
     n_atoms = 10
@@ -290,7 +296,7 @@ def test_prepare_mdrun_command(template_structure_file_name):
     """
     import subprocess
 
-    _, mdrun_cmd, grompp_cmd, _, _, batch_positions, batch_cell = mimic_srun_commands()
+    _, mdrun_cmd, grompp_cmd, _, _, _, batch_positions, batch_cell = mimic_srun_commands()
 
     with tempfile.TemporaryDirectory() as tmp_dir_path:
         # Fix template.
@@ -361,8 +367,8 @@ def test_run_mimic(config):
 
     """
     batch_size, parallel = config
-    (cpmd_cmd, mdrun_cmd, grompp_cmd, launcher, grompp_launcher,
-     batch_positions, batch_cell) = mimic_srun_commands(parallel)
+    (cpmd_cmd, mdrun_cmd, grompp_cmd, gromacs_to_cpmd_atom_indices, launcher,
+     grompp_launcher, batch_positions, batch_cell) = mimic_srun_commands(parallel)
 
     with tempfile.TemporaryDirectory() as tmp_dir_path:
 
@@ -386,7 +392,7 @@ def test_run_mimic(config):
 
         pool = None
         try:
-            # Check wheter we need to run using a parallel pool.
+            # Check whether we need to run using a parallel pool.
             if parallel:
                 pool = torch.multiprocessing.get_context('forkserver').Pool(batch_size)
                 parallelization_strategy = ProcessPoolStrategy(pool)
@@ -396,6 +402,7 @@ def test_run_mimic(config):
             # Run tested function.
             energies, forces = _run_mimic(
                 cpmd_cmd, mdrun_cmd, grompp_cmd,
+                gromacs_to_cpmd_atom_indices=gromacs_to_cpmd_atom_indices,
                 batch_positions=batch_positions, batch_cell=batch_cell,
                 launcher=launcher, grompp_launcher=grompp_launcher,
                 return_energy=True, return_force=True,
@@ -422,7 +429,7 @@ def test_run_mimic(config):
             assert force.shape == (EXPECTED_N_ATOMS, 3)
 
 
-def _potential_energy_mimic_wrapper(n_mapped_atoms, batch_positions):
+def _mimic_potential_energy_wrapper(n_mapped_atoms, batch_positions):
     """A wrapper that fixes a number of atoms positions and create the correct LATEST file for restart.
 
     This can be used to compute the gradient of only a subset of the degrees
@@ -430,7 +437,7 @@ def _potential_energy_mimic_wrapper(n_mapped_atoms, batch_positions):
     in autograd.gradcheck().
 
     """
-    def _potential_energy_mimic_wrapped(*args):
+    def _mimic_potential_energy_wrapped(*args):
         args = list(args)
 
         # Add the fixed positions.
@@ -446,17 +453,18 @@ def _potential_energy_mimic_wrapper(n_mapped_atoms, batch_positions):
             with open(os.path.join(dir_path, 'LATEST'), 'w') as f:
                 f.write('../restart' + conf_idx + '/RESTART.1\n           1')
 
-        return potential_energy_mimic(*args)
-    return _potential_energy_mimic_wrapped
+        return mimic_potential_energy(*args)
+    return _mimic_potential_energy_wrapped
 
 
 @pytest.mark.skipif(os.getenv('SLURM_JOB_NUM_NODES') is None, reason='requires SLURM execution')
-def test_potential_energy_mimic_gradcheck():
-    """Test that potential_energy_mimic implements the correct gradient."""
+@pytest.mark.skipif(shutil.which(CPMD_EXECUTABLE) is None, reason='requires MiMiC to be installed')
+def test_mimic_potential_energy_gradcheck():
+    """Test that mimic_potential_energy implements the correct gradient."""
     n_mapped_atoms = 2
 
-    (cpmd_cmd, mdrun_cmd, grompp_cmd, launcher, grompp_launcher,
-     batch_positions, batch_cell) = mimic_srun_commands(parallel_strategy=True)
+    (cpmd_cmd, mdrun_cmd, grompp_cmd, gromacs_to_cpmd_atom_indices, launcher,
+     grompp_launcher, batch_positions, batch_cell) = mimic_srun_commands(parallel_strategy=True)
     batch_size, n_atoms, _ = batch_positions.shape
     positions_unit = _UREG.nanometer
     energy_unit = _UREG.kJ / _UREG.mol
@@ -474,6 +482,7 @@ def test_potential_energy_mimic_gradcheck():
 
             _run_mimic(
                 cpmd_cmd, mdrun_cmd, grompp_cmd,
+                gromacs_to_cpmd_atom_indices=gromacs_to_cpmd_atom_indices,
                 batch_positions=batch_positions, batch_cell=batch_cell,
                 launcher=launcher, grompp_launcher=grompp_launcher,
                 return_energy=False, return_force=False,
@@ -506,7 +515,7 @@ def test_potential_energy_mimic_gradcheck():
                                              requires_grad=False, dtype=torch.double)
 
             # Run gradcheck only on a subset of the DOFs.
-            func = _potential_energy_mimic_wrapper(n_mapped_atoms, batch_positions)
+            func = _mimic_potential_energy_wrapper(n_mapped_atoms, batch_positions)
             batch_positions = batch_positions[:, :n_mapped_atoms*3].clone().detach().requires_grad_(True)
 
             # Run gradcheck on a subset of the DOFs.
