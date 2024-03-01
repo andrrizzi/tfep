@@ -25,6 +25,7 @@ dependencies:
     # Optional packages.
   - psi4
   - openmm
+  - tblite-python
 
     # Pip-only installs optional dependencies
   - pip:
