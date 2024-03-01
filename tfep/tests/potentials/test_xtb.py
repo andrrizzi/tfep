@@ -6,7 +6,7 @@
 # =============================================================================
 
 """
-Test objects and function in the module ``tfep.potentials.xtb``.
+Test objects and function in the module ``tfep.potentials.tblite``.
 """
 
 
@@ -14,15 +14,14 @@ Test objects and function in the module ``tfep.potentials.xtb``.
 # GLOBAL IMPORTS
 # =============================================================================
 
-# xtb-python is an optional dependency of tfep.
+# tblite is an optional dependency of tfep.
 try:
-    import xtb
+    import tblite
 except ImportError:
-    XTB_INSTALLED = False
+    TBLITE_INSTALLED = False
 else:
-    XTB_INSTALLED = True
-    from xtb.interface import Calculator, Environment, Param
-    from xtb.libxtb import VERBOSITY_MINIMAL
+    TBLITE_INSTALLED = True
+    from tblite.interface import Calculator
 
 import contextlib
 
@@ -31,7 +30,7 @@ import pint
 import pytest
 import torch
 
-from tfep.potentials.xtb import XTBPotential, xtb_potential_energy
+from tfep.potentials.xtb import TBLitePotential, tblite_potential_energy
 from tfep.utils.misc import atom_to_flattened, flattened_to_atom
 from tfep.utils.parallel import SerialStrategy, ProcessPoolStrategy
 
@@ -123,10 +122,10 @@ def reference_energy_gradients(numbers, batch_positions):
     energies = np.empty(shape=(batch_size,))
     gradients = np.empty(shape=batch_positions.shape)
     for i, positions in enumerate(batch_positions):
-        calc = Calculator(Param.GFN2xTB, numbers, positions * _ANGSTROM_TO_BOHR)
+        calc = Calculator('GFN2-xTB', numbers, positions * _ANGSTROM_TO_BOHR)
         res = calc.singlepoint()
-        energies[i] = res.get_energy()  # in hartree.
-        gradients[i] = res.get_gradient()  # in hartree/bohr.
+        energies[i] = res.get('energy')  # in hartree.
+        gradients[i] = res.get('gradient')  # in hartree/bohr.
 
     # Convert units.
     energies = torch.tensor(energies) * _HARTREE_TO_KCALMOL
@@ -139,11 +138,11 @@ def reference_energy_gradients(numbers, batch_positions):
 # TESTS
 # =============================================================================
 
-@pytest.mark.skipif(not XTB_INSTALLED, reason='requires xtb-python to be installed')
+@pytest.mark.skipif(not TBLITE_INSTALLED, reason='requires tblite to be installed')
 @pytest.mark.parametrize('batch_size', [1, 2])
 @pytest.mark.parametrize('strategy', [None, 'serial', 'pool'])
-def test_potential_xtb_energy_gradient(batch_size, strategy):
-    """Test the calculation of energies/gradients with XTBPotential.
+def test_potential_tblite_energy_gradient(batch_size, strategy):
+    """Test the calculation of energies/gradients with TBLitePotential.
 
     This tests that:
     - Energies/gradients are handled correctly.
@@ -157,8 +156,8 @@ def test_potential_xtb_energy_gradient(batch_size, strategy):
     ref_energies, ref_gradients = reference_energy_gradients(numbers, batch_positions)
 
     with parallelization_strategy(strategy) as ps:
-        potential = XTBPotential(
-            param=Param.GFN2xTB,
+        potential = TBLitePotential(
+            method='GFN2-xTB',
             numbers=numbers,
             positions_unit=_UREG.angstrom,
             energy_unit=_UREG.kcal/_UREG.mole,
@@ -172,30 +171,28 @@ def test_potential_xtb_energy_gradient(batch_size, strategy):
 
         # Compute gradients (negative gradient).
         energies.sum().backward()
-        print()
-        print(flattened_to_atom(batch_positions.grad))
-        print()
-        print(ref_gradients)
         assert torch.allclose(batch_positions.grad, atom_to_flattened(ref_gradients))
 
 
-@pytest.mark.skipif(not XTB_INSTALLED, reason='requires xtb-python to be installed')
-def test_xtb_potential_energy_gradcheck():
-    """Test that xtb_potential_energy implements the correct gradient."""
+@pytest.mark.skipif(not TBLITE_INSTALLED, reason='requires tblite to be installed')
+def test_tblite_potential_energy_gradcheck():
+    """Test that tblite_potential_energy implements the correct gradient."""
     batch_size = 2
     numbers, batch_positions = create_two_waters(batch_size)
     batch_positions.requires_grad = True
 
     # Run gradcheck.
     torch.autograd.gradcheck(
-        func=xtb_potential_energy,
+        func=tblite_potential_energy,
         inputs=[
             batch_positions * _ANGSTROM_TO_BOHR,
-            Param.GFN2xTB,
+            'GFN2-xTB',
             numbers,
             None,  # positions_unit
             None,  # energy_unit
             True,  # precompute_gradient
             None,  # parallelization_strategy
+            0,     # verbosity
+            False, # return_nan_on_failure
         ],
     )

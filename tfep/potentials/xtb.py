@@ -5,14 +5,14 @@
 # =============================================================================
 
 """
-Modules and functions to compute semiempirical QM energies and gradients with xtb.
+Modules and functions to compute semiempirical QM energies and gradients with tblite.
 
-The function/classes in this module wrap an xtb ``Calculator``s and makes it
+The function/classes in this module wrap a tblite ``Calculator``s and makes it
 compatible with PyTorch.
 
 See Also
 --------
-xtb-python: https://xtb-python.readthedocs.io/
+tblite: https://tblite.readthedocs.io/en/latest/index.html
 
 """
 
@@ -21,8 +21,9 @@ xtb-python: https://xtb-python.readthedocs.io/
 # GLOBAL IMPORTS
 # =============================================================================
 
-# DO NOT IMPORT xtb-python HERE! xtb is an optional dependency of tfep.
+# DO NOT IMPORT tblite HERE! tblite is an optional dependency of tfep.
 import functools
+import logging
 from typing import Optional
 
 import numpy as np
@@ -38,13 +39,20 @@ from tfep.utils.parallel import ParallelizationStrategy, SerialStrategy
 
 
 # =============================================================================
+# GLOBAL VARIABLES
+# =============================================================================
+
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
 # TORCH MODULE API
 # =============================================================================
 
-class XTBPotential(PotentialBase):
-    """Potential energy and gradients with xtb.
+class TBLitePotential(PotentialBase):
+    """Potential energy and gradients with tblite.
 
-    This ``Module`` wraps :class:``.XTBPotentialEnergyFunc`` to provide a
+    This ``Module`` wraps :class:``.TBLitePotentialEnergyFunc`` to provide a
     differentiable potential energy function for training.
 
     .. warning::
@@ -61,33 +69,35 @@ class XTBPotential(PotentialBase):
 
     def __init__(
             self,
-            param,
+            method: str,
             numbers: np.ndarray,
             positions_unit: Optional[pint.Unit] = None,
             energy_unit: Optional[pint.Unit] = None,
             precompute_gradient: bool = False,
             parallelization_strategy: Optional[ParallelizationStrategy] = None,
+            verbosity: int = 0,
+            return_nan_on_failure: bool = False,
     ):
         """Constructor.
 
         Parameters
         ----------
-        param : xtb.interface.Param
-            The parameters. Example ``xtb.interface.Param.GFN2xTB``.
+        method : str
+            The method. Example ``'GFN2-xTB'``.
         numbers: numpy.ndarray
             Atomic numbers. Examples ``[8, 1, 1]`` for water.
         positions_unit : pint.Unit, optional
             The unit of the positions passed to the class methods. Since input
             ``Tensor``s do not have units attached, this is used to appropriately
-            convert ``batch_positions`` to xtb units. If ``None``, no conversion
+            convert ``batch_positions`` to tblite units. If ``None``, no conversion
             is performed, which assumes that the input positions are in the same
-            units used by xtb (e.g., bohr).
+            units used by tblite (e.g., bohr).
         energy_unit : pint.Unit, optional
             The unit used for the returned energies (and as a consequence gradients).
             Since ``Tensor``s do not have units attached, this is used to
-            appropriately convert xtb energies into the desired units. If ``None``
+            appropriately convert tblite energies into the desired units. If ``None``
             is performed, which means that energies and gradients will be returned
-            in xtb units (e.g., eV).
+            in tblite units (e.g., eV).
         precompute_gradient : bool, optional
             If ``True``, the gradient is computed in the forward pass and saved
             to be consumed during the backward pass. This speeds up the training,
@@ -97,10 +107,17 @@ class XTBPotential(PotentialBase):
         parallelization_strategy : tfep.utils.parallel.ParallelizationStrategy, optional
             The parallelization strategy used to distribute batches of energy and
             gradient calculations. By default, these are executed serially.
+        verbosity : Literal[0, 1, 2], optional
+            Verbosity to pass to the tblite ``Calculator`` (0 turns off printing,
+            2 is maximum verbosity).
+        return_nan_on_failure : bool, optional
+            If ``True`` and the single-point calculation fails (e.g., because the
+            the SCF does not converge), the returned energy (gradient) is set to
+            NaN (zero).
 
         See Also
         --------
-        :class:`.XTBPotentialEnergyFunc`
+        :class:`.TBLitePotentialEnergyFunc`
             More details on input parameters and implementation details.
 
         """
@@ -110,8 +127,8 @@ class XTBPotential(PotentialBase):
         if parallelization_strategy is None:
             parallelization_strategy = SerialStrategy()
 
-        #: The parameters for xtb.
-        self.param = param
+        #: The method for tblite.
+        self.method = method
 
         #: The atomic numbers.
         self.numbers = numbers
@@ -138,9 +155,9 @@ class XTBPotential(PotentialBase):
             ``batch_positions[i]`` in units of ``self.energy_unit``.
 
         """
-        return xtb_potential_energy(
+        return tblite_potential_energy(
             batch_positions,
-            param=self.param,
+            method=self.method,
             numbers=self.numbers,
             positions_unit=self.positions_unit,
             energy_unit=self.energy_unit,
@@ -153,10 +170,10 @@ class XTBPotential(PotentialBase):
 # TORCH FUNCTIONAL API
 # =============================================================================
 
-class XTBPotentialEnergyFunc(torch.autograd.Function):
-    """PyTorch-differentiable potential energy using XTB.
+class TBLitePotentialEnergyFunc(torch.autograd.Function):
+    """PyTorch-differentiable potential energy using tblite.
 
-    This wraps an XTB ``Calculator`` to perform batchwise energy and gradients
+    This wraps a tblite ``Calculator`` to perform batchwise energy and gradients
     calculation used for the forward pass and backpropagation.
 
     .. warning::
@@ -173,18 +190,18 @@ class XTBPotentialEnergyFunc(torch.autograd.Function):
         A context to save information for the gradient.
     batch_positions : torch.Tensor
         Shape ``(batch_size, 3*n_atoms)``. The atoms positions in units of
-        ``positions_unit`` (or xtb units if ``positions_unit`` is not provided).
-    param : xtb.interface.Param
-        The parameters. Example ``xtb.interface.Param.GFN2xTB``.
+        ``positions_unit`` (or tblite units if ``positions_unit`` is not provided).
+    method : str
+        The method. Example ``'GFN2-xTB'``.
     numbers: numpy.ndarray
         Atomic numbers. Examples ``[8, 1, 1]`` for water.
     positions_unit : pint.Unit, optional
         The unit of the positions passed. This is used to appropriately convert
-        ``batch_positions`` to the units used by xtb. If ``None``, no conversion
+        ``batch_positions`` to the units used by tblite. If ``None``, no conversion
         is performed, which assumes that the input positions are in Bohr.
     energy_unit : pint.Unit, optional
         The unit used for the returned energies (and as a consequence gradients).
-        This is used to appropriately convert xtb energies into the desired
+        This is used to appropriately convert tblite energies into the desired
         units. If ``None``, no conversion is performed, which means that energies
         and gradients will be in hartrees and hartrees/bohr respectively.
     precompute_gradient : bool, optional
@@ -196,6 +213,13 @@ class XTBPotentialEnergyFunc(torch.autograd.Function):
     parallelization_strategy : tfep.utils.parallel.ParallelizationStrategy, optional
         The parallelization strategy used to distribute batches of energy and
         gradient calculations. By default, these are executed serially.
+    verbosity : Literal[0, 1, 2], optional
+        Verbosity to pass to the tblite ``Calculator`` (0 turns off printing,
+        2 is maximum verbosity).
+    return_nan_on_failure : bool, optional
+        If ``True`` and the single-point calculation fails (e.g., because the
+        the SCF does not converge), the returned energy (gradient) is set to
+        NaN (zero).
 
     Returns
     -------
@@ -205,8 +229,8 @@ class XTBPotentialEnergyFunc(torch.autograd.Function):
 
     See Also
     --------
-    :class:`.XTBPotential`
-        ``Module`` API for computing potential energies with xtb.
+    :class:`.TBLitePotential`
+        ``Module`` API for computing potential energies with tblite.
 
     """
 
@@ -214,25 +238,27 @@ class XTBPotentialEnergyFunc(torch.autograd.Function):
     def forward(
             ctx,
             batch_positions: torch.Tensor,
-            param,
+            method: str,
             numbers: np.ndarray,
             positions_unit: Optional[pint.Unit] = None,
             energy_unit: Optional[pint.Unit] = None,
             precompute_gradient: bool = False,
             parallelization_strategy: Optional[ParallelizationStrategy] = None,
+            verbosity: int = 0,
+            return_nan_on_failure: bool = False,
     ) -> torch.Tensor:
-        """Compute the potential energy of the molecule with xtb."""
+        """Compute the potential energy of the molecule with tblite."""
         # Handle mutable default arguments.
         if parallelization_strategy is None:
             parallelization_strategy = SerialStrategy()
 
-        # Convert tensor to numpy array with shape (batch_size, n_atoms, 3) and in xtb units (angstrom).
+        # Convert tensor to numpy array with shape (batch_size, n_atoms, 3) and in tblite units (angstrom).
         batch_positions_arr_bohr = flattened_to_atom(batch_positions.detach().cpu().numpy())
         if positions_unit is not None:
-            batch_positions_arr_bohr = _to_xtb_units(batch_positions_arr_bohr, positions_unit)
+            batch_positions_arr_bohr = _to_tblite_units(batch_positions_arr_bohr, positions_unit)
 
         # We use functools.partial to encode the arguments that are common to all tasks.
-        task = functools.partial(_run_single_point, param, numbers, precompute_gradient)
+        task = functools.partial(_run_single_point, method, numbers, precompute_gradient, verbosity, return_nan_on_failure)
         distributed_args = zip(batch_positions_arr_bohr)
 
         # Run all batches with the provided parallelization strategy.
@@ -246,11 +272,16 @@ class XTBPotentialEnergyFunc(torch.autograd.Function):
 
         # Convert energies to unitless tensors.
         if energy_unit is None:
-            energies = torch.tensor(energies)
+            energies = torch.from_numpy(np.array(energies))
         else:
-            energies *= XTBPotential.default_energy_unit(energy_unit._REGISTRY)
+            energies *= TBLitePotential.default_energy_unit(energy_unit._REGISTRY)
             energies = energies_array_to_tensor(energies, energy_unit)
         energies = energies.to(batch_positions)
+
+        if logger.isEnabledFor(logging.INFO):
+            nan_energies = torch.isnan(energies)
+            if nan_energies.any():
+                logger.info(f'Found {torch.sum(nan_energies)} NaN {method} energies.')
 
         # Save the gradients for backward propagation. We do not support backward
         # passes with precompute_gradient=False.
@@ -268,7 +299,7 @@ class XTBPotentialEnergyFunc(torch.autograd.Function):
         """Compute the gradient of the potential energy."""
         # We still need to return a None gradient for each
         # input of forward() beside batch_positions.
-        n_input_args = 7
+        n_input_args = 9
         grad_input = [None for _ in range(n_input_args)]
 
         # Compute gradient w.r.t. batch_positions.
@@ -282,8 +313,8 @@ class XTBPotentialEnergyFunc(torch.autograd.Function):
                 gradients = torch.from_numpy(atom_to_flattened(ctx.gradients))
             else:
                 ureg = ctx.energy_unit._REGISTRY
-                default_positions_unit = XTBPotential.default_positions_unit(ureg)
-                default_energy_unit = XTBPotential.default_energy_unit(ureg)
+                default_positions_unit = TBLitePotential.default_positions_unit(ureg)
+                default_energy_unit = TBLitePotential.default_energy_unit(ureg)
                 gradients = ctx.gradients * default_energy_unit / default_positions_unit
                 gradients = forces_array_to_tensor(gradients, ctx.positions_unit, ctx.energy_unit)
             gradients = gradients.to(grad_output)
@@ -294,31 +325,33 @@ class XTBPotentialEnergyFunc(torch.autograd.Function):
         return tuple(grad_input)
 
 
-def xtb_potential_energy(
+def tblite_potential_energy(
         batch_positions: torch.Tensor,
-        param,
+        method: str,
         numbers: np.ndarray,
         positions_unit: Optional[pint.Unit] = None,
         energy_unit: Optional[pint.Unit] = None,
         precompute_gradient: bool = False,
         parallelization_strategy: Optional[ParallelizationStrategy] = None,
+        verbosity: int = 0,
+        return_nan_on_failure: bool = False,
 ):
-    """PyTorch-differentiable potential energy using xtb.
+    """PyTorch-differentiable potential energy using tblite.
 
     PyTorch ``Function``s do not accept keyword arguments. This function wraps
-    :func:`.XTBPotentialEnergyFunc.apply` to enable standard functional notation.
+    :func:`.TBLitePotentialEnergyFunc.apply` to enable standard functional notation.
     See the documentation on the original function for the input parameters.
 
     See Also
     --------
-    :class:`.XTBPotentialEnergyFunc`
+    :class:`.TBLitePotentialEnergyFunc`
         More details on input parameters and implementation details.
 
     """
     # apply() does not accept keyword arguments.
-    return XTBPotentialEnergyFunc.apply(
+    return TBLitePotentialEnergyFunc.apply(
         batch_positions,
-        param,
+        method,
         numbers,
         positions_unit,
         energy_unit,
@@ -331,13 +364,20 @@ def xtb_potential_energy(
 # RUNNING UTILITY FUNCTIONS
 # =============================================================================
 
-def _to_xtb_units(x, positions_unit):
+def _to_tblite_units(x, positions_unit):
     """Convert x from positions_unit to angstroms."""
-    default_positions_unit = XTBPotential.default_positions_unit(positions_unit._REGISTRY)
+    default_positions_unit = TBLitePotential.default_positions_unit(positions_unit._REGISTRY)
     return (x * positions_unit).to(default_positions_unit).magnitude
 
 
-def _run_single_point(param, numbers: np.ndarray, return_gradients: bool, positions: np.ndarray):
+def _run_single_point(
+        method: str,
+        numbers: np.ndarray,
+        return_gradients: bool,
+        verbosity: int,
+        return_nan_on_failure: bool,
+        positions: np.ndarray,
+):
     """Compute potential energy for a single configuration.
 
     This function is used as task function for a ParallelStrategy.
@@ -346,14 +386,21 @@ def _run_single_point(param, numbers: np.ndarray, return_gradients: bool, positi
     bohr. The returned energies are in units of hartree.
 
     """
-    from xtb.interface import Calculator
-    from xtb.libxtb import VERBOSITY_MINIMAL
+    from tblite.interface import Calculator
 
-    calc = Calculator(param, numbers, positions)
-    calc.set_verbosity(VERBOSITY_MINIMAL)  # TODO: MAKE THIS AN OPTION
-    res = calc.singlepoint()  # energy printed is only the electronic part
+    calc = Calculator(method, numbers, positions)
+    calc.set('verbosity', verbosity)
 
-    energy = res.get_energy()
+    try:
+        res = calc.singlepoint()  # energy printed is only the electronic part
+    except RuntimeError as e:
+        if return_nan_on_failure:
+            if return_gradients:
+                return [np.nan, np.zeros_like(positions)]
+            return np.nan
+        raise
+
+    energy = res.get('energy')
     if return_gradients:
-        return [energy, res.get_gradient()]
+        return [energy, res.get('gradient')]
     return energy
