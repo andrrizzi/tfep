@@ -13,7 +13,7 @@
 # =============================================================================
 
 from collections.abc import Sequence
-from typing import Literal, Optional, Union
+from typing import Dict, Literal, Optional, Union
 
 import pint
 import torch
@@ -57,11 +57,11 @@ class CartesianMAFMap(TFEPMapBase):
     Examples
     --------
 
-    >>> from tfep.potentials.psi4 import PotentialPsi4
+    >>> from tfep.potentials.psi4 import Psi4Potential
     >>> units = pint.UnitRegistry()
     >>>
     >>> tfep_map = CartesianMAFMap(
-    ...     potential_energy_func=PotentialPsi4(name='mp2'),
+    ...     potential_energy_func=Psi4Potential(name='mp2'),
     ...     topology_file_path='path/to/topology.psf',
     ...     coordinates_file_path='path/to/trajectory.dcd',
     ...     temperature=300*units.kelvin,
@@ -92,6 +92,7 @@ class CartesianMAFMap(TFEPMapBase):
             axes_atoms: Optional[Union[Sequence[int], str]] = None,
             tfep_logger_dir_path: str = 'tfep_logs',
             n_maf_layers: int = 6,
+            dataloader_kwargs: Optional[Dict] = None,
             **kwargs,
     ):
         """Constructor.
@@ -100,7 +101,7 @@ class CartesianMAFMap(TFEPMapBase):
         ----------
         potential_energy_func : torch.nn.Module
             A PyTorch module encapsulating the target potential energy function
-            (e.g. :class:`tfep.potentials.psi4.PotentialASE`).
+            (e.g. :class:`tfep.potentials.psi4.ASEPotential`).
         topology_file_path : str
             The path to the topology file. The file can be in `any format supported
             by MDAnalysis <https://docs.mdanalysis.org/stable/documentation_pages/topology/init.html#supported-topology-formats>`__
@@ -146,6 +147,8 @@ class CartesianMAFMap(TFEPMapBase):
             sample indices, etc.).
         n_maf_layers : int, optional
             The number of MAF layers.
+        dataloader_kwargs : Dict, optional
+            Extra keyword arguments to pass to ``torch.utils.data.DataLoader``.
         **kwargs
             Other keyword arguments to pass to the constructor of :class:`tfep.nn.flows.MAF`.
 
@@ -165,6 +168,7 @@ class CartesianMAFMap(TFEPMapBase):
             origin_atom=origin_atom,
             axes_atoms=axes_atoms,
             tfep_logger_dir_path=tfep_logger_dir_path,
+            dataloader_kwargs=dataloader_kwargs,
 
         )
         self.save_hyperparameters('n_maf_layers')

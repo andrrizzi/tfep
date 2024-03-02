@@ -17,7 +17,6 @@ Masked autoregressive flow layer for PyTorch.
 from collections.abc import Sequence
 from typing import Optional, Union
 
-import numpy as np
 import torch
 
 from tfep.nn.conditioners.made import MADE, degrees_in_from_str
@@ -242,13 +241,15 @@ class MAF(torch.nn.Module):
         # from the conditioners otherwise.
         if conditioning_indices is None or len(conditioning_indices) == 0:
             n_conditioning_dofs = 0
-            self._mapped_indices = None
-            self._conditioning_indices = None
+            mapped_indices = None
+            conditioning_indices = None
         else:
             n_conditioning_dofs = len(conditioning_indices)
-            self._mapped_indices = torch.tensor([i for i in range(dimension_in)
-                                                 if i not in conditioning_indices_set])
-            self._conditioning_indices = conditioning_indices
+            mapped_indices = torch.tensor([i for i in range(dimension_in)
+                                           if i not in conditioning_indices_set])
+            conditioning_indices = conditioning_indices
+        self.register_buffer('_mapped_indices', mapped_indices)
+        self.register_buffer('_conditioning_indices', conditioning_indices)
 
         # Initialize the log_scale and shift nets to 0.0 so that at
         # the beginning the MAF layer performs the identity function.
@@ -291,7 +292,9 @@ class MAF(torch.nn.Module):
         degrees_in = self._conditioners[0].degrees_in
         # The degree_in of periodic features is duplicated.
         if self._lifter is not None:
-            degrees_in = np.delete(degrees_in, self._lifter._periodic_indices_lifted)
+            mask = torch.full(degrees_in.shape, fill_value=True)
+            mask[self._lifter._periodic_indices_lifted] = False
+            degrees_in = degrees_in[mask]
         return degrees_in
 
     def n_parameters(self) -> int:
@@ -349,24 +352,21 @@ class MAF(torch.nn.Module):
 
         # We need to process each block in the order given by their degree to
         # respect the dependencies.
-        if self._lifter is None:
-            blocks = self._conditioners[0].blocks
-        else:
-            # With periodic indices, only block 1 is supported. blocks might be
-            # different from 1 only because the periodic DOFs is expanded into
-            # 2 different inputs with the same degree.
-            blocks = [1 for _ in self._conditioners[0].blocks]
+        blocks = self._conditioners[0].blocks
 
-        block_start_idx = 0
-        blocks_start_indices = []
-        blocks_degrees = []
-        for block_size in blocks:
-            blocks_start_indices.append(block_start_idx)
-            blocks_degrees.append(degrees_in[block_start_idx])
-            block_start_idx += block_size
+        # With periodic indices, only block 1 is supported. blocks might be
+        # different from 1 only because the periodic DOFs is expanded into 2
+        # different inputs with the same degree.
+        if self._lifter is not None:
+            blocks = torch.ones(len(blocks)).to(blocks)
+
+        # Determine the start index of each block.
+        blocks_start_indices = torch.empty(len(blocks)).to(blocks)
+        blocks_start_indices[0] = 0.
+        blocks_start_indices[1:] = torch.cumsum(blocks[:-1], dim=0)
 
         # Order the block by their degree.
-        blocks_order = np.argsort(blocks_degrees)
+        blocks_order = torch.argsort(degrees_in[blocks_start_indices])
 
         # Now compute the inverse.
         for block_idx in blocks_order:
@@ -391,8 +391,6 @@ class MAF(torch.nn.Module):
 
             # No need to update all the xs, but only those we can update at this point.
             x[:, input_indices] = x_temp[:, block_start_idx:block_end_idx]
-
-            block_start_idx += block_size
 
         return x, log_det_J
 
@@ -427,8 +425,7 @@ class MAF(torch.nn.Module):
         else:
             # The conditioners are split into independent NNs.
             # conditioning_parameters has shape (batch_size, n_features*n_parameters_per_input).
-            conditioning_parameters = torch.empty(
-                size=returned_shape, dtype=x.dtype)
+            conditioning_parameters = torch.empty(size=returned_shape).to(x)
             for conditioner_idx, conditioner in enumerate(self._conditioners):
                 conditioning_parameters[:, conditioner_idx] = conditioner(x)
 
@@ -462,27 +459,28 @@ class _LiftPeriodic(torch.nn.Module):
             limits : torch.Tensor,
     ):
         super().__init__()
-        self.limits = limits
+        self.register_buffer('limits', limits)
 
         # Cache a set of periodic/nonperiodic indices BEFORE and AFTER the input has been lifted.
         periodic_indices_set = set(periodic_indices.tolist())
-        self._periodic_indices = periodic_indices
-        self._nonperiodic_indices = torch.tensor([i for i in range(dimension_in) if i not in periodic_indices_set])
+        self.register_buffer('_periodic_indices', periodic_indices)
+        self.register_buffer('_nonperiodic_indices', torch.tensor([i for i in range(dimension_in)
+                                                                   if i not in periodic_indices_set]))
 
-        self._periodic_indices_lifted = []  # Shape (n_periodic,).
-        self._nonperiodic_indices_lifted = []  # Shape (n_non_periodic,).
+        periodic_indices_lifted = []  # Shape (n_periodic,).
+        nonperiodic_indices_lifted = []  # Shape (n_non_periodic,).
 
         shift_idx = 0
         for i in range(dimension_in):
             if i in periodic_indices_set:
-                self._periodic_indices_lifted.append(i+shift_idx)
+                periodic_indices_lifted.append(i+shift_idx)
                 shift_idx += 1
             else:
-                self._nonperiodic_indices_lifted.append(i + shift_idx)
+                nonperiodic_indices_lifted.append(i + shift_idx)
 
         # Cache as Tensor.
-        self._periodic_indices_lifted = torch.tensor(self._periodic_indices_lifted)
-        self._nonperiodic_indices_lifted = torch.tensor(self._nonperiodic_indices_lifted)
+        self.register_buffer('_periodic_indices_lifted', torch.tensor(periodic_indices_lifted))
+        self.register_buffer('_nonperiodic_indices_lifted', torch.tensor(nonperiodic_indices_lifted))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Lift each periodic degree of freedom x into a periodic representation (cosx, sinx).
@@ -511,7 +509,7 @@ class _LiftPeriodic(torch.nn.Module):
 
         # Fill output.
         n_periodic = len(self._periodic_indices)
-        y = torch.empty((batch_size, n_features+n_periodic), dtype=x.dtype)
+        y = torch.empty((batch_size, n_features+n_periodic)).to(x)
         y[:, self._periodic_indices_lifted] = cosx
         y[:, self._periodic_indices_lifted+1] = sinx
         y[:, self._nonperiodic_indices_lifted] = x[:, self._nonperiodic_indices]

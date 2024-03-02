@@ -43,11 +43,13 @@ lightning >= 2.0
 ```
 and the following optional dependencies
 ```
-psi4         # To evaluate the target potentials using the psi4 Python library.
-ase          # To evaluate the target potentials using the Atomistic Simulation Environment (ASE) Python library.
-torchdiffeq  # To use continuous normalizing flows.
-bgflow       # To use the mixed internal-Cartesian coordinates Lightning module
-einops       # Required by bgflow
+openmm         # To evaluate the target potentials using the OpenMM Python library.
+tblite-python  # To evaluate the target potentials using the tblite Python library.
+psi4           # To evaluate the target potentials using the psi4 Python library.
+ase            # To evaluate the target potentials using the Atomistic Simulation Environment (ASE) Python library.
+torchdiffeq    # To use continuous normalizing flows.
+bgflow         # To use the mixed internal-Cartesian coordinates Lightning module
+einops         # Required by bgflow
 ```
 
 The suggested way of installing ``tfep`` is by first installing all the dependencies through ``conda``/``pip``/``setuptools``,

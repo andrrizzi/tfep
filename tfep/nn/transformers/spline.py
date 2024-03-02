@@ -88,12 +88,12 @@ class NeuralSplineTransformer(torch.nn.Module):
                     torch.allclose(xf[circular], yf[circular])):
             raise ValueError('x0==y0 and xf==yf must hold for all periodic degrees of freedom.')
 
-        self.x0 = x0
-        self.xf = xf
-        self.n_bins = n_bins
-        self._y0 = y0
-        self._yf = yf
-        self._circular = circular
+        self.register_buffer('x0', x0)
+        self.register_buffer('xf', xf)
+        self.register_buffer('n_bins', torch.as_tensor(n_bins))
+        self.register_buffer('_y0', y0)
+        self.register_buffer('_yf', yf)
+        self.register_buffer('_circular', torch.as_tensor(circular))
 
     @property
     def n_parameters_per_input(self):
@@ -193,7 +193,7 @@ class NeuralSplineTransformer(torch.nn.Module):
 
         # Both the width and the height of each bin must be constant.
         # Remember that the parameters go through the softmax function.
-        id_conditioner = torch.empty(size=(self.n_parameters_per_input, n_features))
+        id_conditioner = torch.empty(size=(self.n_parameters_per_input, n_features)).to(self.x0)
         id_conditioner[:self.n_bins].fill_(1 / self.n_bins)
         id_conditioner[self.n_bins:2*self.n_bins].fill_(1 / self.n_bins)
 
@@ -226,7 +226,7 @@ class NeuralSplineTransformer(torch.nn.Module):
             else:
                 # Fix shifts and slopes only for the specific DOFs.
                 batch_size, _, n_features = slopes.shape
-                shifts = torch.zeros((batch_size, n_features), dtype=slopes.dtype)
+                shifts = torch.zeros((batch_size, n_features)).to(slopes)
                 shifts[:, self._circular] = slopes[:, self.n_bins, self._circular]
                 slopes[:, self.n_bins, self._circular] = slopes[:, 0, self._circular]
 
@@ -373,15 +373,14 @@ def _compute_log_det_J(
 
 def _assign_bins(x, x0, y0, widths, heights, slopes, inverse):
     """Assign the input to the bins and return the values of knots, widths, heights, and slopes."""
-    dtype = x0.dtype
     batch_size, n_bins, n_features = widths.shape
     n_knots = n_bins + 1
 
     # knots_x has shape (batch, K+1, n_features).
-    knots_x = torch.empty(batch_size, n_knots, n_features, dtype=dtype)
+    knots_x = torch.empty(batch_size, n_knots, n_features).to(x0)
     knots_x[:, 0] = x0
     knots_x[:, 1:] = x0 + torch.cumsum(widths, dim=1)
-    knots_y = torch.empty(batch_size, n_knots, n_features, dtype=dtype)
+    knots_y = torch.empty(batch_size, n_knots, n_features).to(x0)
     knots_y[:, 0] = y0
     knots_y[:, 1:] = y0 + torch.cumsum(heights, dim=1)
 

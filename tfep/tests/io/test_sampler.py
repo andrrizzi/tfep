@@ -82,11 +82,12 @@ def test_drop_last(dataset_len5, drop_last):
     assert trainer.global_step == len(sampler)
 
 
-def test_resuming(dataset_len5):
+@pytest.mark.parametrize('num_workers', [0, 2])
+def test_resuming(num_workers, dataset_len5):
     """A new StatefulBatchSampler can correctly recover the data order given its internal state."""
     trainer = MockTrainer()
     sampler = StatefulBatchSampler(dataset_len5, shuffle=True, batch_size=2, drop_last=False, trainer=trainer)
-    dataloader = torch.utils.data.DataLoader(dataset_len5, batch_sampler=sampler)
+    dataloader = torch.utils.data.DataLoader(dataset_len5, batch_sampler=sampler, num_workers=num_workers)
 
     # Get the samples order and save the state after the first step.
     samples1 = []
@@ -97,7 +98,7 @@ def test_resuming(dataset_len5):
 
     # Now simulate resuming after the first batch with a new sampler and dataloader.
     sampler = StatefulBatchSampler(dataset_len5, shuffle=True, batch_size=2, drop_last=False, trainer=trainer)
-    dataloader = torch.utils.data.DataLoader(dataset_len5, batch_sampler=sampler)
+    dataloader = torch.utils.data.DataLoader(dataset_len5, batch_sampler=sampler, num_workers=num_workers)
 
     sampler.load_state_dict(sampler_state)
     trainer.global_step = 1

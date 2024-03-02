@@ -156,7 +156,7 @@ def test_launcher_run_timeout_error(launcher):
         [{'--nodes': '1', '--relative': '0'}, {'--nodes': '1', '--relative': '2'}]),
     ({'n_nodes': 1, 'n_tasks': [3, 2], 'multiprog': True},
         {'--nodes': '1', '--ntasks': '5', '--multi-prog': 'srun-job.conf'}),
-    ({'n_nodes': 1, 'n_tasks': 2, 'n_tasks_per_node': 3, 'relative_node_idx': 1, 'multiprog': True},
+    ({'n_nodes': 1, 'n_tasks': [2, 2], 'n_tasks_per_node': 3, 'relative_node_idx': 1, 'multiprog': True},
         {'--nodes': '1', '--ntasks': '4', '--relative': '1', '--multi-prog': 'srun-job.conf'}),
 ])
 def test_srun_launcher_create_command(srun_kwargs, expected_kwargs):
@@ -211,7 +211,8 @@ def test_srun_launcher_create_command(srun_kwargs, expected_kwargs):
 
 @pytest.mark.parametrize('srun_kwargs,multi_command,match_str', [
     ({'n_nodes': [1, 2], 'n_tasks_per_node': 3}, False, '1 commands but 2 n_nodes'),
-    ({'n_nodes': [1, 2], 'n_tasks': 3, 'multiprog': True}, True, 'must be an integer'),
+    ({'n_nodes': [1, 2], 'n_tasks': 3, 'multiprog': True}, True, 'must be a list'),
+    ({'n_nodes': [1, 2], 'n_tasks': [3, 2], 'multiprog': True}, True, 'cannot be a list'),
 ])
 def test_srun_launcher_incompatible_config(srun_kwargs, multi_command, match_str):
     """``SRunLauncher`` raises an error if its configuration is incompatible with the commands."""
@@ -226,8 +227,10 @@ def test_srun_launcher_incompatible_config(srun_kwargs, multi_command, match_str
 
 
 @pytest.mark.parametrize('n_tasks,expected_ranks', [
+    ([1, 3], ['0', '1-3']),
+    ([1, 1], ['0', '1']),
+    ([4, 1], ['0-3', '4']),
     ([2, 3], ['0-1', '2-4']),
-    (3, ['0-2', '3-5'])
 ])
 def test_srun_launcher_create_multiprog_config(n_tasks, expected_ranks):
     """Test the ``SRunLauncher`` multiprog feature.

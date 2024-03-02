@@ -14,6 +14,8 @@ Loss functions to train PyTorch normalizing flows for reweighting.
 # GLOBAL IMPORTS
 # =============================================================================
 
+from typing import Optional
+
 import torch
 
 
@@ -56,7 +58,28 @@ class BoltzmannKLDivLoss(torch.nn.Module):
 
     """
 
-    def forward(self, target_potentials, log_det_J=None, log_weights=None, ref_potentials=None):
+    def __init__(self, ignore_nan: bool = False):
+        """Constructor.
+
+        Parameters
+        ----------
+        ignore_nan : bool, optional
+            Whether to ignore NaNs when computing the loss or not (which will
+            cause the loss value to be NaN as well).
+
+        """
+        super().__init__()
+
+        #: Whether to ignore NaNs when computing the loss or not.
+        self.ignore_nan = ignore_nan
+
+    def forward(
+            self,
+            target_potentials: torch.Tensor,
+            log_det_J: Optional[torch.Tensor] = None,
+            log_weights: Optional[torch.Tensor] = None,
+            ref_potentials: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """Compute the loss.
 
         .. warning::
@@ -73,7 +96,7 @@ class BoltzmannKLDivLoss(torch.nn.Module):
             ``target_potentials[i]`` is the reduced potential energy of the i-th
             (mapped) sample in units of kT evaluated using target potential B.
             The shape is ``(batch_size,)``.
-        log_det_J : torch.Tensor, optional
+        log_det_J : torch.Tensor or None, optional
             ``log_det_J[i]`` is the logarithm of the absolute value of the
             determinant of the Jacobian of the map (in units of kT) for the i-th
             sample. The shape is ``(batch_size,)``.
@@ -81,11 +104,11 @@ class BoltzmannKLDivLoss(torch.nn.Module):
             If not passed, it is assumed the samples were not mapped or,
             equivalently, that the Jacobian contribution has been already included
             in ``potentials_B``.
-        log_weights : torch.Tensor, optional
+        log_weights : torch.Tensor or None, optional
             ``log_weights[i]`` is the log-weight for the i-th sample (in units
             of kT) that can be used to reweight the loss function if the samples
             were not sampled from A. The shape is ``(batch_size,)``.
-        ref_potentials : torch.Tensor, optional
+        ref_potentials : torch.Tensor or None, optional
             ``ref_potentials_A[i]`` is the reduced potential energy of the i-th
             sample in units of kT evaluated using the reference potential A. The
             shape is ``(batch_size,)``.
@@ -108,5 +131,10 @@ class BoltzmannKLDivLoss(torch.nn.Module):
         # Check if this must be a weighted or unweighted mean.
         if log_weights is not None:
             weights = torch.nn.functional.softmax(log_weights)
+            if self.ignore_nan:
+                return torch.nansum(weights * reduced_work)
             return torch.sum(weights * reduced_work)
+
+        if self.ignore_nan:
+            return torch.nanmean(reduced_work)
         return torch.mean(reduced_work)

@@ -49,7 +49,7 @@ class SequentialFlow(torch.nn.Sequential):
 
     def _pass(self, x, inverse):
         batch_size = x.size(0)
-        cumulative_log_det_J = torch.zeros(batch_size, dtype=x.dtype)
+        cumulative_log_det_J = torch.zeros(batch_size).to(x)
 
         # Check if we need to traverse the flows in forward or inverse pass.
         if inverse:

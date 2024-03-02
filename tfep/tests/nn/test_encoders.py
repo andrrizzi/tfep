@@ -52,7 +52,7 @@ def check_reference_expansion(
     encoding_pt = torch_impl(means=means, stds=stds, **kwargs)(data)
     encoding_np = reference_impl(data=data, means=means, stds=stds, **kwargs)
 
-    assert np.allclose(encoding_pt.detach().numpy(), encoding_np)
+    assert np.allclose(encoding_pt.detach().cpu().numpy(), encoding_np)
 
 
 # =============================================================================
@@ -61,9 +61,9 @@ def check_reference_expansion(
 
 def reference_gaussian_basis_expansion(data, means, stds):
     """Reference implementation of GaussianBasisExpansion for testing."""
-    data = data.detach().numpy()
-    means = means.detach().numpy()
-    vars = stds.detach().numpy()**2
+    data = data.detach().cpu().numpy()
+    means = means.detach().cpu().numpy()
+    vars = stds.detach().cpu().numpy()**2
 
     n_gaussians = len(means)
 
@@ -82,7 +82,7 @@ def reference_behler_parrinello_expansion(data, means, stds, r_cutoff):
     """Reference implementation of BehlerParrinelloRadialExpansion for testing."""
     encoding = reference_gaussian_basis_expansion(data, means, stds)
 
-    data = data.detach().numpy()
+    data = data.detach().cpu().numpy()
 
     # Apply switching function.
     for b in range(len(data)):

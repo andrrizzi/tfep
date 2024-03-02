@@ -203,7 +203,7 @@ class MADE(torch.nn.Module):
 
         # Store variabless.
         self._out_per_dimension = out_per_dimension
-        self._conditioning_indices = conditioning_indices
+        self.register_buffer('_conditioning_indices', conditioning_indices)
 
         # Get the number of dimensions in array format.
         n_hidden_layers, dimensions_hidden, expanded_blocks = self._get_dimensions(
@@ -211,9 +211,10 @@ class MADE(torch.nn.Module):
             degrees_in, blocks, shorten_last_block)
 
         # Store the verified/expanded blocks size.
-        self._blocks = expanded_blocks
+        self.register_buffer('_blocks', expanded_blocks)
 
         # Determine the degrees of all input nodes.
+        self.register_buffer('_degrees_in', None)
         self._assign_degrees_in(dimension_in, conditioning_indices, degrees_in)
 
         # Generate the degrees to assign to the hidden nodes in a round-robin fashion.
@@ -437,8 +438,8 @@ class MADE(torch.nn.Module):
         # Verify that the parameters are consistent.
         self._check_degrees(degrees_in, name='degrees_in')
 
-        # Initialize the return value.
-        self._degrees_in = torch.empty(dimension_in)
+        # Initialize the degrees_in tensor.
+        self._degrees_in = torch.empty(dimension_in, dtype=int)
 
         # The conditioning features are always assigned the lowest
         # degree regardless of the value of degrees_in so that
@@ -528,6 +529,7 @@ def _generate_block_sizes(
         blocks = [blocks] * div
         if mod != 0:
             blocks += [mod]
+        blocks = torch.tensor(blocks)
     elif n_features != sum(blocks):
         raise ValueError('The sum of the block sizes must be equal to '
                          f'"n_features" ({n_features}).')

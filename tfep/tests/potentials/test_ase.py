@@ -34,7 +34,7 @@ import pint
 import pytest
 import torch
 
-from tfep.potentials.ase import PotentialASE, potential_energy_ase
+from tfep.potentials.ase import ASEPotential, ase_potential_energy
 from tfep.utils.misc import atom_to_flattened, flattened_to_atom
 from tfep.utils.parallel import SerialStrategy, ProcessPoolStrategy
 
@@ -196,7 +196,7 @@ def test_potential_ase_energy_force(batch_size, strategy, calculator):
         ref_energies, ref_forces = reference_energy_forces(atoms, batch_positions)
 
         with parallelization_strategy(strategy, tmp_dir) as ps:
-            potential = PotentialASE(
+            potential = ASEPotential(
                 calculator=calculator,
                 symbols=atoms.symbols,
                 positions_unit=_UREG.angstrom,
@@ -216,8 +216,8 @@ def test_potential_ase_energy_force(batch_size, strategy, calculator):
 
 @pytest.mark.skipif(not ASE_INSTALLED, reason='requires ASE to be installed')
 @pytest.mark.parametrize('calculator', _CALCULATORS)
-def test_potential_energy_ase_gradcheck(calculator):
-    """Test that potential_energy_ase implements the correct gradient."""
+def test_ase_potential_energy_gradcheck(calculator):
+    """Test that ase_potential_energy implements the correct gradient."""
     batch_size = 2
     atoms, batch_positions = create_two_waters(batch_size, calculator)
     batch_positions.requires_grad = True
@@ -227,7 +227,7 @@ def test_potential_energy_ase_gradcheck(calculator):
     # Execute the calculation in a temp dir.
     with temporary_dir_cd() as tmp_dir:
         torch.autograd.gradcheck(
-            func=potential_energy_ase,
+            func=ase_potential_energy,
             inputs=[
                 batch_positions,
                 atoms,

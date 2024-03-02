@@ -69,7 +69,7 @@ def reference_pdist(x, pairs=None):
         pairs = torch.triu_indices(n_atoms, n_atoms, offset=1)
     n_pairs = pairs.shape[1]
 
-    x, pairs = x.detach().numpy(), pairs.transpose(0, 1).detach().numpy()
+    x, pairs = x.detach().cpu().numpy(), pairs.transpose(0, 1).detach().cpu().numpy()
 
     distances = np.empty((batch_size, n_pairs))
     diff = np.empty((batch_size, n_pairs, dim))
@@ -84,13 +84,13 @@ def reference_pdist(x, pairs=None):
 
 
 def reference_vector_vector_angle(v1, v2):
-    v1_np, v2_np = v1.detach().numpy(), v2.detach().numpy()
+    v1_np, v2_np = v1.detach().cpu().numpy(), v2.detach().cpu().numpy()
     angles = [MDAnalysis.lib.mdamath.angle(v, v2_np) for v in v1_np]
     return torch.tensor(angles, dtype=v1.dtype)
 
 
 def reference_vector_plane_angle(vectors, plane):
-    vectors_np, plane_np = vectors.detach().numpy(), plane.detach().numpy()
+    vectors_np, plane_np = vectors.detach().cpu().numpy(), plane.detach().cpu().numpy()
     angles = []
     for v in vectors_np:
         x = np.dot(v, plane) / (np.linalg.norm(v) * np.linalg.norm(plane))
@@ -104,22 +104,22 @@ def reference_vector_plane_angle(vectors, plane):
 
 
 def reference_proper_dihedral_angle(v1, v2, v3):
-    v1_np, v2_np, v3_np = v1.detach().numpy(), v2.detach().numpy(), v3.detach().numpy()
+    v1_np, v2_np, v3_np = v1.detach().cpu().numpy(), v2.detach().cpu().numpy(), v3.detach().cpu().numpy()
     dihedrals = [MDAnalysis.lib.mdamath.dihedral(v1_np[i], v2_np[i], v3_np[i]) for i in range(len(v1_np))]
     return torch.tensor(dihedrals, dtype=v1.dtype)
 
 
 def reference_rotation_matrix_3d(angles, directions):
-    angles_np = angles.detach().numpy()
-    directions_np = directions.detach().numpy()
+    angles_np = angles.detach().cpu().numpy()
+    directions_np = directions.detach().cpu().numpy()
     rotation_matrices = [MDAnalysis.lib.transformations.rotation_matrix(a, d)[:3,:3]
                          for a, d in zip(angles_np, directions_np)]
     return torch.tensor(rotation_matrices, dtype=angles.dtype)
 
 
 def reference_batchwise_rotate(x, rotation_matrices):
-    x_np = x.detach().numpy()
-    rotation_matrices_np = rotation_matrices.detach().numpy()
+    x_np = x.detach().cpu().numpy()
+    rotation_matrices_np = rotation_matrices.detach().cpu().numpy()
     y = np.empty_like(x_np)
     for i in range(len(x_np)):
         y[i] = x_np[i] @ rotation_matrices_np[i].T
@@ -291,8 +291,8 @@ def test_batchwise_rotate_axes():
 @pytest.mark.parametrize('n_vectors', [1, 5])
 def test_batchwise_rotate_against_reference(batch_size, n_vectors):
     """Test the batchwise_rotate() function on random tensors against a reference implementation."""
-    angles = -4*np.pi * torch.rand(batch_size, generator=_GENERATOR, dtype=torch.float) + 2*np.pi
-    directions = torch.randn(batch_size, 3, generator=_GENERATOR, dtype=torch.float)
+    angles = -4*np.pi * torch.rand(batch_size, generator=_GENERATOR) + 2*np.pi
+    directions = torch.randn(batch_size, 3, generator=_GENERATOR)
     rotation_matrices = rotation_matrix_3d(angles, directions)
     x = torch.randn(batch_size, n_vectors, 3)
 

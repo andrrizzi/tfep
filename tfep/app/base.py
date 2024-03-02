@@ -92,11 +92,11 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
     After this, the TFEP calculation can be run using.
 
-    >>> from tfep.potentials.psi4 import PotentialPsi4
+    >>> from tfep.potentials.psi4 import Psi4Potential
     >>> units = pint.UnitRegistry()
     >>>
     >>> tfep_map = TFEPMap(
-    ...     potential_energy_func=PotentialPsi4(name='mp2'),
+    ...     potential_energy_func=Psi4Potential(name='mp2'),
     ...     topology_file_path='path/to/topology.psf',
     ...     coordinates_file_path='path/to/trajectory.dcd',
     ...     temperature=300*units.kelvin,
@@ -123,6 +123,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             origin_atom: Optional[Union[int, str]] = None,
             axes_atoms: Optional[Union[Sequence[int], str]] = None,
             tfep_logger_dir_path: str = 'tfep_logs',
+            dataloader_kwargs: Optional[Dict] = None,
     ):
         """Constructor.
 
@@ -130,7 +131,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         ----------
         potential_energy_func : torch.nn.Module
             A PyTorch module encapsulating the target potential energy function
-            (e.g. :class:`tfep.potentials.psi4.PotentialASE`).
+            (e.g. :class:`tfep.potentials.psi4.ASEPotential`).
         topology_file_path : str
             The path to the topology file. The file can be in `any format supported
             by MDAnalysis <https://docs.mdanalysis.org/stable/documentation_pages/topology/init.html#supported-topology-formats>`__
@@ -176,6 +177,8 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         tfep_logger_dir_path : str, optional
             The path where to save TFEP-related information (potential energies,
             sample indices, etc.).
+        dataloader_kwargs : Dict, optional
+            Extra keyword arguments to pass to ``torch.utils.data.DataLoader``.
 
         See Also
         --------
@@ -206,10 +209,13 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             kT = (temperature * units.molar_gas_constant).to(potential_energy_func.energy_unit)
         except pint.errors.DimensionalityError:
             kT = (temperature * units.boltzmann_constant).to(potential_energy_func.energy_unit)
-        self._kT = kT.magnitude
+        self.register_buffer('_kT', torch.tensor(kT.magnitude))
 
         # KL divergence loss function.
         self._loss_func = tfep.loss.BoltzmannKLDivLoss()
+
+        # Dataloader kwargs.
+        self._dataloader_kwargs = dataloader_kwargs
 
         # The following variables can be data-dependent and are thus initialized
         # dynamically in setup(), which is called by Lightning by all processes.
@@ -218,11 +224,12 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         # to add support for this at some point.
         self.dataset: Optional[tfep.io.dataset.TrajectoryDataset] = None  #: The dataset.
 
-        self._mapped_atom_indices = None  # The indices of the mapped atoms.
-        self._conditioning_atom_indices = None  # The indices of the conditioning atoms.
-        self._fixed_atom_indices = None  # The indices of the fixed atoms.
-        self._origin_atom_idx = None  # The index of the origin atom.
-        self._axes_atoms_indices = None  # The indices of the axis and plane atoms.
+        # Register buffers so that they get automatically moved to the correct device.
+        self.register_buffer('_mapped_atom_indices', None)  # The indices of the mapped atoms.
+        self.register_buffer('_conditioning_atom_indices', None)  # The indices of the conditioning atoms.
+        self.register_buffer('_fixed_atom_indices', None)  # The indices of the fixed atoms.
+        self.register_buffer('_origin_atom_idx', None)  # The index of the origin atom.
+        self.register_buffer('_axes_atoms_indices', None)  # The indices of the axis and plane atoms.
         self._flow = None  # The normalizing flow model.
         self._stateful_batch_sampler = None  # Batch sampler for mid-epoch resuming.
         self._tfep_logger = None  # The logger where to save the potentials.
@@ -576,109 +583,116 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
         if (mapped is None) and (conditioning is None):
             # Everything is mapped.
-            self._mapped_atom_indices = torch.tensor(range(n_atoms))
-            self._conditioning_atom_indices = None
-            self._fixed_atom_indices = None
+            mapped_atom_indices = torch.tensor(range(n_atoms))
+            conditioning_atom_indices = None
+            fixed_atom_indices = None
         elif conditioning is None:
             # Everything that is not mapped is fixed (no conditioning.
-            self._mapped_atom_indices = self._get_selected_indices(mapped)
-            self._conditioning_atom_indices = None
-            mapped_set = set(self._mapped_atom_indices.tolist())
-            self._fixed_atom_indices = torch.tensor([idx for idx in range(n_atoms)
-                                                    if idx not in mapped_set])
+            mapped_atom_indices = self._get_selected_indices(mapped)
+            conditioning_atom_indices = None
+            mapped_set = set(mapped_atom_indices.tolist())
+            fixed_atom_indices = torch.tensor(
+                [idx for idx in range(n_atoms) if idx not in mapped_set])
         elif mapped is None:
             # Everything that is not conditioning is mapped (no fixed).
-            self._conditioning_atom_indices = self._get_selected_indices(conditioning)
-            conditioning_set = set(self._conditioning_atom_indices.tolist())
-            self._mapped_atom_indices = torch.tensor([idx for idx in range(n_atoms)
-                                                      if idx not in conditioning_set])
-            self._fixed_atom_indices = None
+            conditioning_atom_indices = self._get_selected_indices(conditioning)
+            conditioning_set = set(conditioning_atom_indices.tolist())
+            mapped_atom_indices = torch.tensor(
+                [idx for idx in range(n_atoms) if idx not in conditioning_set])
+            fixed_atom_indices = None
         else:
             # Everything needs to be selected.
-            self._mapped_atom_indices = self._get_selected_indices(mapped)
-            self._conditioning_atom_indices = self._get_selected_indices(conditioning)
+            mapped_atom_indices = self._get_selected_indices(mapped)
+            conditioning_atom_indices = self._get_selected_indices(conditioning)
 
             # Make sure that there are no overlapping atoms.
-            mapped_set = set(self._mapped_atom_indices.tolist())
-            conditioning_set = set(self._conditioning_atom_indices.tolist())
+            mapped_set = set(mapped_atom_indices.tolist())
+            conditioning_set = set(conditioning_atom_indices.tolist())
             if len(mapped_set & conditioning_set) > 0:
                 raise ValueError('Mapped and conditioning selections cannot have overlapping atoms.')
 
             non_fixed_set = mapped_set | conditioning_set
-            self._fixed_atom_indices = torch.tensor([idx for idx in range(n_atoms)
-                                                    if idx not in non_fixed_set])
+            fixed_atom_indices = torch.tensor(
+                [idx for idx in range(n_atoms) if idx not in non_fixed_set])
 
         # Make sure conditioning and fixed atoms are None if they are empty.
-        if (self._conditioning_atom_indices is not None) and (len(self._conditioning_atom_indices) == 0):
-            self._conditioning_atom_indices = None
-        if (self._fixed_atom_indices is not None) and (len(self._fixed_atom_indices) == 0):
-            self._fixed_atom_indices = None
+        if (conditioning_atom_indices is not None) and (len(conditioning_atom_indices) == 0):
+            conditioning_atom_indices = None
+        if (fixed_atom_indices is not None) and (len(fixed_atom_indices) == 0):
+            fixed_atom_indices = None
 
         # Make sure there are atoms to map.
-        if len(self._mapped_atom_indices) == 0:
+        if len(mapped_atom_indices) == 0:
             raise ValueError('There are no atoms to map.')
 
         # Check that there are no duplicate atoms.
         if (mapped_set is not None and
-                    len(mapped_set) != len(self._mapped_atom_indices)):
+                    len(mapped_set) != len(mapped_atom_indices)):
                 raise ValueError('There are duplicate mapped atom indices.')
         if (conditioning_set is not None and
-                    len(conditioning_set) != len(self._conditioning_atom_indices)):
+                    len(conditioning_set) != len(conditioning_atom_indices)):
                 raise ValueError('There are duplicate conditioning atom indices.')
 
         # Select origin atom.
         if origin is None:
-            self._origin_atom_idx = None
+            origin_atom_idx = None
         else:
-            self._origin_atom_idx = self._get_selected_indices(origin, sort=False)
+            origin_atom_idx = self._get_selected_indices(origin, sort=False)
 
             # String selections are returned as an array containing 1 index.
-            if len(self._origin_atom_idx.shape) > 0:
-                if self._origin_atom_idx.numel() > 1:
+            if len(origin_atom_idx.shape) > 0:
+                if origin_atom_idx.numel() > 1:
                     raise ValueError('Selected multiple atoms as the origin atom')
-                self._origin_atom_idx = self._origin_atom_idx[0]
+                origin_atom_idx = origin_atom_idx[0]
 
             # Make sure origin is a fixed atom.
-            if (self._conditioning_atom_indices is None or
-                        self._origin_atom_idx not in self._conditioning_atom_indices):
+            if (conditioning_atom_indices is None or
+                        origin_atom_idx not in conditioning_atom_indices):
                 raise ValueError("origin_atom is not a conditioning atom. origin_atom "
                                  "affects the mapping but its position is constrained.")
 
         # Select axes atoms.
         if axes is None:
-            self._axes_atoms_indices = None
+            axes_atoms_indices = None
         else:
             # In this case we must maintain the given order.
-            self._axes_atoms_indices = self._get_selected_indices(axes, sort=False)
-            if len(self._axes_atoms_indices) != 2:
+            axes_atoms_indices = self._get_selected_indices(axes, sort=False)
+            if len(axes_atoms_indices) != 2:
                 raise ValueError('Exactly 2 axes atoms must be given.')
 
             # Check that the atoms don't overlap.
-            reference_atoms = self._axes_atoms_indices
+            reference_atoms = axes_atoms_indices
             if origin is not None:
-                reference_atoms = torch.cat((self._origin_atom_idx.unsqueeze(0), reference_atoms))
+                reference_atoms = torch.cat((origin_atom_idx.unsqueeze(0), reference_atoms))
             if len(reference_atoms.unique()) != len(reference_atoms):
                 raise ValueError("center, axis, and plane atoms must be different")
 
             # Check that the axes atoms are not flagged as fixed.
-            if self._fixed_atom_indices is None:
+            if fixed_atom_indices is None:
                 are_axes_atom_fixed = False
             else:
                 if non_fixed_set is None:
                     if mapped_set is None:
-                        mapped_set = set(self._mapped_atom_indices.tolist())
-                    if (conditioning_set is None) and (self._conditioning_atom_indices is not None):
-                        conditioning_set = set(self._conditioning_atom_indices.tolist())
+                        mapped_set = set(mapped_atom_indices.tolist())
+                    if (conditioning_set is None) and (conditioning_atom_indices is not None):
+                        conditioning_set = set(conditioning_atom_indices.tolist())
                         non_fixed_set = mapped_set | conditioning_set
                     else:
                         non_fixed_set = mapped_set
 
-                axes_atom_indices_set = set(self._axes_atoms_indices.tolist())
+                axes_atom_indices_set = set(axes_atoms_indices.tolist())
                 are_axes_atom_fixed = len(axes_atom_indices_set & non_fixed_set) != 2
 
             if are_axes_atom_fixed:
                 raise ValueError("axis and plane atoms must be mapped or conditioning "
                                  "atoms as they affect the mapping.")
+
+        # Register as buffer so that they get automatically moved to the correct device.
+        self._mapped_atom_indices = mapped_atom_indices
+        self._conditioning_atom_indices = conditioning_atom_indices
+        self._fixed_atom_indices = fixed_atom_indices
+        self._origin_atom_idx = origin_atom_idx
+        self._axes_atoms_indices = axes_atoms_indices
 
     def forward(self, x):
         """Execute the normalizing flow in the forward direction.
@@ -812,9 +826,15 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             self._stateful_batch_sampler.load_state_dict(batch_sampler_state)
 
         # Create the training dataloader.
+        if self._dataloader_kwargs is None:
+            dataloader_kwargs = {}
+        else:
+            dataloader_kwargs = self._dataloader_kwargs
+
         data_loader = torch.utils.data.DataLoader(
             self.dataset,
             batch_sampler=self._stateful_batch_sampler,
+            **dataloader_kwargs,
         )
 
         # Initialize the TFEPLogger.
@@ -845,6 +865,8 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
     def _get_selected_indices(self, selection: Union[str, int, Sequence[int]], sort: bool = True) -> torch.Tensor:
         """Return selected indices as a sorted Tensor of integers.
+
+        This does not set the device of the returned tensor.
 
         Parameters
         ----------

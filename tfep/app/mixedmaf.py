@@ -14,7 +14,7 @@
 
 from collections.abc import Sequence
 import logging
-from typing import List, Optional, Set, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 import MDAnalysis
 import networkx as nx
@@ -99,11 +99,11 @@ class MixedMAFMap(TFEPMapBase):
     Examples
     --------
 
-    >>> from tfep.potentials.psi4 import PotentialPsi4
+    >>> from tfep.potentials.psi4 import Psi4Potential
     >>> units = pint.UnitRegistry()
     >>>
     >>> tfep_map = MixedMAFMap(
-    ...     potential_energy_func=PotentialPsi4(name='mp2'),
+    ...     potential_energy_func=Psi4Potential(name='mp2'),
     ...     topology_file_path='path/to/topology.psf',
     ...     coordinates_file_path='path/to/trajectory.dcd',
     ...     temperature=300*units.kelvin,
@@ -137,6 +137,7 @@ class MixedMAFMap(TFEPMapBase):
             n_maf_layers: int = 6,
             bond_limits: Optional[Tuple[pint.Quantity]] = None,
             max_cartesian_displacement: Optional[pint.Quantity] = None,
+            dataloader_kwargs: Optional[Dict] = None,
             **kwargs,
     ):
         """Constructor.
@@ -145,7 +146,7 @@ class MixedMAFMap(TFEPMapBase):
         ----------
         potential_energy_func : torch.nn.Module
             A PyTorch module encapsulating the target potential energy function
-            (e.g. :class:`tfep.potentials.psi4.PotentialASE`).
+            (e.g. :class:`tfep.potentials.psi4.ASEPotential`).
         topology_file_path : str
             The path to the topology file. The file can be in `any format supported
             by MDAnalysis <https://docs.mdanalysis.org/stable/documentation_pages/topology/init.html#supported-topology-formats>`__
@@ -210,6 +211,8 @@ class MixedMAFMap(TFEPMapBase):
             ``max_value-max_cartesian_displacement``, where ``min/max_value`` are
             the minimum and maximum value observed in the entire dataset for that
             particular degree of freedom. Default is 3.0 Angstrom.
+        dataloader_kwargs : Dict, optional
+            Extra keyword arguments to pass to ``torch.utils.data.DataLoader``.
         **kwargs
             Other keyword arguments to pass to the constructor of :class:`tfep.nn.flows.MAF`.
 
@@ -241,6 +244,7 @@ class MixedMAFMap(TFEPMapBase):
             origin_atom=origin_atom,
             axes_atoms=axes_atoms,
             tfep_logger_dir_path=tfep_logger_dir_path,
+            dataloader_kwargs=dataloader_kwargs,
         )
         self.save_hyperparameters('n_maf_layers')
         self._auto_reference_frame = auto_reference_frame
@@ -596,7 +600,7 @@ class MixedMAFMap(TFEPMapBase):
 
             # Insert in conditioning maintaining the order.
             if self._conditioning_atom_indices is None:
-                self._conditioning_atom_indices = torch.tensor([self._origin_atom_idx])
+                self._conditioning_atom_indices = self._origin_atom_idx.unsqueeze(0).clone()
             else:
                 insert_idx = torch.searchsorted(self._conditioning_atom_indices, self._origin_atom_idx)
                 self._conditioning_atom_indices = torch.concatenate([
@@ -754,18 +758,22 @@ def _is_hydrogen(atom):
     Raises an exception if the atom has no information on the element.
 
     """
+    err_msg = ("The topology files have no information on the atom elements. "
+               "This is required to infer a robust Z-matrix. You can either "
+               "provide a topology file that includes this info (e.g., a PDB) "
+               "or add this information programmatically by overwriting "
+               "MixedMAFMap.create_universe() and set, e.g., "
+               "universe.add_TopologyAttr('element', ['O', 'H', 'C', ...]).")
+
     try:
         element = atom.element
     except MDAnalysis.exceptions.NoDataError as e:
-        err_msg = ("The topology files have no information on the atom elements. "
-                   "This is required to infer a robust Z-matrix. You can either "
-                   "provide a topology file that includes this info (e.g., a PDB) "
-                   "or add this information programmatically by overwriting "
-                   "MixedMAFMap.create_universe() and set, e.g., "
-                   "universe.add_TopologyAttr('element', ['O', 'H', 'C', ...]).")
         raise ValueError(err_msg) from e
     else:
         element = element.upper()
+    # In some cases there is an element attribute but it's empty.
+    if element == '':
+        raise ValueError(err_msg)
     return element == 'H'
 
 
@@ -827,18 +835,19 @@ class _CartesianToMixedFlow(torch.nn.Module):
 
         # Find the indices of the reference atoms in the cartesian tensor after
         # cartesian_to_mixed() is called.
-        self._reference_atoms_indices_in_cartesian = []
+        reference_atoms_indices_in_cartesian = []
 
         # Reference atoms (if present) are always in cartesian_atom_indices so we can use searchsorted.
         if origin_atom_idx is not None:
             idx = np.searchsorted(cartesian_atom_indices, [origin_atom_idx.tolist()])
-            self._reference_atoms_indices_in_cartesian.append(idx[0])
+            reference_atoms_indices_in_cartesian.append(idx[0])
         if axes_atoms_indices is not None:
             indices = np.searchsorted(cartesian_atom_indices, axes_atoms_indices.tolist())
-            self._reference_atoms_indices_in_cartesian.extend(indices)
+            reference_atoms_indices_in_cartesian.extend(indices)
 
         # Convert to tensor.
-        self._reference_atoms_indices_in_cartesian = torch.tensor(self._reference_atoms_indices_in_cartesian, dtype=int)
+        self.register_buffer('_reference_atoms_indices_in_cartesian',
+                             torch.tensor(reference_atoms_indices_in_cartesian, dtype=int))
 
     @property
     def has_origin_atom(self) -> bool:
@@ -899,7 +908,8 @@ class _CartesianToMixedFlow(torch.nn.Module):
         reference_atoms_indices_in_cartesian_set = set(self._reference_atoms_indices_in_cartesian.tolist())
         conditioning_atom_indices_in_cartesian_no_ref = [i for i in conditioning_atom_indices_in_cartesian
                                                          if i not in reference_atoms_indices_in_cartesian_set]
-        conditioning_atom_indices_in_cartesian_no_ref = torch.tensor(conditioning_atom_indices_in_cartesian_no_ref, dtype=int)
+        conditioning_atom_indices_in_cartesian_no_ref = torch.tensor(
+            conditioning_atom_indices_in_cartesian_no_ref).to(self._reference_atoms_indices_in_cartesian)
 
         # Shift indices due to the removed reference atoms. searchsorted requires sorted tensor.
         # We eventually will shift the indices to the right for the axes atoms DOFs later.
@@ -933,7 +943,8 @@ class _CartesianToMixedFlow(torch.nn.Module):
 
             # Concatenate reference and other conditioning DOFs.
             if len(to_concatenate) > 0:
-                maf_conditioning_dof_indices = torch.cat([torch.tensor(to_concatenate), maf_conditioning_dof_indices])
+                to_concatenate = torch.tensor(to_concatenate).to(maf_conditioning_dof_indices)
+                maf_conditioning_dof_indices = torch.cat([to_concatenate, maf_conditioning_dof_indices])
 
         return maf_conditioning_dof_indices
 
@@ -1008,7 +1019,8 @@ class _CartesianToMixedFlow(torch.nn.Module):
 
         # We'll have to remove the reference atoms from the cartesian atoms using a mask.
         if self.has_origin_atom or self.has_axes_atoms:
-            kept_atoms_mask = torch.full((n_cartesian_atoms,), True)
+            kept_atoms_mask = torch.full((n_cartesian_atoms,), True).to(
+                self._reference_atoms_indices_in_cartesian.device)
 
         # Center the Cartesian coordinates on the origin atom.
         if not self.has_origin_atom:
@@ -1025,7 +1037,7 @@ class _CartesianToMixedFlow(torch.nn.Module):
         # Re-orient the frame of reference.
         if not self.has_axes_atoms:
             rotation_matrix = None
-            axes_atoms_dof = [torch.empty(0)]
+            axes_atoms_dof = [torch.empty(0).to(self._reference_atoms_indices_in_cartesian)]
         else:
             axis_atom_idx = self._reference_atoms_indices_in_cartesian[-2]
             plane_atom_idx = self._reference_atoms_indices_in_cartesian[-1]
@@ -1036,8 +1048,8 @@ class _CartesianToMixedFlow(torch.nn.Module):
             rotation_matrix = reference_frame_rotation_matrix(
                 axis_atom_positions=axis_atom_pos,
                 plane_atom_positions=plane_atom_pos,
-                axis=get_axis_from_name('x'),
-                plane_axis=get_axis_from_name('y'),
+                axis=get_axis_from_name('x').to(x_cartesian),
+                plane_axis=get_axis_from_name('y').to(x_cartesian),
                 # We can project on positive axis since the neural spline
                 # never makes the coordinate negative.
                 project_on_positive_axis=True,
@@ -1123,7 +1135,7 @@ class _CartesianToMixedFlow(torch.nn.Module):
             reference_atom_positions.append(torch.zeros_like(origin_atom_position))
         if self.has_axes_atoms:
             # The axis atom lies on the x-axis.
-            axis_atom_pos = torch.zeros(batch_size, 3, dtype=y_cartesian.dtype)
+            axis_atom_pos = torch.zeros(batch_size, 3).to(y_cartesian)
             axis_atom_pos[:, 0] = dist_axis_atom
 
             # The plane atom lies on the xy-plane.
@@ -1142,14 +1154,15 @@ class _CartesianToMixedFlow(torch.nn.Module):
 
         # Insert back into y_cartesian the reference atoms.
         if len(reference_atom_positions) > 0:
-            y_cartesian_tmp = torch.empty(batch_size, n_cartesian_atoms+len(reference_atom_positions), 3)
+            y_cartesian_tmp = torch.empty(batch_size, n_cartesian_atoms+len(reference_atom_positions), 3).to(y_cartesian)
 
             # Start by setting the reference atom positions.
             for idx, ref_atom_idx in enumerate(self._reference_atoms_indices_in_cartesian):
                 y_cartesian_tmp[:, ref_atom_idx] = reference_atom_positions[idx]
 
             # Now set the other Cartesian coordinates.
-            mask = torch.full(y_cartesian_tmp.shape[1:2], fill_value=True)
+            mask = torch.full(y_cartesian_tmp.shape[1:2], fill_value=True).to(
+                self._reference_atoms_indices_in_cartesian.device)
             mask[self._reference_atoms_indices_in_cartesian] = False
             y_cartesian_tmp[:, mask] = y_cartesian
 

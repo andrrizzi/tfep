@@ -134,12 +134,12 @@ def test_compute_centroid(exclude_fixed_point, subset_point_indices, weights, fi
         centroid, weight = centroid
 
     # Compute the expected centroid with numpy.
-    coords = coords.detach().numpy()
+    coords = coords.detach().cpu().numpy()
     if subset_point_indices is not None:
         coords = coords[:, subset_point_indices]
 
     if weights is not None:
-        weights = weights.detach().numpy()
+        weights = weights.detach().cpu().numpy()
 
     expected_centroid = np.average(coords, axis=1, weights=weights)
     if exclude_fixed_point:
@@ -204,7 +204,7 @@ def test_centered_centroid_flow(
     y, log_det_J = flow(x)
 
     # Compute the new centroid position.
-    y_atom_shape = flattened_to_atom(y.detach().numpy(), space_dimension)
+    y_atom_shape = flattened_to_atom(y.detach().cpu().numpy(), space_dimension)
     if subset_point_indices is None:
         new_centroid = np.average(y_atom_shape, axis=1, weights=weights)
     else:

@@ -144,10 +144,10 @@ def configure_psi4(
 # TORCH MODULE API
 # =============================================================================
 
-class PotentialPsi4(PotentialBase):
+class Psi4Potential(PotentialBase):
     """Potential energy and forces with Psi4.
 
-    This ``Module`` wraps :class:``.PotentialEnergyPsi4Func`` to provide a
+    This ``Module`` wraps :class:``.Psi4PotentialEnergyFunc`` to provide a
     differentiable potential energy function for training. It also provides an
     API to compute energies and forces with Psi4 from batches of coordinates in
     ``numpy`` arrays in standard format (i.e., shape ``(n_atoms, 3)``) rather
@@ -155,7 +155,7 @@ class PotentialPsi4(PotentialBase):
 
     See Also
     --------
-    :class:`.PotentialEnergyPsi4Func`
+    :class:`.Psi4PotentialEnergyFunc`
         More details on input parameters and implementation details.
     ``psi4.energy`` `documentation <https://psicode.org/psi4manual/master/api/psi4.driver.energy.html>`_:
         More information on the supported keyword arguments.
@@ -220,7 +220,7 @@ class PotentialPsi4(PotentialBase):
             force, and/or wavefunction, simply set the psi4 global option
             ``'fail_on_maxiter'``.
         **kwargs
-            Other keyword arguments to pass to :class:``.PotentialEnergyPsi4Func``,
+            Other keyword arguments to pass to :class:``.Psi4PotentialEnergyFunc``,
             ``psi4.energy``, and ``psi4.gradient``.
 
         """
@@ -254,7 +254,7 @@ class PotentialPsi4(PotentialBase):
             ``batch_positions[i]`` in units of ``self.energy_unit``.
 
         """
-        return potential_energy_psi4(
+        return psi4_potential_energy(
             batch_positions=batch_positions,
             name=self.name,
             molecule=self.molecule,
@@ -340,7 +340,7 @@ class PotentialPsi4(PotentialBase):
 # TORCH FUNCTIONAL API
 # =============================================================================
 
-class PotentialEnergyPsi4Func(torch.autograd.Function):
+class Psi4PotentialEnergyFunc(torch.autograd.Function):
     """PyTorch-differentiable potential energy of a Psi4 molecule.
 
     This is essentially a wrapper of ``psi4.energy``, but it provides additional
@@ -430,7 +430,7 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
 
     See Also
     --------
-    :class:`.PotentialPsi4`
+    :class:`.Psi4Potential`
         ``Module`` API for computing potential energies with Psi4.
     ``psi4.energy`` `documentation <https://psicode.org/psi4manual/master/api/psi4.driver.energy.html>`_:
         More information on the supported keyword arguments.
@@ -444,8 +444,8 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
     for the calculation of energies and gradients of a water molecule. Note that
     molecules cannot be sent between processes with ``pickle`` so it is convenient
     to create the molecule and activate it in the process through an ``initializer``.
-    Note that the functional syntax ``potential_energy_psi4()`` is used rather
-    than ``PotentialEnergyPsi4Func.apply()``, which do not support keyword
+    Note that the functional syntax ``psi4_potential_energy()`` is used rather
+    than ``Psi4PotentialEnergyFunc.apply()``, which do not support keyword
     arguments.
 
     .. code-block:: python
@@ -483,7 +483,7 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
 
        with Pool(2, pool_process_initializer, initargs=[batch_positions[0]]) as p:
            strategy = ProcessPoolStrategy(p)
-           energy = potential_energy_psi4(batch_positions, name='scf', positions_unit=ureg.angstrom)
+           energy = psi4_potential_energy(batch_positions, name='scf', positions_unit=ureg.angstrom)
 
     References
     ----------
@@ -524,9 +524,9 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
             unit_registry = pint.UnitRegistry()
 
         # Convert tensor to numpy array with shape (batch_size, n_atoms, 3) with attached units.
-        batch_positions_arr = flattened_to_atom(batch_positions.detach().numpy())
+        batch_positions_arr = flattened_to_atom(batch_positions.detach().cpu().numpy())
         if positions_unit is None:
-            batch_positions_arr *= PotentialPsi4.default_positions_unit(unit_registry)
+            batch_positions_arr *= Psi4Potential.default_positions_unit(unit_registry)
         else:
             batch_positions_arr *= positions_unit
 
@@ -551,14 +551,13 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
             energies, forces = _run_psi4(return_force=True, **run_psi4_kwargs)
 
             # Save the pre-computed forces used for backpropagation.
-            forces = forces_array_to_tensor(forces, positions_unit, energy_unit,
-                                            dtype=batch_positions.dtype)
+            forces = forces_array_to_tensor(forces, positions_unit, energy_unit).to(batch_positions)
 
             # In this case we won't need the SCF wavefunctions.
             ctx.wavefunctions = None
 
             # The original input vector is required in case of double backprop
-            # to tell PyTorch that _PotentialEnergyPsi4FuncBackward enters the
+            # to tell PyTorch that _Psi4PotentialEnergyFuncBackward enters the
             # computational graph correctly. It won't be actually used since we
             # are also passing batch_positions_arr.
             ctx.save_for_backward(batch_positions, forces)
@@ -587,7 +586,7 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
         ctx.kwargs = kwargs
 
         # Convert to unitless tensor.
-        energies = energies_array_to_tensor(energies, energy_unit, batch_positions.dtype)
+        energies = energies_array_to_tensor(energies, energy_unit).to(batch_positions)
         return energies
 
     @staticmethod
@@ -600,7 +599,7 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
 
         # Check if we need a double backward (i.e. create_graph == True).
         if torch.is_grad_enabled() and (isinstance(ctx.write_orbitals, bool) or ctx.restart_file is None):
-            warnings.warn('PotentialEnergyPsi4Func.backward() was requested to '
+            warnings.warn('Psi4PotentialEnergyFunc.backward() was requested to '
                           'create the computational graph to perform double '
                           'backprop, but write_orbitals or restart_file were not '
                           'given. These should point to the same path or the '
@@ -620,7 +619,7 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
             # saved the SCF orbitals during the energy/gradient calculation.
             # If the paths in write_orbitals coincide with restart_file, then
             # they will be read.
-            grad_input[0] = _PotentialEnergyPsi4FuncBackward.apply(
+            grad_input[0] = _Psi4PotentialEnergyFuncBackward.apply(
                 batch_positions,
                 grad_output,
                 precomputed_forces,
@@ -639,7 +638,7 @@ class PotentialEnergyPsi4Func(torch.autograd.Function):
         return tuple(grad_input)
 
 
-class _PotentialEnergyPsi4FuncBackward(torch.autograd.Function):
+class _Psi4PotentialEnergyFuncBackward(torch.autograd.Function):
     @staticmethod
     def forward(
             ctx,
@@ -673,8 +672,7 @@ class _PotentialEnergyPsi4FuncBackward(torch.autograd.Function):
 
             # From Quantity[numpy] to Tensor and fix units.
             precomputed_forces = forces_array_to_tensor(
-                precomputed_forces, positions_unit, energy_unit,
-                dtype=back_grad_output.dtype)
+                precomputed_forces, positions_unit, energy_unit).to(back_grad_output)
 
         # We shouldn't pass an SCF wavefunction here since we need the wave
         # function for a perturbed configuration.
@@ -713,7 +711,7 @@ class _PotentialEnergyPsi4FuncBackward(torch.autograd.Function):
             # TODO: Make this a parameter?
             max_disp = 1e-3
             ureg = ctx.batch_positions_arr._REGISTRY
-            default_positions_unit = PotentialPsi4.default_positions_unit(ureg)
+            default_positions_unit = Psi4Potential.default_positions_unit(ureg)
             if ctx.positions_unit is None:
                 positions_unit = default_positions_unit
             else:
@@ -728,9 +726,9 @@ class _PotentialEnergyPsi4FuncBackward(torch.autograd.Function):
             # espilon_v shape: (batch_size, n_atoms*3).
             epsilon_v = epsilon * v
             batch_positions_plus = flattened_to_atom(batch_positions + epsilon_v)
-            batch_positions_plus = batch_positions_plus.detach().numpy() * positions_unit
+            batch_positions_plus = batch_positions_plus.detach().cpu().numpy() * positions_unit
             batch_positions_minus = flattened_to_atom(batch_positions - epsilon_v)
-            batch_positions_minus = batch_positions_minus.detach().numpy() * positions_unit
+            batch_positions_minus = batch_positions_minus.detach().cpu().numpy() * positions_unit
 
             # Shared kwargs for _run_psi().
             run_psi4_kwargs = dict(
@@ -751,9 +749,9 @@ class _PotentialEnergyPsi4FuncBackward(torch.autograd.Function):
 
             # Convert units.
             forces_plus = forces_array_to_tensor(
-                forces_plus, ctx.positions_unit, ctx.energy_unit, dtype=forces.dtype)
+                forces_plus, ctx.positions_unit, ctx.energy_unit).to(forces)
             forces_minus = forces_array_to_tensor(
-                forces_minus, ctx.positions_unit, ctx.energy_unit, dtype=forces.dtype)
+                forces_minus, ctx.positions_unit, ctx.energy_unit).to(forces)
 
             # Compute the Hessian-vector product.
             hessian_v = (forces_plus - forces_minus) / (2 * epsilon)
@@ -765,7 +763,7 @@ class _PotentialEnergyPsi4FuncBackward(torch.autograd.Function):
         return tuple(grad_back)
 
 
-def potential_energy_psi4(
+def psi4_potential_energy(
         batch_positions,
         name,
         molecule=None,
@@ -781,17 +779,17 @@ def potential_energy_psi4(
     """PyTorch-differentiable potential energy of a Psi4 molecule.
 
     PyTorch ``Function``s do not accept keyword arguments. This function wraps
-    :func:`.PotentialEnergyPsi4Func.apply` to enable standard functional notation.
+    :func:`.Psi4PotentialEnergyFunc.apply` to enable standard functional notation.
     See the documentation on the original function for the input parameters.
 
     See Also
     --------
-    :class:`.PotentialEnergyPsi4Func`
+    :class:`.Psi4PotentialEnergyFunc`
         More details on input parameters and implementation details.
 
     """
     # apply() does not accept keyword arguments.
-    return PotentialEnergyPsi4Func.apply(
+    return Psi4PotentialEnergyFunc.apply(
         batch_positions,
         name,
         molecule,
@@ -979,7 +977,7 @@ def _run_psi4(
         # Convert to a list to avoid code branching.
         batch_positions_bohr = [None]
     else:
-        batch_positions_bohr = batch_positions.to(PotentialPsi4.DEFAULT_POSITIONS_UNIT).magnitude
+        batch_positions_bohr = batch_positions.to(Psi4Potential.DEFAULT_POSITIONS_UNIT).magnitude
         if len(batch_positions.shape) < 3:
             # Convert batch_positions to a unitless (in Psi4 units) numpy array
             # of shape (batch_size, n_atoms, 3).
@@ -1037,9 +1035,9 @@ def _run_psi4(
     # Prepare returned values and handle units.
     returned_values = []
     if return_energy:
-        returned_values.append(energies * PotentialPsi4.default_energy_unit(unit_registry))
+        returned_values.append(energies * Psi4Potential.default_energy_unit(unit_registry))
     if return_force:
-        returned_values.append(forces * PotentialPsi4.default_energy_unit(unit_registry) / PotentialPsi4.default_positions_unit(unit_registry))
+        returned_values.append(forces * Psi4Potential.default_energy_unit(unit_registry) / Psi4Potential.default_positions_unit(unit_registry))
     if return_wfn:
         returned_values.append(wavefunctions)
 

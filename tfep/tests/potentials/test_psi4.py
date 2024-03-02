@@ -34,7 +34,7 @@ import torch
 from tfep.utils.parallel import SerialStrategy, ProcessPoolStrategy
 from tfep.potentials.psi4 import (
     create_psi4_molecule, configure_psi4, _run_psi4,
-    potential_energy_psi4
+    psi4_potential_energy
 )
 
 
@@ -403,8 +403,8 @@ def test_run_psi4_on_unconverged(on_unconverged, return_force, return_wfn):
 
 @pytest.mark.skipif(not PSI4_INSTALLED, reason='requires a Python installation of Psi4')
 @pytest.mark.parametrize('name', ['scf', 'mp2'])
-def test_potential_energy_psi4_gradcheck(name):
-    """Test that potential_energy_psi4 implements the correct gradient."""
+def test_psi4_potential_energy_gradcheck(name):
+    """Test that psi4_potential_energy implements the correct gradient."""
     batch_size = 2
     molecule, batch_positions = create_water_molecule(batch_size)
 
@@ -425,7 +425,7 @@ def test_potential_energy_psi4_gradcheck(name):
 
         # Run a first SCF calculation to generate the wavefunction restart files.
         cached_wfn_file_path = [os.path.join(tmp_dir_path, 'wfn'+str(i)) for i in range(batch_size)]
-        potential_energy_psi4(
+        psi4_potential_energy(
             batch_positions,
             name,
             positions_unit=_UREG.angstrom,
@@ -437,7 +437,7 @@ def test_potential_energy_psi4_gradcheck(name):
         # Run gradcheck. We keep precompute_gradient = False because gradcheck
         # performs a bunch of forward without backward.
         torch.autograd.gradcheck(
-            func=potential_energy_psi4,
+            func=psi4_potential_energy,
             inputs=[
                 batch_positions,
                 name,
@@ -455,7 +455,7 @@ def test_potential_energy_psi4_gradcheck(name):
 
 @pytest.mark.skipif(not PSI4_INSTALLED, reason='requires a Python installation of Psi4')
 def test_double_backpropagation():
-    """Test that potential_energy_psi4 implements the correct gradient."""
+    """Test that psi4_potential_energy implements the correct gradient."""
     batch_size = 2
     name = 'scf'
     positions_unit = _UREG.angstrom
@@ -484,7 +484,7 @@ def test_double_backpropagation():
 
         # Generate the restart files in the first SCF calculation.
         cached_wfn_file_path = [os.path.join(tmp_dir_path, 'wfn'+str(i)) for i in range(batch_size)]
-        potentials = potential_energy_psi4(
+        potentials = psi4_potential_energy(
             batch_positions,
             name,
             positions_unit=positions_unit,
