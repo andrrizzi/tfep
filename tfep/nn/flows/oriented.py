@@ -14,7 +14,7 @@ Transformation that constrains the rotational degrees of freedom.
 # GLOBAL IMPORTS
 # =============================================================================
 
-from typing import Optional, Literal
+from typing import Literal, Optional, Tuple
 
 import torch
 
@@ -128,23 +128,23 @@ class OrientedFlow(PartialFlow):
                              "'axis_atom_idx' must be constrained on an axis on the same plane.")
 
         # Save the axis used for contraining the first point as a vector.
-        self._axis = get_axis_from_name(axis)
+        axis_vector = get_axis_from_name(axis)
 
         # Save the axis that together with self._axis defines the plane on which
         # the second point is contrained.
-        self._plane_axis = [get_axis_from_name(name) for name in ['x', 'y', 'z']
-                            if (name not in axis) and (name in plane)][0]
+        plane_axis_vector = [get_axis_from_name(name) for name in ['x', 'y', 'z']
+                             if (name not in axis) and (name in plane)][0]
 
         # Save the plane used for constraining the second point as its normal vector.
-        self._plane_normal = torch.cross(self._axis, self._plane_axis)
+        plane_normal_vector = torch.cross(axis_vector, plane_axis_vector)
 
         # The coordinates that are not on the axis are fixed to 0.
         axis_point_flattened_indices = atom_to_flattened_indices(torch.tensor([axis_point_idx]))
-        is_constrained_on_axis = self._axis == 0.0
+        is_constrained_on_axis = axis_vector == 0.0
 
         # The coordinate that are not on the plane is fixed to 0.
         plane_point_flattened_indices = atom_to_flattened_indices(torch.tensor([plane_point_idx]))
-        is_constrained_on_plane = self._plane_normal != 0.0
+        is_constrained_on_plane = plane_normal_vector != 0.0
 
         # Determine which atom is fixed.
         fixed_indices = torch.cat([axis_point_flattened_indices[is_constrained_on_axis],
@@ -154,16 +154,19 @@ class OrientedFlow(PartialFlow):
         super().__init__(flow, fixed_indices=fixed_indices, return_partial=return_partial)
 
         # Save all other parameters.
-        self._axis_point_idx = axis_point_idx
-        self._plane_point_idx = plane_point_idx
+        self.register_buffer('_axis', axis_vector)
+        self.register_buffer('_plane_axis', plane_axis_vector)
+        self.register_buffer('_plane_normal', plane_normal_vector)
+        self.register_buffer('_axis_point_idx', torch.as_tensor(axis_point_idx))
+        self.register_buffer('_plane_point_idx', torch.as_tensor(plane_point_idx))
         self.round_off_imprecisions = round_off_imprecisions
         self.rotate_back = rotate_back  #: Whether the reference frame is restored to its original orientation in the output configuration.
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor]:
         """Transform the input configuration."""
         return self._transform(x)
 
-    def inverse(self, y):
+    def inverse(self, y: torch.Tensor) -> Tuple[torch.Tensor]:
         """Invert the forward transformation.
 
         This works only if the forward transformation was performed with
@@ -176,7 +179,7 @@ class OrientedFlow(PartialFlow):
                              " forward and inverse transformations.")
         return self._transform(y, inverse=True)
 
-    def _transform(self, x, inverse=False):
+    def _transform(self, x: torch.Tensor, inverse: bool = False) -> Tuple[torch.Tensor]:
         """Apply the forward/inverse transformation."""
         # Reshape coordinates to be in standard atom format.
         x = flattened_to_atom(x)
