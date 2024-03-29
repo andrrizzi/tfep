@@ -791,11 +791,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         )
 
         # Log loss.
-        self._tfep_logger.save_train_metrics(
-            tensors={'loss': loss},
-            epoch_idx=self.trainer.current_epoch,
-            batch_idx=batch_idx,
-        )
+        self.log('loss')
 
         return loss
 
