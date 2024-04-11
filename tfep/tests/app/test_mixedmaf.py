@@ -369,7 +369,7 @@ def test_mixed_maf_flow_build_z_matrix(
     assert (cartesian_to_mixed_flow.z_matrix == expected_z_matrix).all()
 
     # Test are_axes_atoms_bonded.
-    _, _, are_axes_atoms_bonded = tfep_map._build_z_matrix()
+    _, _, _, are_axes_atoms_bonded = tfep_map._build_z_matrix()
     assert are_axes_atoms_bonded == expected_are_bonded
 
     # The Z-matrix and fixed atoms cover all the mapped + conditioning atoms.
