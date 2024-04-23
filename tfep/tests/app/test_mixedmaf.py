@@ -318,8 +318,8 @@ def test_cartesian_to_mixed_flow_conversion(origin, axes):
     # Origin and axes are distant on the same molecule.
     ('resname BEN and element C and not name C1',
      'resname BEN and name C1',
-     'resname BEN and name C1', 'resname BEN and (name C or name C4)', [True, False],
-      [[2, 1, 0, 4], [6, 1, 2, 0], [3, 2, 4, 1], [5, 6, 4, 1]]
+     'resname BEN and name C1', 'resname BEN and (name C or name C5)', [True, False],
+      [[2, 1, 0, 5], [6, 5, 1, 2], [3, 2, 1, 5], [4, 3, 5, 2]],
      ),
     # Origin and axes are on different mapped molecules.
     ('(resname BEN and element C) or (resname CLMET and not name C1)',
@@ -369,7 +369,7 @@ def test_mixed_maf_flow_build_z_matrix(
     assert (cartesian_to_mixed_flow.z_matrix == expected_z_matrix).all()
 
     # Test are_axes_atoms_bonded.
-    _, _, _, are_axes_atoms_bonded = tfep_map._build_z_matrix()
+    _, _, are_axes_atoms_bonded = tfep_map._build_z_matrix()
     assert are_axes_atoms_bonded == expected_are_bonded
 
     # The Z-matrix and fixed atoms cover all the mapped + conditioning atoms.
@@ -572,3 +572,16 @@ def test_error_auto_reference_with_origin_or_axes():
             axes_atoms=[3, 6],
             auto_reference_frame=True
         )
+
+
+def test_error_collinear_atoms():
+    """An error is raised if the Z-matrix results in collinear atoms."""
+    tfep_map = MyMixedMAFMap(
+        batch_size=2,
+        mapped_atoms='resname BEN and element C and not name C1',
+        conditioning_atoms='resname BEN and name C1',
+        origin_atom='resname BEN and name C1',
+        axes_atoms='resname BEN and (name C or name C4)',
+    )
+    with pytest.raises(RuntimeError, match='collinear'):
+        tfep_map.setup()

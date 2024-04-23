@@ -668,6 +668,9 @@ class MixedMAFMap(TFEPMapBase):
         """
         # This is needed to check for collinearity of the reference atoms.
         ref_atoms = self.get_reference_atoms_indices(remove_fixed=True)
+        # We don't need to check collinearity if only the origin or the axes atoms are given.
+        if (ref_atoms is not None) and (len(ref_atoms) < 3):
+            ref_atoms = None
 
         # We temporarily set the flow to the partial flow to process the positions.
         assert self._flow is None
