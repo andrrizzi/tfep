@@ -675,9 +675,15 @@ class MixedMAFMap(TFEPMapBase):
         self._flow = self.create_partial_flow(identity_flow, return_partial=True)
 
         # Read the trajectory in batches.
+        batch_size = 1024
+        max_n_samples = 5 * batch_size
         dataset = self.create_dataset()
+        if len(dataset) > max_n_samples:
+            step = int(np.ceil(len(dataset) / max_n_samples))
+            indices = list(range(0, len(dataset), step))
+            dataset = torch.utils.data.Subset(dataset, indices)
         data_loader = torch.utils.data.DataLoader(
-            dataset, batch_size=1024, shuffle=False, drop_last=False
+            dataset, batch_size=batch_size, shuffle=False, drop_last=False
         )
         for batch_data in data_loader:
             # Go through the partial flow.
