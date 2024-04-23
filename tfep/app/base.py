@@ -786,7 +786,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         )
 
         # Log loss.
-        self.log('loss')
+        self.log('loss', loss)
 
         return loss
 
