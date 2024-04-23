@@ -266,7 +266,7 @@ class MixedMAFMap(TFEPMapBase):
         """
         # Determine Z-matrix and Cartesian atoms and (optionally)
         # automatically determine origin and axes atoms.
-        cartesian_atom_indices, z_matrix, z_matrix_w_fixed, are_axes_atoms_bonded = self._build_z_matrix()
+        cartesian_atom_indices, z_matrix, are_axes_atoms_bonded = self._build_z_matrix()
         if len(z_matrix) == 0:
             raise ValueError('There are no internal coordinates to map. '
                              'Consider using a Cartesian flow.')
@@ -287,7 +287,7 @@ class MixedMAFMap(TFEPMapBase):
         # (i.e., no collinear atoms determining angles) and compute the min/max values
         # of the DOFs (after going through _CartesianToMixedFlow) to configure the
         # neural splines correctly.
-        min_dof_vals, max_dof_vals = self._analyze_dataset(z_matrix_w_fixed, cartesian_to_mixed_flow)
+        min_dof_vals, max_dof_vals = self._analyze_dataset(z_matrix, cartesian_to_mixed_flow)
 
         # Determine the conditioning DOFs after going through _CartesianToMixedFlow.
         # conditioning_atom_indices must have the indices after the fixed atoms are removed.
@@ -340,9 +340,6 @@ class MixedMAFMap(TFEPMapBase):
         If self._auto_reference_frame is True, this method also sets self._origin_atom_idx
         and self._axes_atoms_indices.
 
-        The returned indices refer to those after the fixed atoms are removed
-        except for ``z_matrix_w_fixed``.
-
         Returns
         -------
         cartesian_atom_indices : numpy.ndarray
@@ -354,9 +351,6 @@ class MixedMAFMap(TFEPMapBase):
             internal coordinates. E.g., ``z_matrix[i] == [7, 2, 4, 8]``
             means that the distance, angle, and dihedral for atom ``7`` must be
             computed between atoms ``7-2``, ``7-2-4``, and ``7-2-4-8`` respectively.
-        z_matrix_w_fixed : numpy.ndarray
-            Same as z_matrix but the indices refer to the atoms before the fixed
-            atoms have been removed.
         are_axes_atoms_bonded : List[bool] or None
             Whether the first and second axes atoms are bonded to the origin atom.
 
@@ -439,9 +433,11 @@ class MixedMAFMap(TFEPMapBase):
         # systems before the fixed and reference atoms have been removed. Now
         # we need to map the indices to those after they are removed since these
         # are not passed to _CartesianToMixed._rel_ic.
-        z_matrix_w_fixed = np.array(system_z_matrix)
         nonfixed_atom_indices_w_fixed = nonfixed_atom_indices_w_fixed.tolist()
         indices_map = {nonfixed_atom_indices_w_fixed[idx]: idx for idx in range(self.n_nonfixed_atoms)}
+
+        # Log Z-matrix.
+        logger.info('Determined Z-Matrix:\n' + str(np.array(system_z_matrix)))
 
         # Convert indices.
         cartesian_atom_indices = [indices_map[i] for i in cartesian_atom_indices]
@@ -451,7 +447,7 @@ class MixedMAFMap(TFEPMapBase):
         # Sort atom indices and convert everything to numpy array (for RelativeInternalCoordinateTransformation).
         cartesian_atom_indices = np.array(cartesian_atom_indices)
         cartesian_atom_indices.sort()
-        return cartesian_atom_indices, np.array(system_z_matrix), z_matrix_w_fixed, are_axes_atoms_bonded
+        return cartesian_atom_indices, np.array(system_z_matrix), are_axes_atoms_bonded
 
     def _create_networkx_graph(self, atom_indices):
         """Return a networkx graph representing the given atoms."""
@@ -634,7 +630,7 @@ class MixedMAFMap(TFEPMapBase):
 
     def _analyze_dataset(
             self,
-            z_matrix_w_fixed: np.ndarray,
+            z_matrix: np.ndarray,
             cartesian_to_mixed_flow: torch.nn.Module,
     ) -> Tuple[torch.Tensor]:
         """Check the Z-matrix robustness and compute the minimum and maximum value of each DOF in the trajectory.
@@ -654,8 +650,8 @@ class MixedMAFMap(TFEPMapBase):
 
         Parameters
         ----------
-        z_matrix_w_fixed : np.ndarray
-            The Z-matrix. The atom indices must refer to those before the fixed
+        z_matrix: np.ndarray
+            The Z-matrix. The atom indices must refer to those after the fixed
             atoms have been removed.
         cartesian_to_mixed_flow : torch.nn.Module
             The flow used to convert Cartesian into mixed coordinates.
@@ -671,14 +667,12 @@ class MixedMAFMap(TFEPMapBase):
 
         """
         # This is needed to check for collinearity of the reference atoms.
-        if self._origin_atom_idx is not None and self._axes_atoms_indices is not None:
-            ref_atoms = torch.cat([self._origin_atom_idx.unsqueeze(0), self._axes_atoms_indices])
-        else:
-            ref_atoms = None
+        ref_atoms = self.get_reference_atoms_indices(remove_fixed=True)
 
-        # Create a flow removing the fixed and conditioning atoms.
+        # We temporarily set the flow to the partial flow to process the positions.
+        assert self._flow is None
         identity_flow = lambda x_: (x_, torch.zeros_like(x_[:, 0]))
-        partial_flow = self.create_partial_flow(identity_flow, return_partial=True)
+        self._flow = self.create_partial_flow(identity_flow, return_partial=True)
 
         # Read the trajectory in batches.
         dataset = self.create_dataset()
@@ -686,22 +680,22 @@ class MixedMAFMap(TFEPMapBase):
             dataset, batch_size=1024, shuffle=False, drop_last=False
         )
         for batch_data in data_loader:
-            batch_positions = batch_data['positions']
+            # Go through the partial flow.
+            batch_positions, _ = self(batch_data)
 
             # Test collinearity for the Z-matrix for these samples.
             batch_atom_positions = flattened_to_atom(batch_positions)
-            for row_idx, zmatrix_row in enumerate(z_matrix_w_fixed):
+            for row_idx, zmatrix_row in enumerate(z_matrix):
                 if (is_collinear(batch_atom_positions[:, zmatrix_row[:3]]) or
                         is_collinear(batch_atom_positions[:, zmatrix_row[1:]])):
-                    raise RuntimeError(f'Row {row_idx+1}: {zmatrix_row} have collinear atoms.')
+                    raise RuntimeError(f'Row {row_idx+1} have collinear atoms.')
 
             # Test collinearity reference frame atoms.
             if ref_atoms is not None and is_collinear(batch_atom_positions[:, ref_atoms]):
                 raise RuntimeError('Axes atoms are collinear!')
 
             # Go through the coordinate conversion flow.
-            dofs, _ = partial_flow(batch_positions)
-            dofs = cartesian_to_mixed_flow._cartesian_to_mixed(dofs)[0]
+            dofs = cartesian_to_mixed_flow._cartesian_to_mixed(batch_positions)[0]
 
             # Take the min/max across the batch of the selected DOFs.
             batch_min = torch.min(dofs, dim=0).values
@@ -714,6 +708,9 @@ class MixedMAFMap(TFEPMapBase):
             except NameError:  # First iteration.
                 min_dofs = batch_min
                 max_dofs = batch_max
+
+        # Reset flow.
+        self._flow = None
 
         return min_dofs, max_dofs
 
@@ -809,7 +806,7 @@ def check_independent(z_matrix):
     This raises an error if the coordinates of two atoms in the Z-matrix depend
     on the same set of other atoms and, in particular, have the same bond atom.
 
-    This check was implemented in https://github.com/noegroup/bgmol/tree/main.
+    This check was implemented in https://github.com/noegroup/bgmol
 
     """
     dependent_rows = []

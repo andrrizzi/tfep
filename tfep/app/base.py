@@ -694,14 +694,13 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         self._origin_atom_idx = origin_atom_idx
         self._axes_atoms_indices = axes_atoms_indices
 
-    def forward(self, x):
+    def forward(self, batch: Dict) -> Tuple[torch.Tensor]:
         """Execute the normalizing flow in the forward direction.
 
         Parameters
         ----------
-        x : torch.Tensor
-            Input coordinates for the flow.
-
+        batch : dict[str, torch.Tensor]
+            Batch data. Must have the key 'positions'.
 
         Returns
         -------
@@ -711,17 +710,15 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             Logarithm of the absolute value of the Jacobian determinant.
 
         """
-        # Continuous flows return also the regularization, which is important only for training.
-        return self._flow(x)[:2]
+        return self._flow(batch['positions'])
 
-    def inverse(self, y):
+    def inverse(self, batch: Dict) -> Tuple[torch.Tensor]:
         """Execute the normalizing flow in the inverse direction.
 
         Parameters
         ----------
-        y : torch.Tensor
-            Mapped coordinates for the flow.
-
+        batch : dict[str, torch.Tensor]
+            Batch data. Must have the key 'positions'.
 
         Returns
         -------
@@ -732,7 +729,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
         """
         # Continuous flows return also the regularization, which is important only for training.
-        return self._flow.inverse(y)[:2]
+        return self._flow.inverse(batch['positions'])
 
     def training_step(self, batch, batch_idx):
         """Lightning method.
@@ -740,10 +737,8 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         Execute a training step.
 
         """
-        x = batch['positions']
-
         # Forward.
-        result = self._flow(x)
+        result = self(batch)
 
         # Continuous flows also return a regularization term.
         try:
