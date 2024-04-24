@@ -21,7 +21,7 @@ import torch
 # (T)FEP ESTIMATOR
 # =============================================================================
 
-def fep_estimator(data, kT=1.0, vectorized=False):
+def fep_estimator(data, kT=1.0, weights=None, vectorized=False):
     """FEP estimator.
 
     Computes the (weighted) free energy difference given a set of work values
@@ -43,6 +43,9 @@ def fep_estimator(data, kT=1.0, vectorized=False):
         The function assumes that the work and log-weights values are already
         divided by kT. If this is not the case, this should be set to the value
         of kT in the same unit of energy passed in ``data``.
+    weights : torch.Tensor, optional
+        Shape ``(n_bootstraps, n_samples)``. The weights used for Bayesian
+        bootstrapping.
     vectorized : bool, optional
         Whether the estimate should be vectorized for bootstrap analysis.
 
@@ -70,7 +73,12 @@ def fep_estimator(data, kT=1.0, vectorized=False):
     # Compute the log_weights.
     if bias is None:
         n_samples = torch.tensor(work.shape[-1])
-        log_weights = -torch.log(n_samples)
+        if weights is None:
+            log_weights = -torch.log(n_samples)
+        else:
+            log_weights = torch.log(weights)
+    elif weights is not None:
+        raise NotImplementedError('Bayesian bootstrapping is not supported with biased data.')
     else:
         # Normalize the weights.
         log_weights = torch.nn.functional.log_softmax(bias/kT, dim=-1)

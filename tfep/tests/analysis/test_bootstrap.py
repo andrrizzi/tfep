@@ -19,7 +19,7 @@ import scipy.stats
 import pytest
 import torch
 
-from tfep.analysis import bootstrap
+from tfep.analysis import bootstrap, fep_estimator
 
 
 # =============================================================================
@@ -57,7 +57,10 @@ def std(data, vectorized=True):
     return torch.std(data, dim=-1)
 
 
-def mean(data, vectorized=True):
+def mean(data, weights=None, vectorized=True):
+    """Weights must sum to 1 and have the same shape as data."""
+    if weights is not None:
+        return torch.sum(data * weights, dim=-1)
     return torch.mean(data, dim=-1)
 
 
@@ -106,7 +109,8 @@ def test_against_scipy(confidence_level, batch, method):
 @pytest.mark.parametrize('confidence_level', [0.95, 0.8])
 @pytest.mark.parametrize('batch', [None, 100])
 @pytest.mark.parametrize('method', ['percentile', 'basic'])
-def test_multiple_bootstrap_sample_size(confidence_level, batch, method):
+@pytest.mark.parametrize('bayesian', [False, True])
+def test_multiple_bootstrap_sample_size(confidence_level, batch, method, bayesian):
     """When bootstrap_sample_size is a list, bootstrap() gives multiple results."""
     n_samples = 1000
     bootstrap_sample_size = [10, 100, 1000]
@@ -119,7 +123,10 @@ def test_multiple_bootstrap_sample_size(confidence_level, batch, method):
         data=data,
         statistic=mean,
         bootstrap_sample_size=bootstrap_sample_size,
+        # Bayesian bootstrapping supports only take_first_only=True with bootstrap_sample_size
+        take_first_only=bayesian,
         method=method,
+        bayesian=bayesian,
     )
 
     # There should be one result for each bootstrap sample size.
@@ -133,12 +140,15 @@ def test_multiple_bootstrap_sample_size(confidence_level, batch, method):
         assert ci_interval[i-1] > ci_interval[i]
 
 
-def test_multiple_inputs():
+@pytest.mark.parametrize('bayesian', [False, True])
+def test_multiple_inputs(bayesian):
     """bootstrap() handles statistics with multiple input arguments."""
 
-    def _statistic(_data, vectorized=True):
+    def _statistic(_data, weights=None, vectorized=True):
         """Sum of 3 numbers."""
         s = torch.sum(_data, dim=-1)
+        if weights is not None:
+            return torch.sum(s * weights, dim=-1)
         return torch.mean(s, dim=-1)
 
     # The triplets of inputs always sum to 5.
@@ -154,11 +164,39 @@ def test_multiple_inputs():
         statistic=_statistic,
         n_resamples=100,
         method='percentile',
+        bayesian=bayesian,
     )
 
     # The statistic should be constant and equal 5.
-    assert result['confidence_interval']['low'] == 5
-    assert result['confidence_interval']['high'] == 5
-    assert result['standard_deviation'] == 0
-    assert result['mean'] == 5
-    assert result['median'] == 5
+    assert np.isclose(result['confidence_interval']['low'], 5)
+    assert np.isclose(result['confidence_interval']['high'], 5)
+    assert np.isclose(result['standard_deviation'], 0)
+    assert np.isclose(result['mean'], 5)
+    assert np.isclose(result['median'], 5)
+
+
+@pytest.mark.parametrize('bayesian', [False, True])
+def test_fep_estimator(bayesian):
+    """Test compatibility with fep_estimator."""
+    # Work values normally distributed around 0.0 should yield free energy ~0.5.
+    work = torch.randn(10000)
+    result = bootstrap(
+        data=work,
+        statistic=fep_estimator,
+        n_resamples=10000,
+        method='percentile',
+        bayesian=bayesian,
+    )
+    assert np.isclose(result['mean'], -0.5, rtol=0.0, atol=1e-1)
+
+
+def test_error_bayesian_generator():
+    """An error is raised if a generator is set with Bayesian bootstrapping."""
+    with pytest.raises(ValueError, match='generator'):
+        bootstrap(data=torch.randn(1000), statistic=mean, bayesian=True, generator=GENERATOR)
+
+
+def test_error_bayesian_take_first_only():
+    """With Bayesian bootstrapping, bootstrap_sample_size can be used only if take_first_only=True."""
+    with pytest.raises(ValueError, match='bootstrap_sample_size'):
+        bootstrap(data=torch.randn(1000), statistic=mean, bootstrap_sample_size=[10], bayesian=True)
