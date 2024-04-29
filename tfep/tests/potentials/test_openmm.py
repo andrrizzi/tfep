@@ -14,6 +14,8 @@ Test objects and function in the module ``tfep.potentials.ase``.
 # GLOBAL IMPORTS
 # =============================================================================
 
+import contextlib
+
 # OpenMM is an optional dependency of tfep.
 try:
     import openmm
@@ -24,15 +26,16 @@ else:
     import openmm.app
     import openmm.unit
 
-
 from MDAnalysis.lib.mdamath import triclinic_vectors
 import numpy as np
 import pint
 import pytest
 import torch
 
+import tfep.potentials.openmm
 from tfep.potentials.openmm import OpenMMPotential, openmm_potential_energy
 from tfep.utils.misc import atom_to_flattened, flattened_to_atom
+from tfep.utils.parallel import SerialStrategy, ProcessPoolStrategy
 
 
 # =============================================================================
@@ -57,11 +60,28 @@ def setup_module(module):
 
 def teardown_module(module):
     torch.set_default_dtype(_old_default_dtype)
+    # Clear the OpenMM Context cache.
+    tfep.potentials.openmm.global_context_cache.pop('two_waters', None)
+    tfep.potentials.openmm.global_context_cache.pop('two_atoms_bonded_in_vacuum', None)
 
 
 # =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
+
+@contextlib.contextmanager
+def parallelization_strategy(strategy_name):
+    """Context manager safely creating/destroying the parallelization strategy."""
+    if strategy_name is None:
+        yield None  # Default parallelization strategy.
+    elif strategy_name == 'serial':
+        yield SerialStrategy()
+    else:
+        # Keep the pool of processes open until the contextmanager has left.
+        mp_context = torch.multiprocessing.get_context('forkserver')
+        with mp_context.Pool(2) as p:
+            yield ProcessPoolStrategy(p)
+
 
 def create_two_waters(batch_size, seed=42):
     """Crete a System object with two water molecules and batch positions.
@@ -120,14 +140,7 @@ def create_two_waters(batch_size, seed=42):
     batch_cells[:, :3] = 10.  # angstrom
     batch_cells[:, 3:] = 90.  # degrees
 
-    # Create context on CPU.
-    context = openmm.Context(
-        system,
-        openmm.VerletIntegrator(0.001),
-        openmm.Platform.getPlatformByName('CPU'),
-    )
-
-    return context, batch_positions.reshape(batch_size, -1), batch_cells
+    return system, batch_positions.reshape(batch_size, -1), batch_cells
 
 
 def two_atoms_bonded_in_vacuum(batch_size=2, seed=42):
@@ -150,13 +163,6 @@ def two_atoms_bonded_in_vacuum(batch_size=2, seed=42):
     force.addBond(0, 1, r0, K)
     system.addForce(force)
 
-    # Create context on CPU.
-    context = openmm.Context(
-        system,
-        openmm.VerletIntegrator(0.001),
-        openmm.Platform.getPlatformByName('CPU'),
-    )
-
     # Equilibrium position.
     eq_positions = torch.zeros(2, 3)
     eq_positions[1, 0] = r0._value
@@ -168,15 +174,20 @@ def two_atoms_bonded_in_vacuum(batch_size=2, seed=42):
         perburbation = random_state.uniform(-0.02, 0.02, size=eq_positions.shape)  # nanometers
         batch_positions[batch_idx] = eq_positions + perburbation
 
-    return context, batch_positions.reshape(batch_size, -1)
+    return system, batch_positions.reshape(batch_size, -1)
 
 
-def reference_energy_forces(context, batch_positions, batch_cell):
+def reference_energy_forces(system, batch_positions, batch_cell):
     """Compute the energy and force of atoms at batch_positions.
 
     Expects batch_positions/cell in units of Angstrom and returns energies(forces)
     in units of kcal/mol(*A).
     """
+    context = openmm.Context(
+        system,
+        openmm.VerletIntegrator(0.001),
+        openmm.Platform.getPlatformByName('CPU'),
+    )
     batch_positions = flattened_to_atom(batch_positions.detach()).numpy()
     batch_size, n_atoms, _ = batch_positions.shape
 
@@ -204,24 +215,30 @@ def reference_energy_forces(context, batch_positions, batch_cell):
 
 @pytest.mark.skipif(not OPENMM_INSTALLED, reason='requires OPENMM to be installed')
 @pytest.mark.parametrize('batch_size', [1, 2])
-def test_openmm_potential_energy_force(batch_size):
+@pytest.mark.parametrize('platform', [None, 'CPU'])
+@pytest.mark.parametrize('strategy', [None, 'serial', 'pool'])
+def test_openmm_potential_energy_force(batch_size, platform, strategy):
     """Test the calculation of energies/forces with OpenMMPotential."""
-    context, batch_positions, batch_cell = create_two_waters(batch_size)
+    system, batch_positions, batch_cell = create_two_waters(batch_size)
     batch_positions.requires_grad = True
 
     # Compute reference energies and forces.
-    ref_energies, ref_forces = reference_energy_forces(context, batch_positions, batch_cell)
+    ref_energies, ref_forces = reference_energy_forces(system, batch_positions, batch_cell)
 
-    # Compute through OpenMMPotential.
-    potential = OpenMMPotential(
-        openmm_context=context,
-        positions_unit=_UREG.angstrom,
-        energy_unit=_UREG.kcal/_UREG.mole,
-        precompute_gradient=True,
-    )
+    with parallelization_strategy(strategy) as ps:
+        # Compute through OpenMMPotential.
+        potential = OpenMMPotential(
+            system=system,
+            platform=platform,
+            positions_unit=_UREG.angstrom,
+            energy_unit=_UREG.kcal/_UREG.mole,
+            system_name='two_waters',
+            precompute_gradient=True,
+            parallelization_strategy=ps,
+        )
 
-    # Compute energy and compare to reference.
-    energies = potential(batch_positions, batch_cell)
+        # Compute energy and compare to reference.
+        energies = potential(batch_positions, batch_cell)
     assert torch.allclose(energies, ref_energies)
 
     # Compute forces (negative gradient).
@@ -231,9 +248,61 @@ def test_openmm_potential_energy_force(batch_size):
 
 
 @pytest.mark.skipif(not OPENMM_INSTALLED, reason='requires OpenMM to be installed')
+def test_openmm_context_cache():
+    """The OpenMM caching of Context objects works correctly."""
+    batch_size = 2
+
+    # Clear cache to start the test.
+    tfep.potentials.openmm.global_context_cache = {}
+
+    # Initialize two different potentials.
+    system1, batch_positions1, batch_cell1 = create_two_waters(batch_size)
+    potential1 = OpenMMPotential(
+        system=system1,
+        platform='CPU',
+        positions_unit=_UREG.angstrom,
+        system_name='system1',
+    )
+
+    system2, batch_positions2 = two_atoms_bonded_in_vacuum(batch_size=batch_size)
+    potential2 = OpenMMPotential(
+        system=system2,
+        platform='CPU',
+        positions_unit=_UREG.angstrom,
+        system_name='system2',
+    )
+
+    # Compute the energy of two different systems and cache the Contexts.
+    energies1 = potential1(batch_positions1, batch_cell1)
+    assert len(tfep.potentials.openmm.global_context_cache) == 1
+    assert 'system1' in tfep.potentials.openmm.global_context_cache
+    energies2 = potential2(batch_positions2)
+    assert len(tfep.potentials.openmm.global_context_cache) == 2
+    assert 'system2' in tfep.potentials.openmm.global_context_cache
+    assert not torch.any(torch.isclose(energies1, energies2))
+
+    # Re-compute them and check that the system retrieves the correct Context.
+    assert torch.allclose(energies1, potential1(batch_positions1, batch_cell1))
+    assert torch.allclose(energies2, potential2(batch_positions2))
+    assert len(tfep.potentials.openmm.global_context_cache) == 2
+    assert set(tfep.potentials.openmm.global_context_cache.keys()) == {'system1', 'system2'}
+
+    # The same is true when caching is not activated.
+    potential1 = OpenMMPotential(system=system1, platform='CPU', positions_unit=_UREG.angstrom)
+    potential2 = OpenMMPotential(system=system2, platform='CPU', positions_unit=_UREG.angstrom)
+    assert torch.allclose(energies1, potential1(batch_positions1, batch_cell1))
+    assert torch.allclose(energies2, potential2(batch_positions2))
+    assert len(tfep.potentials.openmm.global_context_cache) == 2
+    assert set(tfep.potentials.openmm.global_context_cache.keys()) == {'system1', 'system2'}
+
+    # Clear cache for other tests.
+    tfep.potentials.openmm.global_context_cache = {}
+
+
+@pytest.mark.skipif(not OPENMM_INSTALLED, reason='requires OpenMM to be installed')
 def test_openmm_potential_energy_gradcheck():
     """Test that openmm_potential_energy implements the correct gradient."""
-    context, batch_positions = two_atoms_bonded_in_vacuum(batch_size=2)
+    system, batch_positions = two_atoms_bonded_in_vacuum(batch_size=2)
     batch_positions.requires_grad = True
 
     # Run gradcheck.
@@ -241,9 +310,12 @@ def test_openmm_potential_energy_gradcheck():
         func=openmm_potential_energy,
         inputs=[
             batch_positions,
-            context,
-            None,
+            system,
+            openmm.Platform.getPlatformByName('CPU'),  # platform
+            None,  # batch cell
             None,  # positions_unit
             None,  # energy_unit
+            None,  # system_name
             True,  # precompute_gradient
+            None,  # parallelization_strategy
         ],    )

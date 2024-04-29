@@ -14,6 +14,7 @@ Modules and functions to compute energies and gradients with OpenMM.
 # =============================================================================
 
 # DO NOT IMPORT OpenMM HERE! OpenMM is an optional dependency of tfep.
+import functools
 from typing import Optional
 
 from MDAnalysis.lib.mdamath import triclinic_vectors
@@ -26,6 +27,15 @@ from tfep.utils.misc import (
     energies_array_to_tensor, forces_array_to_tensor
 )
 from tfep.potentials.base import PotentialBase
+from tfep.utils.parallel import ParallelizationStrategy, SerialStrategy
+
+
+# =============================================================================
+# GLOBAL VARIABLES
+# =============================================================================
+
+#: Cache of Context objects.
+global_context_cache: dict = {}
 
 
 # =============================================================================
@@ -52,19 +62,23 @@ class OpenMMPotential(PotentialBase):
 
     def __init__(
             self,
-            openmm_context,
+            system,
+            platform,
             positions_unit: Optional[pint.Unit] = None,
             energy_unit: Optional[pint.Unit] = None,
+            system_name: Optional[str] = None,
             precompute_gradient: bool = False,
+            parallelization_strategy: Optional[ParallelizationStrategy] = None,
     ):
         """Constructor.
 
         Parameters
         ----------
-        openmm_context : openmm.Context or openmm.System
-            The OpenMM ``Context`` used to compute energies and forces. If a
-            ``System`` object is passed instead, a ``Context`` is created with
-            the OpenMM default ``Platform``.
+        system : openmm.System
+            The OpenMM ``System`` used to compute energies and forces.
+        platform : str or openmm.Platform, optional
+            The OpenMM ``Platform`` object or its name. If ``None``, the default
+            platform is used.
         positions_unit : pint.Unit, optional
             The unit of the positions passed to the class methods. Since input
             ``Tensor``s do not have units attached, this is used to appropriately
@@ -77,12 +91,23 @@ class OpenMMPotential(PotentialBase):
             appropriately convert OpenMM energies into the desired units. If ``None``
             no conversion is performed, which means that energies and forces will be
             returned in OpenMM units (kJ/mol).
+        system_name : str, optional
+            If given, the OpenMM ``Context`` will be cached in the global variable
+            ``tfep.potentials.openmm.global_context_cache`` with ``system_name``
+            as a key so that the ``Context`` object will not be re-initialized
+            at every energy evaluation.
+
+            Note that it is the user's responsibility to clear the cache once
+            the ``Context`` is not needed anymore.
         precompute_gradient : bool, optional
             If ``True``, the gradient is computed in the forward pass and saved
             to be consumed during the backward pass. This speeds up the training,
             but should be deactivated if gradients are not needed. Setting this
             to ``False`` (default) will cause an exception if a backward pass is
             attempted.
+        parallelization_strategy : tfep.utils.parallel.ParallelizationStrategy, optional
+            The parallelization strategy used to distribute batches of energy and
+            gradient calculations. By default, these are executed serially.
 
         See Also
         --------
@@ -90,20 +115,32 @@ class OpenMMPotential(PotentialBase):
             More details on input parameters and implementation details.
 
         """
-        from openmm import Context, System, VerletIntegrator
+        from openmm import Platform
 
         super().__init__(positions_unit=positions_unit, energy_unit=energy_unit)
 
-        if isinstance(openmm_context, System):
-            # Cache a Context with the default platform. We don't care about the
-            # integrator since we perform only single-point calculations.
-            openmm_context = Context(openmm_context, VerletIntegrator(0.001))
+        # Handle mutable default arguments.
+        if parallelization_strategy is None:
+            parallelization_strategy = SerialStrategy()
 
-        #: The OpenMM Context used to compute energies and forces.
-        self.openmm_context = openmm_context
+        # Initialize platform with default properties.
+        if isinstance(platform, str):
+            platform = Platform.getPlatformByName('CPU')
+
+        #: The OpenMM System used to compute energies and forces.
+        self.system = system
+
+        #: The OpenMM Platform.
+        self.platform = platform
+
+        #: The identifier of the system used as key for the context cache.
+        self.system_name = system_name
 
         #: Whether to compute the gradients in the forward pass to speed up the backward pass.
         self.precompute_gradient = precompute_gradient
+
+        #: The strategy used to parallelize the single-point calculations.
+        self.parallelization_strategy = parallelization_strategy
 
     def forward(
             self,
@@ -135,11 +172,14 @@ class OpenMMPotential(PotentialBase):
         """
         return openmm_potential_energy(
             batch_positions,
-            openmm_context=self.openmm_context,
+            system=self.system,
+            platform=self.platform,
             batch_cell=batch_cell,
             positions_unit=self._positions_unit,
             energy_unit=self._energy_unit,
+            system_name=self.system_name,
             precompute_gradient=self.precompute_gradient,
+            parallelization_strategy=self.parallelization_strategy,
         )
 
 
@@ -168,8 +208,11 @@ class OpenMMPotentialEnergyFunc(torch.autograd.Function):
     batch_positions : torch.Tensor
         Shape ``(batch_size, 3*n_atoms)``. The atoms positions in units of
         ``positions_unit`` (or OpenMM units if ``positions_unit`` is not provided).
-    openmm_context : openmm.Context
-        The OpenMM ``Context`` used to compute energies and forces.
+    system : openmm.System
+        The OpenMM ``System`` used to compute energies and forces.
+    platform : str or openmm.Platform, optional
+        The OpenMM ``Platform`` object or its name. If ``None``, the default
+        platform is used.
     batch_cell : torch.Tensor or None, optional
         Shape ``(batch_size, 6)``. Unitcell dimensions. For each data point,
         the first 3 elements represent the vector lengths in units of
@@ -188,12 +231,23 @@ class OpenMMPotentialEnergyFunc(torch.autograd.Function):
         This is used to appropriately convert OpenMM energies into the desired
         units. If ``None``, no conversion is performed, which means that energies
         and forces will use OpenMM units (kJ/mol).
+    system_name : str, optional
+        If given, the OpenMM ``Context`` will be cached in the global variable
+        ``tfep.potentials.openmm.global_context_cache`` with ``system_name`` as
+        a key so that the ``Context`` object will not be re-initialized at every
+        energy evaluation.
+
+        Note that it is the user's responsibility to clear the cache once the
+        ``Context`` is not needed anymore.
     precompute_gradient : bool, optional
         If ``True``, the gradient is computed in the forward pass and saved to
         be consumed during the backward pass. This speeds up the training, but
         should be deactivated if gradients are not needed. Setting this to
         ``False`` (default) will cause an exception if a backward pass is
         attempted.
+    parallelization_strategy : tfep.utils.parallel.ParallelizationStrategy, optional
+        The parallelization strategy used to distribute batches of energy and
+        gradient calculations. By default, these are executed serially.
 
     Returns
     -------
@@ -212,14 +266,21 @@ class OpenMMPotentialEnergyFunc(torch.autograd.Function):
     def forward(
             ctx,
             batch_positions: torch.Tensor,
-            openmm_context,
+            system,
+            platform,
             batch_cell: Optional[torch.Tensor] = None,
             positions_unit: Optional[pint.Unit] = None,
             energy_unit: Optional[pint.Unit] = None,
+            system_name: Optional[str] = None,
             precompute_gradient: bool = False,
+            parallelization_strategy: Optional[ParallelizationStrategy] = None,
     ):
         """Compute the potential energy of the molecule with ASE."""
         batch_size = batch_positions.shape[0]
+
+        # Handle mutable default arguments.
+        if parallelization_strategy is None:
+            parallelization_strategy = SerialStrategy()
 
         # Convert tensor with shape (batch_size, n_atoms*3) to numpy array with
         # shape (batch_size, n_atoms, 3) in OpenMM units (nanometer).
@@ -239,13 +300,35 @@ class OpenMMPotentialEnergyFunc(torch.autograd.Function):
             # From lengths+angles to box vectors.
             box_vectors_nm = [triclinic_vectors(x) for x in batch_cell_arr_nm]
 
+        # Platforms are not serializable so to make this compatible with multiprocess
+        # parallelization we send platform name and properties.
+        if platform is None:
+            platform_name = None
+            platform_properties = {}
+        elif isinstance(platform, str):
+            platform_name = platform
+            platform_properties = {}
+        else:
+            platform_name = platform.getName()
+            platform_properties = {k: platform.getPropertyDefaultValue(k) for k in platform.getPropertyNames()}
+
+        # Systems are serialized and sent to parallel processes by converting
+        # them to XML. This is expensive so we try first to see if the context
+        # has been cached already and send the system only if an error is raised.
+        distributed_args = list(zip(batch_positions_arr_nm, box_vectors_nm))
+        partial_args = [system, platform_name, platform_properties, system_name, precompute_gradient]
+        if system_name is not None:
+            partial_args[0] = None
+
         # Compute energies (and optionally forces).
-        energies = [_run_single_point_calculation(
-            openmm_context,
-            batch_positions_arr_nm[i],
-            box_vectors_nm[i],
-            return_forces=precompute_gradient,
-        ) for i in range(batch_size)]
+        task = functools.partial(_run_single_point_calculation, *partial_args)
+        try:
+            energies = parallelization_strategy.run(task, distributed_args)
+        except KeyError as e:
+            if system_name is None:
+                raise
+            task = functools.partial(_run_single_point_calculation, system, *partial_args[1:])
+            energies = parallelization_strategy.run(task, distributed_args)
 
         # Unpack the results. From [(energy, forces), ...] to ([energy, ...], [forces, ...]).
         if precompute_gradient:
@@ -277,7 +360,7 @@ class OpenMMPotentialEnergyFunc(torch.autograd.Function):
         """Compute the gradient of the potential energy."""
         # We still need to return a None gradient for each
         # input of forward() beside batch_positions.
-        n_input_args = 6
+        n_input_args = 9
         grad_input = [None for _ in range(n_input_args)]
 
         # Compute gradient w.r.t. batch_positions.
@@ -305,11 +388,14 @@ class OpenMMPotentialEnergyFunc(torch.autograd.Function):
 
 def openmm_potential_energy(
         batch_positions: torch.Tensor,
-        openmm_context,
+        system,
+        platform,
         batch_cell: Optional[torch.Tensor] = None,
         positions_unit: Optional[pint.Unit] = None,
         energy_unit: Optional[pint.Unit] = None,
+        system_name: Optional[str] = None,
         precompute_gradient: bool = False,
+        parallelization_strategy: Optional[ParallelizationStrategy] = None,
 ):
     """PyTorch-differentiable potential energy using OpenMM.
 
@@ -326,11 +412,14 @@ def openmm_potential_energy(
     # apply() does not accept keyword arguments.
     return OpenMMPotentialEnergyFunc.apply(
         batch_positions,
-        openmm_context,
+        system,
+        platform,
         batch_cell,
         positions_unit,
         energy_unit,
+        system_name,
         precompute_gradient,
+        parallelization_strategy,
     )
 
 
@@ -344,7 +433,15 @@ def _to_openmm_units(x, positions_unit):
     return (x * positions_unit).to(default_positions_unit).magnitude
 
 
-def _run_single_point_calculation(openmm_context, positions, box_vectors, return_forces):
+def _run_single_point_calculation(
+        system,
+        platform_name,
+        platform_properties,
+        system_name,
+        return_forces,
+        positions,
+        box_vectors,
+):
     """Run a single-point calculation.
 
     This does not support batch dimensions.
@@ -355,12 +452,39 @@ def _run_single_point_calculation(openmm_context, positions, box_vectors, return
     Returns energy and forces in OpenMM units (stripped of OpenMM units).
 
     """
+    global global_context_cache
+
+    # Create Context if needed.
+    try:
+        context = global_context_cache[system_name]
+    except KeyError as e:
+        # If we need to initialize a Context, we need the system to be sent.
+        if system is None:
+            raise
+
+        # Initialize new context.
+        from openmm import Context, Platform, VerletIntegrator
+
+        integrator = VerletIntegrator(0.001)
+        if platform_name is None:
+            context = Context(system, integrator)
+        else:
+            # Configure platform.
+            platform = Platform.getPlatformByName(platform_name)
+            for property_name, property_val in platform_properties.items():
+                platform.setPropertyDefaultValue(property_name, property_val)
+            context = Context(system, integrator, platform)
+
+        # Update context cache.
+        if system_name is not None:
+            global_context_cache[system_name] = context
+
     # Temporarily enable grad to support energy/force calculations with OpenMM-ML.
     with torch.enable_grad():
         if box_vectors is not None:
-            openmm_context.setPeriodicBoxVectors(*box_vectors)
-        openmm_context.setPositions(positions)
-        state = openmm_context.getState(getEnergy=True, getForces=return_forces)
+            context.setPeriodicBoxVectors(*box_vectors)
+        context.setPositions(positions)
+        state = context.getState(getEnergy=True, getForces=return_forces)
 
     energy = state.getPotentialEnergy()._value
     if return_forces:
