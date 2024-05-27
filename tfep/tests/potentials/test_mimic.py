@@ -27,7 +27,7 @@ import torch
 
 from tfep.potentials.mimic import (Cpmd, GmxGrompp, GmxMdrun, mimic_potential_energy,
                                    _run_mimic, _prepare_cpmd_command, _prepare_mdrun_command)
-from tfep.utils.cli import SRunLauncher
+from tfep.utils.cli import Launcher, SRunLauncher
 from tfep.utils.parallel import ProcessPoolStrategy
 from tfep.utils.misc import temporary_cd
 
@@ -39,6 +39,7 @@ from .. import DATA_DIR_PATH
 # =============================================================================
 
 MIMIC_INPUT_DIR_PATH = os.path.realpath(os.path.join(DATA_DIR_PATH, 'mimic'))
+TPR_FILE_PATH = os.path.join(MIMIC_INPUT_DIR_PATH, 'gromacs.tpr')
 
 _UREG = pint.UnitRegistry()
 
@@ -74,6 +75,28 @@ EXPECTED_FORCES = np.array([
      [-0.00088666968531, 0.00127563889547, 0.00728713790857],
      [0.00569476133723, -0.02219780937585, -0.01165483165429]],
 ]) * _UREG.hartree / _UREG.bohr
+
+
+# =============================================================================
+# TEST MODULE CONFIGURATION
+# =============================================================================
+
+def setup_module(module):
+    """Create a temporary tpr file to run all GROMACS tests."""
+    grompp = GmxGrompp(
+        executable_path=GMX_EXECUTABLE,
+        mdp_input_file_path=os.path.join(MIMIC_INPUT_DIR_PATH, 'gromacs.mdp'),
+        structure_input_file_path=os.path.join(MIMIC_INPUT_DIR_PATH, 'equilibrated.gro'),
+        top_input_file_path=os.path.join(MIMIC_INPUT_DIR_PATH, 'acetone.top'),
+        tpr_output_file_path=TPR_FILE_PATH,
+    )
+    # Run grompp in a temporary directory so that all log files gets deleted at the end.
+    with tempfile.TemporaryDirectory() as tmp_dir_path:
+        Launcher().run(grompp, cwd=os.path.realpath(tmp_dir_path))
+
+
+def teardown_module(module):
+    os.remove(TPR_FILE_PATH)
 
 
 # =============================================================================
@@ -185,7 +208,7 @@ def mimic_srun_commands(parallel_strategy=False):
     )
     mdrun = GmxMdrun(
         executable_path=GMX_EXECUTABLE,
-        tpr_input_file_path=os.path.join(MIMIC_INPUT_DIR_PATH, 'gromacs.tpr'),
+        tpr_input_file_path=TPR_FILE_PATH,
         default_file_name='gromacs',
         n_omp_threads_per_mpi_rank=n_cpus_per_task,
     )
