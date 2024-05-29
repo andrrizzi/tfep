@@ -39,14 +39,15 @@ import pint
 import torch
 
 from tfep.potentials.base import PotentialBase
-from tfep.utils.cli import Launcher, CLITool, KeyValueOption
+from tfep.potentials.gromacs import GmxGrompp, GmxMdrun
+from tfep.utils.cli import Launcher, CLITool
 from tfep.utils.misc import (
     flattened_to_atom, energies_array_to_tensor, forces_array_to_tensor, temporary_cd)
 from tfep.utils.parallel import ParallelizationStrategy, SerialStrategy
 
 
 # =============================================================================
-# GROMACS/CPMD COMMANDS UTILITIES
+# CPMD COMMAND
 # =============================================================================
 
 class Cpmd(CLITool):
@@ -83,110 +84,6 @@ class Cpmd(CLITool):
 
     """
     EXECUTABLE_PATH = 'cpmd'
-
-
-class GmxGrompp(CLITool):
-    """The grompp subprogram of gmx from the GROMACS suite.
-
-    The executable path variable only specifies the path to the gmx executable.
-    The class takes care of adding the "grompp" subprogram after "gmx" so it
-    does not have to be passed when the command is instantiated.
-
-    All file paths must be either absolute or relative to the working directory
-    used for executing the command.
-
-    Parameters
-    ----------
-    executable_path : str, optional
-        The executable path associated to the instance of the command. If this
-        is not specified, the ``EXECUTABLE_PATH`` class variable is used instead.
-    mdp_input_file_path : str, optional
-        Path to input .mdp file. If a relative path is given, this must be relative
-        to the working directory when the command is executed, not when ``GmxGrompp``
-        is initialized.
-    structure_input_file_path : str, optional
-        The file including the structure and (if ``trajectory_input_file_path``
-        is not provided) the starting coordinates of the calculation (e.g., in
-        .gro or .pdb format).
-    top_input_file_path : str, optional
-        The path to the input .top topology file.
-    trajectory_input_file_path : str, optional
-        If given, the last frame is used to determine the starting coordinates
-        (e.g., in .trr or .cpt) file.
-    index_input_file_path : str, optional
-        The path to the input .ndx file with the atom group indices.
-    tpr_output_file_path : str, optional
-        The path to the output .tpr file.
-    n_max_warnings : int, optional
-        The maximum number of warnings after which an error is raised.
-
-    Examples
-    --------
-
-    >>> cmd = GmxGrompp(mdp_input_file_path='mysimulation.mdp', n_max_warnings=2)
-    >>> cmd.to_subprocess()
-    ['gmx', 'grompp', '-f', 'mysimulation.mdp', '-maxwarn', '2']
-
-    If the executable is called differently, simply specify the executable path
-    as a keyword argument.
-
-    >>> cmd = GmxGrompp(executable_path='gmx_mpi', mdp_input_file_path='mysimulation.mdp')
-    >>> cmd.to_subprocess()
-    ['gmx_mpi', 'grompp', '-f', 'mysimulation.mdp']
-
-    """
-    EXECUTABLE_PATH = 'gmx'
-    SUBPROGRAM = 'grompp'
-    mdp_input_file_path = KeyValueOption('-f')
-    structure_input_file_path = KeyValueOption('-c')
-    top_input_file_path = KeyValueOption('-p')
-    trajectory_input_file_path = KeyValueOption('-t')
-    index_input_file_path = KeyValueOption('-n')
-    tpr_output_file_path = KeyValueOption('-o')
-    n_max_warnings = KeyValueOption('-maxwarn')
-
-
-class GmxMdrun(CLITool):
-    """The mdrun subprogram of gmx from the GROMACS suite.
-
-    The executable path variable only specifies the path to the gmx executable.
-    The class takes care of adding the "mdrun" subprogram after "gmx" so it
-    does not have to be passed when the command is instantiated.
-
-    Parameters
-    ----------
-    executable_path : str, optional
-        The executable path associated to the instance of the command. If this
-        is not specified, the ``EXECUTABLE_PATH`` class variable is used instead.
-    tpr_input_file_path : str, optional
-        Path to input .tpr file. If a relative path is given, this must be relative
-        to the working directory when the command is executed, not when ``GmxMdrun``
-        is initialized.
-    default_file_name : str, optional
-        Default file name used for all other files.
-    n_omp_threads_per_mpi_rank : str, optional
-        Number of OpenMP threads per MPI rank.
-
-    Examples
-    --------
-
-    >>> cmd = GmxMdrun(default_file_name='mysimulation', n_omp_threads_per_mpi_rank=4)
-    >>> cmd.to_subprocess()
-    ['gmx', 'mdrun', '-deffnm', 'mysimulation', '-ntomp', '4']
-
-    If the executable is called differently, simply specify the executable path
-    as a keyword argument.
-
-    >>> cmd = GmxMdrun(executable_path='gmx_mpi', default_file_name='mysimulation')
-    >>> cmd.to_subprocess()
-    ['gmx_mpi', 'mdrun', '-deffnm', 'mysimulation']
-
-    """
-    EXECUTABLE_PATH = 'gmx'
-    SUBPROGRAM = 'mdrun'
-    tpr_input_file_path = KeyValueOption('-s')
-    default_file_name = KeyValueOption('-deffnm')
-    n_omp_threads_per_mpi_rank = KeyValueOption('-ntomp')
 
 
 # =============================================================================

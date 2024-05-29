@@ -25,8 +25,9 @@ import pint
 import pytest
 import torch
 
-from tfep.potentials.mimic import (Cpmd, GmxGrompp, GmxMdrun, mimic_potential_energy,
-                                   _run_mimic, _prepare_cpmd_command, _prepare_mdrun_command)
+from tfep.potentials.gromacs import GmxGrompp, GmxMdrun
+from tfep.potentials.mimic import (
+    Cpmd, mimic_potential_energy, _run_mimic, _prepare_cpmd_command, _prepare_mdrun_command)
 from tfep.utils.cli import Launcher, SRunLauncher
 from tfep.utils.parallel import ProcessPoolStrategy
 from tfep.utils.misc import temporary_cd
