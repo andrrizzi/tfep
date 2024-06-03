@@ -148,13 +148,13 @@ def test_periodic_blocks_and_conditioning_MAF(conditioning_indices, periodic_ind
 
     # The input dimension of the conditioner must account for the extra periodic DOFs.
     n_periodic = len(periodic_indices)
-    assert maf._conditioners[0].dimension_in == dimension_in + n_periodic
+    assert maf._conditioner.dimension_in == dimension_in + n_periodic
 
     # The blocks must be of length 2 for periodic DOFs (without conditioning DOFs).
-    assert torch.all(torch.tensor(maf._conditioners[0].blocks) == torch.tensor(expected_blocks))
+    assert torch.all(torch.tensor(maf._conditioner.blocks) == torch.tensor(expected_blocks))
 
     # Check the updated conditioning indices.
-    assert torch.all(torch.tensor(maf._conditioners[0].conditioning_indices) == torch.tensor(expected_conditioning_indices))
+    assert torch.all(torch.tensor(maf._conditioner.conditioning_indices) == torch.tensor(expected_conditioning_indices))
 
 
 @pytest.mark.parametrize('dimensions_hidden', [1, 4])
@@ -176,7 +176,6 @@ def test_periodic_blocks_and_conditioning_MAF(conditioning_indices, periodic_ind
 ])
 @pytest.mark.parametrize('degrees_in', ['input', 'reversed'])
 @pytest.mark.parametrize('weight_norm', [False, True])
-@pytest.mark.parametrize('split_conditioner', [True, False])
 @pytest.mark.parametrize('transformer', [
     AffineTransformer(),
     SOSPolynomialTransformer(2),
@@ -185,7 +184,7 @@ def test_periodic_blocks_and_conditioning_MAF(conditioning_indices, periodic_ind
     MoebiusTransformer(dimension=3)
 ])
 def test_identity_initialization_MAF(dimensions_hidden, conditioning_indices, periodic_indices, degrees_in,
-                                     weight_norm, split_conditioner, transformer):
+                                     weight_norm, transformer):
     """Test that the identity initialization of MAF works.
 
     This tests that the flow layers can be initialized to perform the
@@ -210,7 +209,6 @@ def test_identity_initialization_MAF(dimensions_hidden, conditioning_indices, pe
         periodic_limits=limits,
         degrees_in=degrees_in,
         weight_norm=weight_norm,
-        split_conditioner=split_conditioner,
         transformer=transformer,
         initialize_identity=True
     )
@@ -244,13 +242,12 @@ def test_identity_initialization_MAF(dimensions_hidden, conditioning_indices, pe
     [0, 2],
 ])
 @pytest.mark.parametrize('degrees_in', ['input', 'reversed', 'random'])
-@pytest.mark.parametrize('split_conditioner', [True, False])
 @pytest.mark.parametrize('transformer', [
     AffineTransformer(),
     MoebiusTransformer(dimension=3)
 ])
 @pytest.mark.parametrize('weight_norm', [False, True])
-def test_round_trip_MAF(conditioning_indices, periodic_indices, degrees_in, weight_norm, split_conditioner, transformer):
+def test_round_trip_MAF(conditioning_indices, periodic_indices, degrees_in, weight_norm, transformer):
     """Test that the MAF.inverse(MAF.forward(x)) equals the identity."""
     dimension = 5
     dimensions_hidden = 2
@@ -286,7 +283,6 @@ def test_round_trip_MAF(conditioning_indices, periodic_indices, degrees_in, weig
         degrees_in=degrees_in,
         weight_norm=weight_norm,
         blocks=blocks,
-        split_conditioner=split_conditioner,
         transformer=transformer,
         initialize_identity=False
     )

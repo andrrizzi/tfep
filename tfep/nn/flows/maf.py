@@ -66,7 +66,6 @@ class MAF(torch.nn.Module):
             weight_norm: bool = True,
             blocks: Union[int, Sequence[int]] = 1,
             shorten_last_block: bool = False,
-            split_conditioner: bool = True,
             transformer: Optional[torch.nn.Module] = None,
             initialize_identity: bool = True,
     ):
@@ -128,12 +127,6 @@ class MAF(torch.nn.Module):
             of non-conditioning  features, this option controls whether the
             last block is shortened (``True``) or an exception is raised
             (``False``). Default is ``False``.
-        split_conditioner : bool, optional
-            If ``True``, separate MADE networks are used to compute separately
-            each parameter of the transformer (e.g., for affine transformers
-            which require scale and shift parameters, two networks are used).
-            Otherwise, a single network is used to implement the conditioner,
-            and all parameters are generated in a single pass.
         transformer : torch.nn.Module or None, optional
             The transformer used to map the input features. By default, the
             ``AffineTransformer`` is used.
@@ -212,33 +205,24 @@ class MAF(torch.nn.Module):
             transformer = AffineTransformer()
         self._transformer = transformer
 
-        if split_conditioner:
-            n_conditioners = self._transformer.n_parameters_per_input
-            out_per_dimension = 1
-        else:
-            n_conditioners = 1
-            out_per_dimension = self._transformer.n_parameters_per_input
-
         # We need two MADE layers for the scaling and the shifting.
-        self._conditioners = torch.nn.ModuleList()
-        for i in range(n_conditioners):
-            self._conditioners.append(MADE(
-                dimension_in=dimension_in_made,
-                dimensions_hidden=dimensions_hidden,
-                out_per_dimension=out_per_dimension,
-                conditioning_indices=conditioning_indices_made,
-                degrees_in=degrees_in,
-                degrees_hidden_motif=degrees_hidden_motif,
-                degrees_per_out=degrees_per_out,
-                weight_norm=weight_norm,
-                blocks=blocks,
-                shorten_last_block=shorten_last_block,
-            ))
+        self._conditioner = MADE(
+            dimension_in=dimension_in_made,
+            dimensions_hidden=dimensions_hidden,
+            out_per_dimension=self._transformer.n_parameters_per_input,
+            conditioning_indices=conditioning_indices_made,
+            degrees_in=degrees_in,
+            degrees_hidden_motif=degrees_hidden_motif,
+            degrees_per_out=degrees_per_out,
+            weight_norm=weight_norm,
+            blocks=blocks,
+            shorten_last_block=shorten_last_block,
+        )
 
         # We cache the indices of the conditioning/mapped degrees of freedom
         # which is necessary to forward() and inverse(). The conditioning are
         # stored only if there are periodic DOFs as they can be read directly
-        # from the conditioners otherwise.
+        # from the conditioner otherwise.
         if conditioning_indices is None or len(conditioning_indices) == 0:
             n_conditioning_dofs = 0
             mapped_indices = None
@@ -259,37 +243,33 @@ class MAF(torch.nn.Module):
             # Determine the conditioner that will make the transformer the identity function.
             identity_conditioner = self._transformer.get_identity_parameters(dimension_out)
 
-            # If we have not split the conditioners over multiple networks,
-            # there is a single output bias parameter vector so we need to
+            # There is a single output bias parameter vector so we need to
             # convert from shape (batch_size, n_parameters_per_input, n_features)
             # to (batch_size, n_parameters_per_input * n_features).
-            if not split_conditioner:
-                identity_conditioner = torch.reshape(
-                    identity_conditioner,
-                    (self._transformer.n_parameters_per_input * dimension_out,)
-                )
-                identity_conditioner = [identity_conditioner]
+            identity_conditioner = torch.reshape(
+                identity_conditioner,
+                (self._transformer.n_parameters_per_input * dimension_out,)
+            )
 
-            for net, id_cond in zip(self._conditioners, identity_conditioner):
-                # Setting to 0.0 only the last layer suffices.
-                if weight_norm:
-                    net.layers[-1].weight_g.data.fill_(0.0)
-                else:
-                    net.layers[-1].weight.data.fill_(0.0)
-                net.layers[-1].bias.data = id_cond
+            # Setting to 0.0 only the last layer suffices.
+            if weight_norm:
+                self._conditioner.layers[-1].weight_g.data.fill_(0.0)
+            else:
+                self._conditioner.layers[-1].weight.data.fill_(0.0)
+            self._conditioner.layers[-1].bias.data = identity_conditioner
 
     @property
     def conditioning_indices(self) -> torch.Tensor:
         """The indices of the conditioning degrees of freedom."""
         # This is stored only if there are periodic conditioning indices.
         if self._conditioning_indices is None:
-            return self._conditioners[0].conditioning_indices
+            return self._conditioner.conditioning_indices
         return self._conditioning_indices
 
     @property
     def degrees_in(self) -> torch.Tensor:
         """``degrees_in[i]`` is the degree assigned to the i-th input feature."""
-        degrees_in = self._conditioners[0].degrees_in
+        degrees_in = self._conditioner.degrees_in
         # The degree_in of periodic features is duplicated.
         if self._lifter is not None:
             mask = torch.full(degrees_in.shape, fill_value=True)
@@ -299,7 +279,7 @@ class MAF(torch.nn.Module):
 
     def n_parameters(self) -> int:
         """The total number of (unmasked) parameters."""
-        return sum(c.n_parameters() for c in self._conditioners)
+        return self._conditioner.n_parameters()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Map the input data.
@@ -318,7 +298,7 @@ class MAF(torch.nn.Module):
             shape ``(batch_size,)``.
 
         """
-        parameters = self._run_conditioners(x)
+        parameters = self._run_conditioner(x)
 
         # Make sure the conditioning dimensions are not altered.
         if self._mapped_indices is None:
@@ -352,7 +332,7 @@ class MAF(torch.nn.Module):
 
         # We need to process each block in the order given by their degree to
         # respect the dependencies.
-        blocks = self._conditioners[0].blocks
+        blocks = self._conditioner.blocks
 
         # With periodic indices, only block 1 is supported. blocks might be
         # different from 1 only because the periodic DOFs is expanded into 2
@@ -372,7 +352,7 @@ class MAF(torch.nn.Module):
         for block_idx in blocks_order:
             # Compute the inversion with the current x.
             # Cloning, allows to compute gradients on inverse.
-            parameters = self._run_conditioners(x.clone())
+            parameters = self._run_conditioner(x.clone())
 
             # The log_det_J that we compute with the last pass is the total log_det_J.
             x_temp, log_det_J = self._transformer.inverse(y, parameters)
@@ -394,10 +374,9 @@ class MAF(torch.nn.Module):
 
         return x, log_det_J
 
-    def _run_conditioners(self, x):
+    def _run_conditioner(self, x):
         """Return the conditioning parameters with shape (batch_size, n_parameters, n_features)."""
         batch_size, n_features = x.shape
-        n_conditioners = len(self._conditioners)
 
         # Check how many of the input features are conditioning and are not mapped.
         if self._mapped_indices is None:
@@ -405,31 +384,16 @@ class MAF(torch.nn.Module):
         else:
             n_mapped_features = len(self._mapped_indices)
 
-        # The shape of the returned array.
-        returned_shape = (
-            batch_size,
-            self._transformer.n_parameters_per_input,
-            n_mapped_features
-        )
-
         # Lift periodic features.
         if self._lifter is not None:
             x = self._lifter(x)
 
-        if n_conditioners == 1:
-            # A single conditioner for all parameters. The conditioners
-            # return the parameters with shape (batch_size, n_features*n_parameters).
-            conditioning_parameters = self._conditioners[0](x)
-            conditioning_parameters = torch.reshape(
-                conditioning_parameters, shape=returned_shape)
-        else:
-            # The conditioners are split into independent NNs.
-            # conditioning_parameters has shape (batch_size, n_features*n_parameters_per_input).
-            conditioning_parameters = torch.empty(size=returned_shape).to(x)
-            for conditioner_idx, conditioner in enumerate(self._conditioners):
-                conditioning_parameters[:, conditioner_idx] = conditioner(x)
-
-        return conditioning_parameters
+        # The conditioner return the parameters with shape (batch_size, n_features*n_parameters).
+        return self._conditioner(x).reshape(
+            batch_size,
+            self._transformer.n_parameters_per_input,
+            n_mapped_features
+        )
 
 
 # =============================================================================
