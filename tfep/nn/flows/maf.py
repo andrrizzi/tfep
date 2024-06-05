@@ -80,10 +80,12 @@ class MAF(torch.nn.Module):
             Control the number of layers and nodes of the hidden layers in
             the MADE networks that implements the conditioner. If an int,
             this is the number of hidden layers, and the number of nodes in
-            each hidden layer will be set to ``(dimension_in - 1) * out_per_dimension``
+            each hidden layer will be set to ``(dimension_in - 1) * floor(out_per_dimension**(1/2))``
             where ``out_per_dimension`` is the number of output nodes for each
             input feature. If a list, ``dimensions_hidden[l]`` must be the number
-            of nodes in the l-th hidden layer.
+            of nodes in the l-th hidden layer. This means that the number of
+            trainable parameters will roughly depend quadratically on the conditioner
+            input and linearly on the conditioner output.
         conditioning_indices : None or Sequence[int], optional
             The indices of the input features corresponding to the conditioning
             features. These features affect the output, but they are not mapped
