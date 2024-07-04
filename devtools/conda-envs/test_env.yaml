@@ -23,7 +23,7 @@ dependencies:
   - lightning >=2.0
 
     # Optional packages.
-  - psi4
+  #- psi4
   - openmm
   - tblite-python
 
