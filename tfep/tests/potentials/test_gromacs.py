@@ -25,7 +25,7 @@ import pint
 import pytest
 import torch
 
-from tfep.potentials.gromacs import GmxGrompp, GmxMdrun, GROMACSPotential
+from tfep.potentials.gromacs import GmxGrompp, GmxMdrun, GmxTraj, GROMACSPotential
 from tfep.utils.cli import Launcher, SRunLauncher
 from tfep.utils.misc import flattened_to_atom
 from tfep.utils.parallel import ProcessPoolStrategy
@@ -37,8 +37,7 @@ from .. import DATA_DIR_PATH
 # GLOBAL VARIABLES
 # =============================================================================
 
-GROMPP_GMX = 'gmx'
-MDRUN_GMX = 'gmx_mpi'
+GMX = 'gmx_mpi_d'
 
 MIMIC_INPUT_DIR_PATH = os.path.realpath(os.path.join(DATA_DIR_PATH, 'mimic'))
 TPR_FILE_PATH = os.path.join(MIMIC_INPUT_DIR_PATH, 'gromacs-only.tpr')
@@ -101,6 +100,7 @@ def configurations():
         os.path.join(MIMIC_INPUT_DIR_PATH, 'equilibrated-forces-gromacs-only.trr'),
         os.path.join(MIMIC_INPUT_DIR_PATH, 'mimic-forces-gromacs-only.trr'),
     ]):
+        # TRRReader always reads in single precision.
         with MDAnalysis.coordinates.TRR.TRRReader(file_path, convert_units=False) as reader:
             expected_forces[i] = reader.ts.forces
     expected_forces *= _UREG.kJ / _UREG.mole / _UREG.nanometer
@@ -113,8 +113,9 @@ def configurations():
 # =============================================================================
 
 def set_executables():
-    GmxGrompp.EXECUTABLE_PATH = GROMPP_GMX
-    GmxMdrun.EXECUTABLE_PATH = MDRUN_GMX
+    GmxGrompp.EXECUTABLE_PATH = GMX
+    GmxMdrun.EXECUTABLE_PATH = GMX
+    GmxTraj.EXECUTABLE_PATH = GMX
 
 
 @contextlib.contextmanager
@@ -146,7 +147,7 @@ def get_working_dir_path(set_working_dir_path, batch_size):
 # TESTS
 # =============================================================================
 
-@pytest.mark.skipif(shutil.which(GmxMdrun.EXECUTABLE_PATH) is None, reason='requires GROMACS to be installed')
+@pytest.mark.skipif(shutil.which(GMX) is None, reason='requires GROMACS to be installed')
 @pytest.mark.parametrize('batch_size', [1, 2])
 @pytest.mark.parametrize('set_working_dir_path', [False, True])
 @pytest.mark.parametrize('parallel', [False, True])
@@ -198,10 +199,13 @@ def test_gromacs_energies_and_forces(configurations, batch_size, set_working_dir
 
     # Check against the expected energies.
     assert np.allclose(energies.detach().numpy(), expected_energies)
-    assert np.allclose(forces.detach().numpy(), expected_forces, atol=1e-3)
+
+    # TRRReader always reads in single precision while GROMACSPotential
+    # in double so we expect some differences.
+    assert np.allclose(forces.detach().numpy(), expected_forces, atol=5e-3)
 
 
-@pytest.mark.skipif(shutil.which(GmxMdrun.EXECUTABLE_PATH) is None, reason='requires GROMACS to be installed')
+@pytest.mark.skipif(shutil.which(GMX) is None, reason='requires GROMACS to be installed')
 def test_error_precompute_gradient(configurations):
     """An error is raised if backpropagation is attempted with precompute_gradient=False."""
     potential = GROMACSPotential(

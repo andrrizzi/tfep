@@ -19,6 +19,7 @@ The code interfaces with the molecular dynamics software through the command lin
 import functools
 import os
 import shutil
+import subprocess
 import tempfile
 from typing import Any, Dict, List, Optional, Union
 
@@ -30,7 +31,7 @@ import pint
 import torch
 
 from tfep.potentials.base import PotentialBase
-from tfep.utils.cli import Launcher, CLITool, KeyValueOption
+from tfep.utils.cli import Launcher, CLITool, FlagOption, KeyValueOption
 from tfep.utils.misc import (
     flattened_to_atom, energies_array_to_tensor, forces_array_to_tensor)
 from tfep.utils.parallel import ParallelizationStrategy, SerialStrategy
@@ -165,6 +166,41 @@ class GmxMdrun(CLITool):
     n_ranks_pme = KeyValueOption('-npme')
     n_thread_mpi_ranks = KeyValueOption('-ntmpi')
     n_omp_threads_per_mpi_rank = KeyValueOption('-ntomp')
+
+
+class GmxTraj(CLITool):
+    """The traj subprogram of gmx from the GROMACS suite.
+
+    The executable path variable only specifies the path to the gmx executable.
+    The class takes care of adding the "traj" subprogram after "gmx" so it
+    does not have to be passed when the command is instantiated.
+
+    Relative file paths must be relative to the working directory used for
+    executing the command (i.e., they are not converted to absolute paths before
+    changing the working directory). This is to enable executing multiple
+    instances of the command in parallel in different working directories.
+
+    Parameters
+    ----------
+    executable_path : str, optional
+        The executable path associated to the instance of the command. If this
+        is not specified, the ``EXECUTABLE_PATH`` class variable is used instead.
+    traj_file_path : str
+        Path to the input .trr file.
+    tpr_file_path : str
+        Path to input .tpr file.
+    force_xvg_file_path : str
+        Path to output .xvg file holding the forces.
+    full_precision : bool, optional
+        Whether to save the output in full precision or always single.
+
+    """
+    EXECUTABLE_PATH = 'gmx'
+    SUBPROGRAM = 'traj'
+    traj_file_path = KeyValueOption('-f')
+    tpr_file_path = KeyValueOption('-s')
+    force_xvg_file_path = KeyValueOption('-of')
+    full_precision = FlagOption('-fp', prepend_to_false='no')
 
 
 # =============================================================================
@@ -613,7 +649,7 @@ def _run_gromacs_task(
 
         # Read the forces.
         if return_forces:
-            forces_kJ_mol_nm = _read_forces(traj_file_path)
+            forces_kJ_mol_nm = _read_forces(traj_file_path, tpr_file_path, working_dir_path)
     finally:
         if tmp_dir is None and cleanup_working_dir:
             # Clean up user-given working directory.
@@ -689,10 +725,31 @@ def _read_energy(edr_file_path):
     return potential[0]
 
 
-def _read_forces(traj_file_path):
+def _read_forces(traj_file_path, tpr_file_path, working_dir_path):
     """Extract the forces from a binary trajectory file."""
-    # Do not convert the units so that we return in native GROMACS units (rather than MDAnalysis).
-    with MDAnalysis.coordinates.TRR.TRRReader(traj_file_path, convert_units=False) as reader:
-        assert len(reader) == 1
-        forces = reader.ts.forces
+    # # Do not convert the units so that we return in native GROMACS units (rather than MDAnalysis).
+    # # TRRReader returns forces always in single precision, regardless of how they are saved.
+    # with MDAnalysis.coordinates.TRR.TRRReader(traj_file_path, convert_units=False) as reader:
+    #     assert len(reader) == 1
+    #     forces = reader.ts.forces
+    # return forces
+
+    # Extract forces in double precision.
+    xvg_file_path = os.path.join(working_dir_path, 'forces.xvg')
+    gmx_traj = GmxTraj(
+        traj_file_path=traj_file_path,
+        tpr_file_path=tpr_file_path,
+        force_xvg_file_path=xvg_file_path,
+        full_precision=True,
+    )
+
+    # echo "System" | gmx traj -f traj.trr -s gromacs.tpr -fp -of forces.xvg
+    echo_cmd = ['echo', 'System']
+    gmx_traj_cmd = gmx_traj.to_subprocess()
+    with subprocess.Popen(echo_cmd, stdout=subprocess.PIPE) as p1:
+        with subprocess.Popen(gmx_traj_cmd, stdin=p1.stdout) as p2:
+            p2.communicate()
+
+    # Read the resulting xvg file. The first column is always the time.
+    forces = flattened_to_atom(np.loadtxt(xvg_file_path, comments=['#', '@'])[1:])
     return forces
