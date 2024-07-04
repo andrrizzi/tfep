@@ -15,3 +15,4 @@ comment:
 ignore:
   - "tfep/potentials/mimic.py"  # MiMiC tests require a license of CPMD.
   - "tfep/potentials/gromacs.py"  # Testing the GROMACS interface requires a GROMACS installation.
+  - "tfep/potentials/psi4.py"  # Psi4 tests temporarily deactivated due to segfaulting.
