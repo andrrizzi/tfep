@@ -15,6 +15,7 @@ Normalizing flow mapping only a subset of the input degrees of freedom.
 # =============================================================================
 
 from collections.abc import Sequence
+from typing import Tuple
 
 import torch
 
@@ -67,24 +68,24 @@ class PartialFlow(torch.nn.Module):
         self.return_partial = return_partial
 
         # Convert to tensor.
-        self._fixed_indices = ensure_tensor_sequence(fixed_indices)
+        self.register_buffer('_fixed_indices', ensure_tensor_sequence(fixed_indices))
 
         # We also need the indices that we are not factoring out.
         # This is initialized lazily in self._pass() because we
         # need the dimension of the input.
-        self._propagated_indices = None
+        self.register_buffer('_propagated_indices', None)
 
     def n_parameters(self):
         """int: The total number of parameters that can be optimized."""
         return self.flow.n_parameters()
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor]:
         return self._pass(x, inverse=False)
 
-    def inverse(self, y):
+    def inverse(self, y: torch.Tensor) -> Tuple[torch.Tensor]:
         return self._pass(y, inverse=True)
 
-    def _pass(self, x, inverse):
+    def _pass(self, x: torch.Tensor, inverse: bool) -> Tuple[torch.Tensor]:
         # There's no need to slice if fixed_indices is empty.
         if len(self._fixed_indices) > 0:
             # Check if we have already cached the propagated indices. The

@@ -14,10 +14,15 @@ Transformation that constrains the (weighted) centroid of the DOFs.
 # GLOBAL IMPORTS
 # =============================================================================
 
+from collections.abc import Sequence
+from typing import Optional, Tuple
+
 import torch
 
 from tfep.utils.misc import (
-    flattened_to_atom, atom_to_flattened, atom_to_flattened_indices)
+    flattened_to_atom, atom_to_flattened, atom_to_flattened_indices,
+    ensure_tensor_sequence,
+)
 from tfep.nn.flows.partial import PartialFlow
 
 
@@ -53,15 +58,15 @@ class CenteredCentroidFlow(PartialFlow):
         The dimensionality of a single point in space (e.g., ``3`` if the input
         features represent points in a 3D space).
     subset_point_indices : array-like of int, optional
-        A tensor of shape ``(n_points,)``. If passed, the centroid is computed
+        A vector of shape ``(n_points,)``. If passed, the centroid is computed
         over a subset of ``n_points`` points. If not passed, the centroid is
         computed using all the input features.
 
         Note that the indices must refer to the points, not the feature indices.
         For example, in a 3D space, ``subset_point_indices = [1, 3]`` will compute
         the centroid using the feature indices ``[3, 4, 5, 9, 10, 11]``.
-    weights : Tensor of floats, optional
-        A tensor of shape ``(n_points,)``, where ``n_points`` is the number of
+    weights : array-like of floats, optional
+        A vector of shape ``(n_points,)``, where ``n_points`` is the number of
         points used to compute the centroid (which depends on ``subset_point_indices``).
         ``weights[i]`` is the (unnormalized) weight used for the ``i``-th point.
         If not passed, the center of geometry is computed. This can be used for
@@ -76,8 +81,8 @@ class CenteredCentroidFlow(PartialFlow):
         ``None``, the fixed DOFs will be ``[3, 4, 5]`` in a 3D space. However,
         if ``subset_point_indices = [1, 2]`` then the fixed DOFs will be
         ``[6, 7, 8]``.
-    origin : Tensor of floats, optional
-        A tensor of shape ``(space_dimension,)``. If the centroid must be moved
+    origin : array-like of floats, optional
+        A vector of shape ``(space_dimension,)``. If the centroid must be moved
         to a point different than zero.
     translate_back : bool, optional
         If ``False``, the output configuration has the centroid in the ``origin``.
@@ -102,14 +107,14 @@ class CenteredCentroidFlow(PartialFlow):
 
     def __init__(
             self,
-            flow,
-            space_dimension,
-            subset_point_indices=None,
-            weights=None,
-            fixed_point_idx=0,
-            origin=None,
-            translate_back=True,
-            return_partial=False,
+            flow: torch.nn.Module,
+            space_dimension: int,
+            subset_point_indices: Optional[Sequence[int]] = None,
+            weights: Optional[Sequence[float]] = None,
+            fixed_point_idx: int = 0,
+            origin: Optional[Sequence[float]] = None,
+            translate_back: bool = True,
+            return_partial: bool = False,
     ):
         if return_partial and translate_back:
             raise ValueError("'return_partial=True' is supported only if 'translate_back=False'")
@@ -117,13 +122,22 @@ class CenteredCentroidFlow(PartialFlow):
         # Handle mutable defaults.
         if origin is None:
             origin = torch.zeros(space_dimension)
-        elif len(origin) != space_dimension:
-            raise ValueError("'origin' must have length equal to 'space_dimension'.")
+        else:
+            if len(origin) != space_dimension:
+                raise ValueError("'origin' must have length equal to 'space_dimension'.")
+            origin = ensure_tensor_sequence(origin)
 
-        # Determine which atom is fixed. Save fixed_point_idx before modifying it.
-        self._fixed_point_idx = fixed_point_idx
+        # Convert to tensor.
         if subset_point_indices is not None:
-            fixed_point_idx = subset_point_indices[fixed_point_idx]
+            subset_point_indices = ensure_tensor_sequence(subset_point_indices)
+        if weights is not None:
+            weights = ensure_tensor_sequence(weights)
+
+        # Determine which atom is fixed among the subset of points.
+        if subset_point_indices is None:
+            subset_fixed_point_idx = fixed_point_idx
+        else:
+            subset_fixed_point_idx = subset_point_indices[fixed_point_idx]
 
             # Check the dimension of weights. If subset_point_indices is None we
             # have no way to know in advance the number of points used to compute
@@ -132,7 +146,7 @@ class CenteredCentroidFlow(PartialFlow):
                 raise ValueError("'weights' must have the same length as 'subset_point_indices'.")
 
         # Both atom_to_flattened_indices and PartialFlow take an array-like of indices.
-        fixed_indices = atom_to_flattened_indices(torch.tensor([fixed_point_idx]), space_dimension)
+        fixed_indices = atom_to_flattened_indices(torch.tensor([subset_fixed_point_idx]), space_dimension)
 
         # Call PartialFlow constructor to fix the indices.
         super().__init__(flow, fixed_indices=fixed_indices, return_partial=return_partial)
@@ -144,9 +158,10 @@ class CenteredCentroidFlow(PartialFlow):
 
         # Save rest of dimensions.
         self._space_dimension = space_dimension
-        self._subset_point_indices = subset_point_indices
-        self._weights = weights
-        self.origin = origin
+        self.register_buffer('_fixed_point_idx', torch.as_tensor(fixed_point_idx))
+        self.register_buffer('_subset_point_indices', subset_point_indices)
+        self.register_buffer('_weights', weights)
+        self.register_buffer('origin', origin)
         self.translate_back = translate_back
 
     @property
@@ -159,11 +174,11 @@ class CenteredCentroidFlow(PartialFlow):
         # need to re-check that origin have a consistent dimension.
         return self._space_dimension
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor]:
         """Transform the input configuration."""
         return self._transform(x)
 
-    def inverse(self, y):
+    def inverse(self, y: torch.Tensor) -> Tuple[torch.Tensor]:
         """Invert the forward transformation.
 
         This works only if the forward transformation was performed with
@@ -176,7 +191,7 @@ class CenteredCentroidFlow(PartialFlow):
                              " the forward and inverse transformations.")
         return self._transform(y, inverse=True)
 
-    def _transform(self, x, inverse=False):
+    def _transform(self, x: torch.Tensor, inverse: bool = False) -> Tuple[torch.Tensor]:
         """Apply the forward/inverse transformation."""
         # Reshape the coordinates to standard atom shape.
         x_atom_shape = flattened_to_atom(x, self.space_dimension)

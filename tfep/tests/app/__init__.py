@@ -39,46 +39,57 @@ def check_atom_groups(
     from tfep.utils.misc import atom_to_flattened, flattened_to_atom, temporary_cd
     from tfep.utils.geometry import batchwise_dot
 
-    # Select a random fixed atom to fix the rotational degrees of freedom.
-    if fix_origin:
-        if expected_conditioning is None:
-            pytest.skip('fixing the translational DOFs require the presence of a conditioning atom')
-        origin_atom = np.random.choice(expected_conditioning)
+    # Since we select randomly the reference atoms, there's a chance to pick
+    # collinear atoms. We repeat the selection until the error is not thrown.
+    max_n_attempts = 10
+    for attempt_idx in range(max_n_attempts):
+        try:
+            # Select a random fixed atom to fix the rotational degrees of freedom.
+            if fix_origin:
+                if expected_conditioning is None:
+                    pytest.skip('fixing the translational DOFs require the presence of a conditioning atom')
+                origin_atom = np.random.choice(expected_conditioning)
+            else:
+                origin_atom = None
+
+            # Select axis and plane atoms among the remaining atoms.
+            if fix_orientation:
+                remaining = []
+                [remaining.extend(l) for l in (expected_mapped, expected_conditioning) if l is not None]
+                remaining = sorted([i for i in remaining if i != origin_atom])
+                if len(remaining) < 2:
+                    pytest.skip('fixing the orientation of the reference frame requires at least 2 mapped or conditioning atoms.')
+                axes_atoms = np.random.choice(remaining, size=2, replace=False).tolist()
+            else:
+                axes_atoms = None
+
+            with tempfile.TemporaryDirectory() as tmp_dir_path:
+                with temporary_cd(tmp_dir_path):
+                    # Initialize the map.
+                    tfep_map = tfep_map_cls(
+                        mapped_atoms=mapped_atoms,
+                        conditioning_atoms=conditioning_atoms,
+                        origin_atom=origin_atom,
+                        axes_atoms=axes_atoms,
+                        **kwargs,
+                    )
+
+                    # Train for one step to make sure that the map is not the identity.
+                    trainer = lightning.Trainer(
+                        max_steps=1,
+                        logger=False,
+                        enable_checkpointing=False,
+                        enable_progress_bar=False,
+                        enable_model_summary=False,
+                    )
+                    trainer.fit(tfep_map)
+            break
+        except RuntimeError as err:
+            if 'collinear' in str(err):
+                continue
+            raise
     else:
-        origin_atom = None
-
-    # Select axis and plane atoms among the remaining atoms.
-    if fix_orientation:
-        remaining = []
-        [remaining.extend(l) for l in (expected_mapped, expected_conditioning) if l is not None]
-        remaining = sorted([i for i in remaining if i != origin_atom])
-        if len(remaining) < 2:
-            pytest.skip('fixing the orientation of the reference frame requires at least 2 mapped or conditioning atoms.')
-        axes_atoms = np.random.choice(remaining, size=2, replace=False).tolist()
-    else:
-        axes_atoms = None
-
-    with tempfile.TemporaryDirectory() as tmp_dir_path:
-        with temporary_cd(tmp_dir_path):
-            # Initialize the map.
-            tfep_map = tfep_map_cls(
-                mapped_atoms=mapped_atoms,
-                conditioning_atoms=conditioning_atoms,
-                origin_atom=origin_atom,
-                axes_atoms=axes_atoms,
-                **kwargs,
-            )
-            tfep_map.setup()
-
-            # Train for one step to make sure that the map is not the identity.
-            trainer = lightning.Trainer(
-                max_steps=1,
-                logger=False,
-                enable_checkpointing=False,
-                enable_progress_bar=False,
-                enable_model_summary=False,
-            )
-            trainer.fit(tfep_map)
+        raise err
 
     # Compare expected indices.
     for expected_indices, tfep_indices in zip(
@@ -104,8 +115,8 @@ def check_atom_groups(
     x.requires_grad = True
 
     # Test forward and inverse.
-    y, log_det_J = tfep_map(x)
-    x_inv, log_det_J_inv = tfep_map.inverse(y)
+    y, log_det_J = tfep_map({'positions': x})
+    x_inv, log_det_J_inv = tfep_map.inverse({'positions': y})
     assert torch.allclose(x, x_inv)
 
     # Compute gradients w.r.t. the input.

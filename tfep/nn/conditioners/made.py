@@ -129,10 +129,12 @@ class MADE(torch.nn.Module):
         dimensions_hidden : int or Sequence[int], optional
             If an int, this is the number of hidden layers, and the number
             of nodes in each hidden layer will be set to
-            ``(dimension_in - len(last_block)) * out_per_dimension`` where
-            ``len(last_block)`` is the dimension of the block with the highest
-            assigned degree (which depends on the values of ``blocks`` and
-            ``shorten_last_block``).
+            ``(dimension_in - len(last_block)) * floor(out_per_dimension**(1/2))``
+            where ``len(last_block)`` is the dimension of the block with the
+            highest assigned degree (which depends on the values of ``blocks``
+            and ``shorten_last_block``).  This means that the number of trainable
+            parameters will roughly depend quadratically on the conditioner input
+            and linearly on the conditioner output.
 
             If a ``Sequence``, ``dimensions_hidden[l]`` must be the number of
             nodes in the l-th hidden layer.
@@ -384,7 +386,7 @@ class MADE(torch.nn.Module):
             len_last_block = expanded_blocks[last_block_idx]
 
         if isinstance(dimensions_hidden, int):
-            dimensions_hidden = torch.tensor([(dimension_in - len_last_block) * out_per_dimension
+            dimensions_hidden = torch.tensor([(dimension_in - len_last_block) * int(np.floor(out_per_dimension**(1/2)))
                                               for _ in range(dimensions_hidden)])
 
         return len(dimensions_hidden), dimensions_hidden, expanded_blocks

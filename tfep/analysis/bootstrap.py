@@ -29,6 +29,7 @@ def bootstrap(
         take_first_only=False,
         batch=None,
         method='percentile',
+        bayesian=False,
         generator=None
 ):
     r"""Compute the parameters of the bootstrap distribution of a statistic.
@@ -54,9 +55,13 @@ def bootstrap(
         A function taking a tensor of shape ``(n_samples,)`` or ``(n_samples, data_dim)``
         and returning the value of the statistic.
 
-        The function must also accept a keyword argument ``vectorized``. If
-        ``True``, ``data`` has an extra dimension ``batch_size`` prepended and
-        the returned value must have shape ``(batch_size,)``.
+        The function must accept a keyword argument ``vectorized``. If ``True``
+        ``data`` has an extra dimension ``batch_size`` prepended and the returned
+        value must have shape ``(batch_size,)``.
+
+        If ``bayesian`` is ``True``, the function must also accept a ``weights``
+        keyword argument (where weights sum to 1) to compute a sample-weighted
+        statistic.
     confidence_level : float, optional
         The confidence level of the confidence interval.
     n_resamples : int, optional
@@ -67,10 +72,13 @@ def bootstrap(
         be drawn from the data (rather than the default ``n_samples``). If a
         ``list``, the function will perform multiple bootstrap analyses for each
         of the ``bootstrap_sample_size`` provided.
+
+        When ``bayesian`` is ``True``, this is supported only if ``take_first_only``
+        is also ``True``.
     take_first_only : bool, optional
         If ``True`` and ``bootstrap_sample_size < n_samples``, the bootstrap samples
         will be drawn only from ``data[:bootstrap_sample_size]`` rather than the
-        eintire ``data`` tensor. This is useful, for example, if the data represent
+        entire ``data`` tensor. This is useful, for example, if the data represent
         generalized work values coming from mapping functions that are progressively
         more trained, so that we expect the samples towards the end to be more
         accurate than the first ones.
@@ -79,10 +87,15 @@ def bootstrap(
         size ``batch`` so that the memory consumption becomes ``batch * n_samples``.
     method : {'percentile', 'basic'}, optional
         Whether to return the percentile or reverse bootstrap confidence interval.
+    bayesian : bool, optional
+        If ``True``, Bayesian rather than standard bootstrapping is performed. In
+        this case, ``statistic`` must support weights.
     generator : {int, `torch.Generator`}, optional
         If ``generator`` is an int, a new ``torch.Generator`` instance is used
         and seeded with ``generator``. If ``generator`` is already a ``torch.Generator``
         then that instance is used to generate random resamples.
+
+        This is not supported if ``bayesian`` is ``True``.
 
     Returns
     -------
@@ -112,47 +125,57 @@ def bootstrap(
     """
     n_samples = len(data)
 
-    # Make sure the gradient tree is not traced.
-    data = data.detach()
+    if bayesian and generator is not None:
+        raise ValueError('Bayesian bootstrapping does not support random number generators.')
 
     # Check the number of samples in the bootstrap distribution.
     if bootstrap_sample_size is None:
         bootstrap_sample_size = [n_samples]
+    elif bayesian and not take_first_only:
+        raise ValueError('With Bayesian bootstrapping, specifying a bootstrap_sample_size '
+                         'is supported only when take_first_only is True.')
 
     # Check if we need to compute the vectorized statistic in batches.
     if batch is None:
         batch = n_resamples
 
-    # Expand the data so that we can index it easily when resampling
-    # since torch.gather does not broadcast (see pytorch#9407).
-    data_expanded = data.expand((batch, *data.shape))
+    # Make sure the computational graph is not kept in memory.
+    with torch.no_grad():
+        # Expand the data so that we can index it easily when resampling
+        # since torch.gather does not broadcast (see pytorch#9407).
+        data_expanded = data.expand((batch, *data.shape))
 
-    # bootstrap_statistics[i] contains the value of the statistic for the i-th resampling.
-    bootstrap_statistics = torch.empty(n_resamples, dtype=data.dtype)
+        # bootstrap_statistics[i] contains the value of the statistic for the i-th resampling.
+        bootstrap_statistics = torch.empty(n_resamples, dtype=data.dtype)
 
-    # Compute for each sample size.
-    results = []
-    for sample_size in bootstrap_sample_size:
-        _bootstrap_statistics(
-            data_expanded, statistic, n_resamples, sample_size,
-            take_first_only, generator, bootstrap_statistics)
+        # Compute for each sample size.
+        results = []
+        for sample_size in bootstrap_sample_size:
+            if bayesian:
+                # With Bayesian, sample_size < n_samples means take_first_only is True.
+                _bayesian_boostrap_statistics(
+                    data_expanded[:, :sample_size], statistic, n_resamples, bootstrap_statistics)
+            else:
+                _bootstrap_statistics(
+                    data_expanded, statistic, n_resamples, sample_size,
+                    take_first_only, generator, bootstrap_statistics)
 
-        # Calculate percentile confidence interval.
-        alpha = (1 - confidence_level)/2
-        quantiles = torch.tensor([alpha, 1-alpha], dtype=data.dtype)
-        ci_l, ci_u = torch.quantile(bootstrap_statistics, q=quantiles)
+            # Calculate percentile confidence interval.
+            alpha = (1 - confidence_level)/2
+            quantiles = torch.tensor([alpha, 1-alpha], dtype=data.dtype)
+            ci_l, ci_u = torch.quantile(bootstrap_statistics, q=quantiles)
 
-        # Compute the "basic" confidence interval (see [1]).
-        if method == 'basic':
-            full_statistic = statistic(data.unsqueeze(0))
-            ci_l, ci_u = 2*full_statistic - ci_u, 2*full_statistic - ci_l
+            # Compute the "basic" confidence interval (see [1]).
+            if method == 'basic':
+                full_statistic = statistic(data.unsqueeze(0))
+                ci_l, ci_u = 2*full_statistic - ci_u, 2*full_statistic - ci_l
 
-        results.append(dict(
-            confidence_interval=dict(low=ci_l, high=ci_u),
-            standard_deviation=torch.std(bootstrap_statistics),
-            mean=torch.mean(bootstrap_statistics),
-            median=torch.median(bootstrap_statistics),
-        ))
+            results.append(dict(
+                confidence_interval=dict(low=ci_l, high=ci_u),
+                standard_deviation=torch.std(bootstrap_statistics),
+                mean=torch.mean(bootstrap_statistics),
+                median=torch.median(bootstrap_statistics),
+            ))
 
     if len(bootstrap_sample_size) == 1:
         return results[0]
@@ -172,8 +195,7 @@ def _bootstrap_statistics(
 
     This modify bootstrap_statistics in place.
     """
-    batch = data_expanded.shape[0]
-    n_samples = data_expanded.shape[1]
+    batch, n_samples = data_expanded.shape[:2]
 
     # Check if we need to sample only between the first bootstrap_sample_size samples.
     if take_first_only:
@@ -209,3 +231,32 @@ def _bootstrap_statistics(
         bootstrap_statistics[k:k+batch_actual] = statistic(bootstrap_samples, vectorized=True)
 
     return bootstrap_statistics
+
+
+def _bayesian_boostrap_statistics(
+        data_expanded,
+        statistic,
+        n_resamples,
+        bootstrap_statistics
+):
+    """Generate a Bayesian bootstrap distribution of the statistic.
+
+    This modify bootstrap_statistics in place.
+    """
+    batch, n_samples = data_expanded.shape[:2]
+
+    # Initialize uniform Dirichlet distribution.
+    dirichlet = torch.distributions.Dirichlet(torch.ones(n_samples))
+
+    # Divide the bootstrap in batches to limit memory usage.
+    for k in range(0, n_resamples, batch):
+        # The last batch might be smaller.
+        batch_actual = min(batch, n_resamples-k)
+        if batch_actual != batch:
+            data_expanded = data_expanded[:batch_actual]
+
+        # Generate the weights.
+        weights = dirichlet.sample((batch_actual,))
+
+        # Compute the statistic.
+        bootstrap_statistics[k:k+batch_actual] = statistic(data_expanded, weights=weights, vectorized=True)

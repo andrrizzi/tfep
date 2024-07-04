@@ -26,7 +26,10 @@ jobs:
     continue-on-error: ${{ matrix.allow-failure }}
     strategy:
       matrix:
-        os: [macOS-latest, ubuntu-latest]
+        # As of Jul 4, 2024, GitHub has switched macOS-latest to use the M1
+        # architecture but this is causing problems with some packages.
+        # os: [macOS-latest, ubuntu-latest]
+        os: [macOS-13, ubuntu-latest]
         python-version: [3.9, "3.10", "3.11"]
         allow-failure: [false]
         #include:

@@ -25,6 +25,7 @@ import torch
 import tfep.nn.flows
 from tfep.app.base import TFEPMapBase
 from tfep.utils.geometry import (
+    batchwise_dot,
     batchwise_rotate,
     get_axis_from_name,
     reference_frame_rotation_matrix,
@@ -282,6 +283,12 @@ class MixedMAFMap(TFEPMapBase):
             axes_atoms_indices=axes_atoms_indices,
         )
 
+        # Now we take a pass at the trajectory to check that the Z-matrix is robust
+        # (i.e., no collinear atoms determining angles) and compute the min/max values
+        # of the DOFs (after going through _CartesianToMixedFlow) to configure the
+        # neural splines correctly.
+        min_dof_vals, max_dof_vals = self._analyze_dataset(z_matrix, cartesian_to_mixed_flow)
+
         # Determine the conditioning DOFs after going through _CartesianToMixedFlow.
         # conditioning_atom_indices must have the indices after the fixed atoms are removed.
         conditioning_atom_indices = self.get_conditioning_indices(idx_type='atom', remove_fixed=True)
@@ -296,6 +303,8 @@ class MixedMAFMap(TFEPMapBase):
         # Create the transformer.
         transformer = self._get_transformer(
             cartesian_to_mixed_flow=cartesian_to_mixed_flow,
+            min_dof_vals=min_dof_vals,
+            max_dof_vals=max_dof_vals,
             maf_conditioning_dof_indices=maf_conditioning_dof_indices,
             maf_periodic_dof_indices=maf_periodic_dof_indices,
             are_axes_atoms_bonded=are_axes_atoms_bonded,
@@ -330,8 +339,6 @@ class MixedMAFMap(TFEPMapBase):
 
         If self._auto_reference_frame is True, this method also sets self._origin_atom_idx
         and self._axes_atoms_indices.
-
-        The returned indices refer to those after the fixed atoms are removed.
 
         Returns
         -------
@@ -419,12 +426,18 @@ class MixedMAFMap(TFEPMapBase):
                 else:
                     cartesian_atom_indices.append(z_matrix_row[0])
 
+            # Test independence.
+            check_independent(graph_z_matrix)
+
         # The atom indices and the Z-matrix so far use the atom indices of the
         # systems before the fixed and reference atoms have been removed. Now
         # we need to map the indices to those after they are removed since these
         # are not passed to _CartesianToMixed._rel_ic.
         nonfixed_atom_indices_w_fixed = nonfixed_atom_indices_w_fixed.tolist()
         indices_map = {nonfixed_atom_indices_w_fixed[idx]: idx for idx in range(self.n_nonfixed_atoms)}
+
+        # Log Z-matrix.
+        logger.info('Determined Z-Matrix:\n' + str(np.array(system_z_matrix)))
 
         # Convert indices.
         cartesian_atom_indices = [indices_map[i] for i in cartesian_atom_indices]
@@ -555,16 +568,19 @@ class MixedMAFMap(TFEPMapBase):
             else:
                 bond_atom_dist = graph_distances[bond_atom][prev_atom]
 
+            # The minus sign of the atom order is because we want to prioritize
+            # atoms that have just been added.
             priorities.append([
                 prev_atom.index,
                 dist,
                 bond_atom_dist,
-                atoms_order[prev_atom.index],
+                -atoms_order[prev_atom.index],
                 float(not is_h and _is_hydrogen(prev_atom)),
             ])
 
-        # The minus sign of the atom order is because we want to prioritize atoms that have just been added.
-        priorities.sort(key=lambda k: (k[1], k[2], -k[3], k[4]))
+        # Sort the atoms by priority. The first element of the tuple is the atom
+        # index. It is not used to assign priorities.
+        priorities.sort(key=lambda k: tuple(k[1:]))
         return priorities
 
     def _determine_reference_frame_atoms(self, z_matrix_w_fixed: List[int], mapped_atom_indices_w_fixed_set: Set[int]):
@@ -612,9 +628,106 @@ class MixedMAFMap(TFEPMapBase):
             # Remove also from the set in place.
             mapped_atom_indices_w_fixed_set.remove(origin_atom_idx)
 
+    def _analyze_dataset(
+            self,
+            z_matrix: np.ndarray,
+            cartesian_to_mixed_flow: torch.nn.Module,
+    ) -> Tuple[torch.Tensor]:
+        """Check the Z-matrix robustness and compute the minimum and maximum value of each DOF in the trajectory.
+
+        This function goes through the dataset and analyzes the structures to
+        check that the angles in the Z-matrix are not defined by collinear angles
+        and to compute the min/max values of the DOFs.
+
+        The returned min/max values are for the coordinates in the relative
+        frame of reference. This is useful to calculate appropriate values for
+        the left/rightmost nodes of the neural spline transformer.
+
+        For this, we need to calculate the minimum and maximum dof AFTER it has
+        gone through the partial flow removing the fixed atoms and the relative
+        frame of reference has been set by _CartesianToMixedFlow since this is
+        the input that will be passed to the transformers.
+
+        Parameters
+        ----------
+        z_matrix: np.ndarray
+            The Z-matrix. The atom indices must refer to those after the fixed
+            atoms have been removed.
+        cartesian_to_mixed_flow : torch.nn.Module
+            The flow used to convert Cartesian into mixed coordinates.
+
+        Returns
+        -------
+        min_dofs : torch.Tensor
+            ``min_dofs[i]`` is the minimum value of the ``dof_indices[i]``-th
+            degree of freedom.
+        max_dofs : torch.Tensor
+            ``max_dofs[i]`` is the maximum value of the ``dof_indices[i]``-th
+            degree of freedom.
+
+        """
+        # This is needed to check for collinearity of the reference atoms.
+        ref_atoms = self.get_reference_atoms_indices(remove_fixed=True)
+        # We don't need to check collinearity if only the origin or the axes atoms are given.
+        if (ref_atoms is not None) and (len(ref_atoms) < 3):
+            ref_atoms = None
+
+        # We temporarily set the flow to the partial flow to process the positions.
+        assert self._flow is None
+        identity_flow = lambda x_: (x_, torch.zeros_like(x_[:, 0]))
+        self._flow = self.create_partial_flow(identity_flow, return_partial=True)
+
+        # Read the trajectory in batches.
+        batch_size = 1024
+        max_n_samples = 5 * batch_size
+        dataset = self.create_dataset()
+        if len(dataset) > max_n_samples:
+            step = int(np.ceil(len(dataset) / max_n_samples))
+            indices = list(range(0, len(dataset), step))
+            dataset = torch.utils.data.Subset(dataset, indices)
+        data_loader = torch.utils.data.DataLoader(
+            dataset, batch_size=batch_size, shuffle=False, drop_last=False
+        )
+        for batch_data in data_loader:
+            # Go through the partial flow.
+            batch_positions, _ = self(batch_data)
+
+            # Test collinearity for the Z-matrix for these samples.
+            batch_atom_positions = flattened_to_atom(batch_positions)
+            for row_idx, zmatrix_row in enumerate(z_matrix):
+                if (is_collinear(batch_atom_positions[:, zmatrix_row[:3]]) or
+                        is_collinear(batch_atom_positions[:, zmatrix_row[1:]])):
+                    raise RuntimeError(f'Row {row_idx+1} have collinear atoms.')
+
+            # Test collinearity reference frame atoms.
+            if ref_atoms is not None and is_collinear(batch_atom_positions[:, ref_atoms]):
+                raise RuntimeError('Axes atoms are collinear!')
+
+            # Go through the coordinate conversion flow.
+            dofs = cartesian_to_mixed_flow._cartesian_to_mixed(batch_positions)[0]
+
+            # Take the min/max across the batch of the selected DOFs.
+            batch_min = torch.min(dofs, dim=0).values
+            batch_max = torch.max(dofs, dim=0).values
+
+            # Update current min/max.
+            try:
+                min_dofs = torch.minimum(min_dofs, batch_min)
+                max_dofs = torch.maximum(max_dofs, batch_max)
+            except NameError:  # First iteration.
+                min_dofs = batch_min
+                max_dofs = batch_max
+
+        # Reset flow.
+        self._flow = None
+
+        return min_dofs, max_dofs
+
     def _get_transformer(
             self,
             cartesian_to_mixed_flow: torch.nn.Module,
+            min_dof_vals: torch.Tensor,
+            max_dof_vals: torch.Tensor,
             maf_conditioning_dof_indices: Optional[torch.Tensor],
             maf_periodic_dof_indices: torch.Tensor,
             are_axes_atoms_bonded: Optional[Tuple[bool]],
@@ -625,6 +738,10 @@ class MixedMAFMap(TFEPMapBase):
         ----------
         cartesian_to_mixed_flow : torch.nn.Module
             The flow used to convert Cartesian into mixed coordinates.
+        min_dof_vals : torch.Tensor
+            Minimum values observed in the trajectory for the DOFs in mixed coordinates.
+        max_dof_vals : torch.Tensor
+            Maximum values observed in the trajectory for the DOFs in mixed coordinates.
         maf_conditioning_dof_indices : torch.Tensor or None
             The indices of the conditioning DOFs after the conversion to mixed
             coordinates.
@@ -635,16 +752,13 @@ class MixedMAFMap(TFEPMapBase):
             Whether the first and second axes atoms are bonded to the origin atom..
 
         """
-        # Compute the minimum and maximum value of all DOFs in mixed coordinates.
-        min_vals, max_vals = self._get_min_max_dofs(cartesian_to_mixed_flow)
-
         # We need to determine the limits only for the mapped (not conditioning)
         # DOFs since that's what the NeuralSplineTransformer will act on. We compute
         # the limits for all DOFs because it's easier and then filter out the
         # conditioning DOFs. We assume everything is Cartesian and then we fix
         # the limits for angles and distances.
-        x0 = min_vals - self._max_cartesian_displacement
-        xf = max_vals + self._max_cartesian_displacement
+        x0 = min_dof_vals - self._max_cartesian_displacement
+        xf = max_dof_vals + self._max_cartesian_displacement
 
         # Set the limits for the angles.
         assert cartesian_to_mixed_flow._rel_ic.normalize_angles
@@ -666,7 +780,7 @@ class MixedMAFMap(TFEPMapBase):
                 xf[dof_idx] = self._bond_limits[1]
             else:
                 # The axis atom is not bonded to the origin but it's still a distance (i.e. > 0).
-                x0[dof_idx] = max(0.0, min_vals[dof_idx] - self._max_cartesian_displacement)
+                x0[dof_idx] = max(0.0, min_dof_vals[dof_idx] - self._max_cartesian_displacement)
 
         # Now filter all conditioning dofs.
         if maf_conditioning_dof_indices is not None:
@@ -690,65 +804,57 @@ class MixedMAFMap(TFEPMapBase):
             circular=maf_periodic_dof_indices.detach(),
         )
 
-    def _get_min_max_dofs(self, cartesian_to_mixed_flow: torch.nn.Module) -> Tuple[torch.Tensor]:
-        """Compute the minimum and maximum value of each DOF in the trajectory for the given atom indices.
-
-        The returned min/max values are for the coordinates in the relative
-        frame of reference. This is useful to calculate appropriate values for
-        the left/rightmost nodes of the neural spline transformer.
-
-        For this, we need to calculate the minimum and maximum dof AFTER it has
-        gone through the partial flow removing the fixed atoms and the relative
-        frame of reference has been set by _CartesianToMixedFlow since this is
-        the input that will be passed to the transformers.
-
-        Parameters
-        ----------
-        cartesian_to_mixed_flow : torch.nn.Module
-            The flow used to convert Cartesian into mixed coordinates.
-
-        Returns
-        -------
-        min_dofs : torch.Tensor
-            ``min_dofs[i]`` is the minimum value of the ``dof_indices[i]``-th
-            degree of freedom.
-        max_dofs : torch.Tensor
-            ``max_dofs[i]`` is the maximum value of the ``dof_indices[i]``-th
-            degree of freedom.
-
-        """
-        # Create a flow removing the fixed and conditioning atoms.
-        identity_flow = lambda x_: (x_, torch.zeros_like(x_[:, 0]))
-        partial_flow = self.create_partial_flow(identity_flow, return_partial=True)
-
-        # Read the trajectory in batches.
-        dataset = self.create_dataset()
-        data_loader = torch.utils.data.DataLoader(
-            dataset, batch_size=1024, shuffle=False, drop_last=False
-        )
-        for batch_data in data_loader:
-            # Go through the coordinate conversion flow.
-            dofs, _ = partial_flow(batch_data['positions'])
-            dofs = cartesian_to_mixed_flow._cartesian_to_mixed(dofs)[0]
-
-            # Take the min/max across the batch of the selected DOFs.
-            batch_min = torch.min(dofs, dim=0).values
-            batch_max = torch.max(dofs, dim=0).values
-
-            # Update current min/max.
-            try:
-                min_dofs = torch.minimum(min_dofs, batch_min)
-                max_dofs = torch.maximum(max_dofs, batch_max)
-            except NameError:  # First iteration.
-                min_dofs = batch_min
-                max_dofs = batch_max
-
-        return min_dofs, max_dofs
-
 
 # =============================================================================
 # HELPER CLASSES AND FUNCTIONS
 # =============================================================================
+
+def check_independent(z_matrix):
+    """Check that rows of the Z-matrix do not depend on the same atoms.
+
+    This raises an error if the coordinates of two atoms in the Z-matrix depend
+    on the same set of other atoms and, in particular, have the same bond atom.
+
+    This check was implemented in https://github.com/noegroup/bgmol
+
+    """
+    dependent_rows = []
+    all234 = [(torsion[1], set(torsion[2:])) for torsion in z_matrix]
+    for i, other in enumerate(all234):
+        if other in all234[:i]:
+            dependent_rows.append(i)
+
+    if len(dependent_rows) > 1:
+        err_msg = 'The following Z-matrix rows are not independent:\n'
+        for i in dependent_rows:
+            err_msg += f'\tRow {i}: {z_matrix[i]}\n'
+        raise RuntimeError(err_msg)
+
+
+def is_collinear(points, tol=1e-2):
+    """Check that three points are not collinear.
+
+    Parameters
+    ----------
+    points : torch.Tensor
+        Shape ``(batch_size, 3, 3)``. The three points.
+    tol : float
+        Numerical tolerance for checking collinearity.
+
+    Returns
+    -------
+    is_collinear : bool
+        ``True`` if three points are collinear. ``False`` otherwise.
+
+    """
+    # Divide the three points
+    p0, p1, p2 = points.transpose(0, 1)
+    # tol in the same units of p0, p1, and p2.
+    v01 = torch.nn.functional.normalize(p1 - p0, dim=-1)
+    v12 = torch.nn.functional.normalize(p2 - p1, dim=-1)
+    return torch.any(torch.isclose(torch.abs(batchwise_dot(v01, v12)),
+                                   torch.tensor(1.0), atol=tol, rtol=0.))
+
 
 def _is_hydrogen(atom):
     """Return True if the atom is a hydrogen.

@@ -25,9 +25,10 @@ import pint
 import pytest
 import torch
 
-from tfep.potentials.mimic import (Cpmd, GmxGrompp, GmxMdrun, mimic_potential_energy,
-                                   _run_mimic, _prepare_cpmd_command, _prepare_mdrun_command)
-from tfep.utils.cli import SRunLauncher
+from tfep.potentials.gromacs import GmxGrompp, GmxMdrun
+from tfep.potentials.mimic import (
+    Cpmd, mimic_potential_energy, _run_mimic, _prepare_cpmd_command, _prepare_mdrun_command)
+from tfep.utils.cli import Launcher, SRunLauncher
 from tfep.utils.parallel import ProcessPoolStrategy
 from tfep.utils.misc import temporary_cd
 
@@ -38,13 +39,19 @@ from .. import DATA_DIR_PATH
 # GLOBAL VARIABLES
 # =============================================================================
 
-MIMIC_INPUT_DIR_PATH = os.path.realpath(os.path.join(DATA_DIR_PATH, 'mimic'))
-
-_UREG = pint.UnitRegistry()
-
 # Executables.
 CPMD_EXECUTABLE = 'cpmd.x'
 GMX_EXECUTABLE = 'gmx_mpi_d'
+
+# We need GROMACS to generate the input files for the tests (see setup_modules).
+if shutil.which(GMX_EXECUTABLE) is None:
+    pytest.skip(reason='requires GROMACS to be installed', allow_module_level=True)
+
+# File paths.
+MIMIC_INPUT_DIR_PATH = os.path.realpath(os.path.join(DATA_DIR_PATH, 'mimic'))
+TPR_FILE_PATH = os.path.join(MIMIC_INPUT_DIR_PATH, 'gromacs.tpr')
+
+_UREG = pint.UnitRegistry()
 
 # We check only the forces only for a few atoms.
 EXPECTED_N_ATOMS = 1528
@@ -74,6 +81,28 @@ EXPECTED_FORCES = np.array([
      [-0.00088666968531, 0.00127563889547, 0.00728713790857],
      [0.00569476133723, -0.02219780937585, -0.01165483165429]],
 ]) * _UREG.hartree / _UREG.bohr
+
+
+# =============================================================================
+# TEST MODULE CONFIGURATION
+# =============================================================================
+
+def setup_module(module):
+    """Create a temporary tpr file to run all GROMACS tests."""
+    grompp = GmxGrompp(
+        executable_path=GMX_EXECUTABLE,
+        mdp_input_file_path=os.path.join(MIMIC_INPUT_DIR_PATH, 'gromacs.mdp'),
+        structure_input_file_path=os.path.join(MIMIC_INPUT_DIR_PATH, 'equilibrated.gro'),
+        top_input_file_path=os.path.join(MIMIC_INPUT_DIR_PATH, 'acetone.top'),
+        tpr_output_file_path=TPR_FILE_PATH,
+    )
+    # Run grompp in a temporary directory so that all log files gets deleted at the end.
+    with tempfile.TemporaryDirectory() as tmp_dir_path:
+        Launcher().run(grompp, cwd=os.path.realpath(tmp_dir_path))
+
+
+def teardown_module(module):
+    os.remove(TPR_FILE_PATH)
 
 
 # =============================================================================
@@ -185,7 +214,7 @@ def mimic_srun_commands(parallel_strategy=False):
     )
     mdrun = GmxMdrun(
         executable_path=GMX_EXECUTABLE,
-        tpr_input_file_path=os.path.join(MIMIC_INPUT_DIR_PATH, 'gromacs.tpr'),
+        tpr_input_file_path=TPR_FILE_PATH,
         default_file_name='gromacs',
         n_omp_threads_per_mpi_rank=n_cpus_per_task,
     )
@@ -285,7 +314,6 @@ def test_prepare_cpmd_command(update_positions):
         assert new_new_cpmd_cmd == new_cpmd_cmd
 
 
-@pytest.mark.skipif(shutil.which(GMX_EXECUTABLE) is None, reason='requires GROMACS to be installed')
 @pytest.mark.parametrize('template_structure_file_name', ['equilibrated.gro', 'mimic.pdb'])
 def test_prepare_mdrun_command(template_structure_file_name):
     """Test the function _prepare_mdrun_command().

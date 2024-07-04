@@ -23,7 +23,9 @@ dependencies:
   - lightning >=2.0
 
     # Optional packages.
-  - psi4
+  # For some reason, psi4 tests have started segfaulting since #32.
+  # Re-activate psi4 tests once this problem has been solved.
+  #- psi4
   - openmm
   - tblite-python
 
