@@ -61,8 +61,9 @@ def setup_module(module):
 def teardown_module(module):
     torch.set_default_dtype(_old_default_dtype)
     # Clear the OpenMM Context cache.
-    tfep.potentials.openmm.global_context_cache.pop('two_waters', None)
-    tfep.potentials.openmm.global_context_cache.pop('two_atoms_bonded_in_vacuum', None)
+    tfep.potentials.openmm.global_context_cache = {}
+    import gc
+    gc.collect()
 
 
 # =============================================================================
