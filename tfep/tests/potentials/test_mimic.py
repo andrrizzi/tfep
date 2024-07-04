@@ -39,14 +39,19 @@ from .. import DATA_DIR_PATH
 # GLOBAL VARIABLES
 # =============================================================================
 
+# Executables.
+CPMD_EXECUTABLE = 'cpmd.x'
+GMX_EXECUTABLE = 'gmx_mpi_d'
+
+# We need GROMACS to generate the input files for the tests (see setup_modules).
+if shutil.which(GMX_EXECUTABLE) is None:
+    pytest.skip(reason='requires GROMACS to be installed', allow_module_level=True)
+
+# File paths.
 MIMIC_INPUT_DIR_PATH = os.path.realpath(os.path.join(DATA_DIR_PATH, 'mimic'))
 TPR_FILE_PATH = os.path.join(MIMIC_INPUT_DIR_PATH, 'gromacs.tpr')
 
 _UREG = pint.UnitRegistry()
-
-# Executables.
-CPMD_EXECUTABLE = 'cpmd.x'
-GMX_EXECUTABLE = 'gmx_mpi_d'
 
 # We check only the forces only for a few atoms.
 EXPECTED_N_ATOMS = 1528
@@ -309,7 +314,6 @@ def test_prepare_cpmd_command(update_positions):
         assert new_new_cpmd_cmd == new_cpmd_cmd
 
 
-@pytest.mark.skipif(shutil.which(GMX_EXECUTABLE) is None, reason='requires GROMACS to be installed')
 @pytest.mark.parametrize('template_structure_file_name', ['equilibrated.gro', 'mimic.pdb'])
 def test_prepare_mdrun_command(template_structure_file_name):
     """Test the function _prepare_mdrun_command().
