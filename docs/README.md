@@ -1,11 +1,11 @@
 # Compiling tfep's Documentation
 
 The docs for this project are built with [Sphinx](http://www.sphinx-doc.org/en/master/).
-To compile the docs, first ensure that Sphinx and the ReadTheDocs theme are installed.
+To compile the docs, first ensure that Sphinx and the necessary extensions are installed.
 
 
 ```bash
-conda install sphinx sphinx_rtd_theme -c conda-forge
+conda install sphinx sphinx_rtd_theme nbsphinx pandoc -c conda-forge
 ```
 
 Once installed, you can use the `Makefile` in this directory to compile static HTML pages by

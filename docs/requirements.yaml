@@ -14,7 +14,10 @@ dependencies:
   - mdanalysis >=2.0
   - numpy
   - pint
+  - lightning >=2.0
 
     # Sphinx
   - sphinx
   - sphinx-rtd-theme
+  - nbsphinx
+  - pandoc
