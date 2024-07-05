@@ -60,7 +60,9 @@
    :template: custom-module-template.rst
    :recursive:
 {% for item in modules %}
+{% if not item.startswith('tfep.tests') %}
    {{ item }}
+{%- endif %}
 {%- endfor %}
 {% endif %}
 {% endblock %}
