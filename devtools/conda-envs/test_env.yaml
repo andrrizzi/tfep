@@ -1,7 +1,6 @@
 name: test
 
 channels:
-  - conda-forge/label/libint_dev # required for conda-forge/psi4
   - conda-forge
   - defaults
 
@@ -23,9 +22,7 @@ dependencies:
   - lightning >=2.0
 
     # Optional packages.
-  # For some reason, psi4 tests have started segfaulting since #32.
-  # Re-activate psi4 tests once this problem has been solved.
-  #- psi4
+  - psi4
   - openmm
   - tblite-python
 
