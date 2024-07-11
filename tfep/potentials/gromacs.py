@@ -21,7 +21,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 import MDAnalysis.auxiliary.EDR
 import MDAnalysis.coordinates.TRR
@@ -233,6 +233,7 @@ class GROMACSPotential(PotentialBase):
             parallelization_strategy: Optional[ParallelizationStrategy] = None,
             launcher_kwargs: Optional[Dict[str, Any]] = None,
             mdrun_kwargs: Optional[Dict[str, Any]] = None,
+            on_mdrun_error: Literal['raise', 'nan'] = 'raise',
     ):
         """Constructor.
 
@@ -275,6 +276,10 @@ class GROMACSPotential(PotentialBase):
             is automatically determined based on ``working_dir_path``).
         mdrun_kwargs : Dict, optional
             Other kwargs for ``GmxMdrun``.
+        on_mdrun_error : Literal['raise', 'nan'], optional
+            Whether to raise an exception or return NaN potential when the single-
+            point energy calculation with mdrun fails. In the latter case, the
+            returned forces are set to zero.
 
         See Also
         --------
@@ -292,6 +297,7 @@ class GROMACSPotential(PotentialBase):
         self.parallelization_strategy = parallelization_strategy
         self.launcher_kwargs = launcher_kwargs
         self.mdrun_kwargs = mdrun_kwargs
+        self.on_mdrun_error = on_mdrun_error
 
     def forward(self, batch_positions: torch.Tensor, batch_cell: torch.Tensor) -> torch.Tensor:
         """Compute a differential potential energy for a batch of configurations.
@@ -329,6 +335,7 @@ class GROMACSPotential(PotentialBase):
             parallelization_strategy=self.parallelization_strategy,
             launcher_kwargs=self.launcher_kwargs,
             mdrun_kwargs=self.mdrun_kwargs,
+            on_mdrun_error=self.on_mdrun_error,
         )
 
 
@@ -396,6 +403,10 @@ class GROMACSPotentialEnergyFunc(torch.autograd.Function):
         automatically determined based on ``working_dir_path``).
     mdrun_kwargs : Dict, optional
         Other kwargs for ``GmxMdrun``.
+    on_mdrun_error : Literal['raise', 'nan'], optional
+        Whether to raise an exception or return NaN potential when the single-
+        point energy calculation with mdrun fails. In the latter case, the returned
+        forces are set to zero.
 
     Returns
     -------
@@ -425,6 +436,7 @@ class GROMACSPotentialEnergyFunc(torch.autograd.Function):
             parallelization_strategy: Optional[ParallelizationStrategy] = None,
             launcher_kwargs: Optional[Dict[str, Any]] = None,
             mdrun_kwargs: Optional[Dict[str, Any]] = None,
+            on_mdrun_error: Literal['raise', 'nan'] = 'raise',
     ):
         """Compute the potential energy of the molecule with GROMACS."""
         # Mutable default arguments.
@@ -460,7 +472,7 @@ class GROMACSPotentialEnergyFunc(torch.autograd.Function):
 
         # Run the command.
         task = functools.partial(_run_gromacs_task, tpr_file_path, precompute_gradient,
-                                 cleanup_working_dir, launcher_kwargs, mdrun_kwargs)
+                                 cleanup_working_dir, launcher_kwargs, mdrun_kwargs, on_mdrun_error)
         distributed_args = zip(batch_positions_nm, batch_box_vectors_nm, launcher, working_dir_path)
         result = parallelization_strategy.run(task, distributed_args)
 
@@ -492,7 +504,7 @@ class GROMACSPotentialEnergyFunc(torch.autograd.Function):
         """Compute the gradient of the potential energy."""
         # We still need to return a None gradient for each
         # input of forward() beside batch_positions.
-        n_input_args = 12
+        n_input_args = 13
         grad_input = [None for _ in range(n_input_args)]
 
         # Compute gradient w.r.t. batch_positions.
@@ -523,6 +535,7 @@ def gromacs_potential_energy(
         parallelization_strategy: Optional[ParallelizationStrategy] = None,
         launcher_kwargs: Optional[Dict[str, Any]] = None,
         mdrun_kwargs: Optional[Dict[str, Any]] = None,
+        on_mdrun_error: Literal['raise', 'nan'] = 'raise',
 ):
     """PyTorch-differentiable QM/MM potential energy using GROMACS.
 
@@ -550,6 +563,7 @@ def gromacs_potential_energy(
         parallelization_strategy,
         launcher_kwargs,
         mdrun_kwargs,
+        on_mdrun_error,
     )
 
 
@@ -569,6 +583,7 @@ def _run_gromacs_task(
         cleanup_working_dir,
         launcher_kwargs,
         mdrun_kwargs,
+        on_mdrun_error,
         positions_nm,
         box_vectors_nm,
         launcher,
@@ -593,6 +608,10 @@ def _run_gromacs_task(
         automatically determined based on ``working_dir_path``).
     mdrun_kwargs : Dict, optional
         Other kwargs for ``GmxMdrun``.
+    on_mdrun_error : Literal['raise', 'nan'], optional
+        Whether to raise an exception or return NaN potential when the single-
+        point energy calculation with mdrun fails. In the latter case, the returned
+        forces are set to zero.
     positions_nm : np.ndarray
         Shape ``(n_atoms, 3)``. The positions in nanometers.
     box_vectors_nm : np.ndarray or None, optional
@@ -620,8 +639,8 @@ def _run_gromacs_task(
     if mdrun_kwargs is None:
         mdrun_kwargs = {}
 
-    # Create a temporary working directory if not given.
     try:
+        # Create a temporary working directory if not given.
         if working_dir_path is None:
             tmp_dir = tempfile.TemporaryDirectory()
             working_dir_path = tmp_dir.name
@@ -642,14 +661,25 @@ def _run_gromacs_task(
             edr_file_path=edr_file_path,  # output
             **mdrun_kwargs,
         )
-        launcher.run(mdrun_cmd, cwd=working_dir_path, **launcher_kwargs)
 
-        # Read the energy.
-        energy_kJ_mol = _read_energy(edr_file_path)
+        # Single-point calculation.
+        completed_process = launcher.run(mdrun_cmd, cwd=working_dir_path, **launcher_kwargs)
 
-        # Read the forces.
-        if return_forces:
-            forces_kJ_mol_nm = _read_forces(traj_file_path, tpr_file_path, working_dir_path)
+        # Handle errors.
+        if completed_process.returncode != 0:
+            if on_mdrun_error == 'raise':
+                raise RuntimeError('Single-point energy with mdrun returned non-zero exit code.')
+
+            # Return NaN.
+            assert on_mdrun_error == 'nan'
+            energy_kJ_mol = np.nan
+            if return_forces:
+                forces_kJ_mol_nm = np.zeros_like(positions_nm)
+        else:
+            # Read energies and forces.
+            energy_kJ_mol = _read_energy(edr_file_path)
+            if return_forces:
+                forces_kJ_mol_nm = _read_forces(traj_file_path, tpr_file_path, working_dir_path)
     finally:
         if tmp_dir is None and cleanup_working_dir:
             # Clean up user-given working directory.
