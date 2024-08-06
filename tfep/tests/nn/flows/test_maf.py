@@ -14,7 +14,6 @@ Test MAF layer in tfep.nn.flows.maf.
 # GLOBAL IMPORTS
 # =============================================================================
 
-import numpy as np
 import pytest
 import torch
 
@@ -22,6 +21,7 @@ from tfep.nn.transformers import (
     AffineTransformer, SOSPolynomialTransformer,
     NeuralSplineTransformer, MoebiusTransformer
 )
+from tfep.nn.conditioners.made import generate_degrees
 from tfep.nn.flows.maf import MAF, _LiftPeriodic
 from ..utils import create_random_input
 
@@ -40,7 +40,6 @@ def setup_module(module):
 
 def teardown_module(module):
     torch.set_default_dtype(_old_default_dtype)
-
 
 
 # =============================================================================
@@ -124,40 +123,7 @@ def test_lift_periodic(n_periodic, limits):
     assert torch.allclose(x_lifted[0, periodic_indices[1]+1:periodic_indices[1]+3], expected)
 
 
-@pytest.mark.parametrize('conditioning_indices,periodic_indices,expected_conditioning_indices,expected_blocks', [
-    [[], [2], [], [1, 1, 2, 1, 1]],
-    [[2], [2], [2, 3], [1, 1, 1, 1]],
-    [[], [1, 3, 4], [], [1, 2, 1, 2, 2]],
-    [[1], [2, 3], [1], [1, 2, 2, 1]],
-    [[2], [2, 4], [2, 3], [1, 1, 1, 2]],
-    [[0, 1], [2, 3], [0, 1], [2, 2, 1]],
-    [[2, 4], [0, 3], [3, 6], [2, 1, 2]],
-    [[1, 3], [0, 3], [2, 4, 5], [2, 1, 1]],
-    [[1, 3], [1, 3], [1, 2, 4, 5], [1, 1, 1]],
-    [[0, 4], [0], [0, 1, 5], [1, 1, 1]],
-])
-def test_periodic_blocks_and_conditioning_MAF(conditioning_indices, periodic_indices,
-                                              expected_conditioning_indices, expected_blocks):
-    """Test that conditioning_indices and blocks are fixed correctly with periodic DOFs."""
-    dimension_in = 5
-    limits = (0., 1.)
-
-    # Create MAF.
-    maf = MAF(dimension_in, conditioning_indices=conditioning_indices,
-              periodic_indices=periodic_indices, periodic_limits=limits)
-
-    # The input dimension of the conditioner must account for the extra periodic DOFs.
-    n_periodic = len(periodic_indices)
-    assert maf._conditioner.dimension_in == dimension_in + n_periodic
-
-    # The blocks must be of length 2 for periodic DOFs (without conditioning DOFs).
-    assert torch.all(torch.tensor(maf._conditioner.blocks) == torch.tensor(expected_blocks))
-
-    # Check the updated conditioning indices.
-    assert torch.all(torch.tensor(maf._conditioner.conditioning_indices) == torch.tensor(expected_conditioning_indices))
-
-
-@pytest.mark.parametrize('dimensions_hidden', [1, 4])
+@pytest.mark.parametrize('hidden_layers', [1, 4])
 @pytest.mark.parametrize('conditioning_indices', [
     [],
     [0, 1],
@@ -174,7 +140,7 @@ def test_periodic_blocks_and_conditioning_MAF(conditioning_indices, periodic_ind
     [1, 2],
     [0, 2],
 ])
-@pytest.mark.parametrize('degrees_in', ['input', 'reversed'])
+@pytest.mark.parametrize('degrees_in_order', ['ascending', 'descending'])
 @pytest.mark.parametrize('weight_norm', [False, True])
 @pytest.mark.parametrize('transformer', [
     AffineTransformer(),
@@ -183,41 +149,52 @@ def test_periodic_blocks_and_conditioning_MAF(conditioning_indices, periodic_ind
     NeuralSplineTransformer(x0=torch.tensor(-2., dtype=torch.double), xf=torch.tensor(2., dtype=torch.double), n_bins=3),
     MoebiusTransformer(dimension=3)
 ])
-def test_identity_initialization_MAF(dimensions_hidden, conditioning_indices, periodic_indices, degrees_in,
-                                     weight_norm, transformer):
+def test_identity_initialization_MAF(hidden_layers, conditioning_indices, periodic_indices,
+                                     degrees_in_order, weight_norm, transformer):
     """Test that the identity initialization of MAF works.
 
     This tests that the flow layers can be initialized to perform the
     identity function.
 
     """
-    dimension = 5
+    n_features = 5
     batch_size = 2
-    # Makes this equal to the NeuralSplineTransformer limits.
+    # Must be equal to the NeuralSplineTransformer limits.
     limits = [-2., 2.]
+
+    # Periodic indices with MoebiusTransformer doens't make sense.
+    if periodic_indices is not None and isinstance(transformer, MoebiusTransformer):
+        pytest.skip('Vector inputs for Moebius transformers are not compatible with periodic.')
 
     # With the MoebiusTransformer, the output must be vectors of the same size.
     if isinstance(transformer, MoebiusTransformer):
-        extra_dim = transformer.dimension - (dimension - len(conditioning_indices)) % transformer.dimension
-        dimension = dimension + extra_dim
+        extra_dim = transformer.dimension - (n_features - len(conditioning_indices)) % transformer.dimension
+        n_features = n_features + extra_dim
+        repeats = transformer.dimension
+    else:
+        repeats = 1
 
+    # Create MAF.
     maf = MAF(
-        dimension,
-        dimensions_hidden,
-        conditioning_indices=conditioning_indices,
+        degrees_in=generate_degrees(
+            n_features=n_features,
+            order=degrees_in_order,
+            conditioning_indices=conditioning_indices,
+            repeats=repeats,
+        ),
+        transformer=transformer,
+        hidden_layers=hidden_layers,
         periodic_indices=periodic_indices,
         periodic_limits=limits,
-        degrees_in=degrees_in,
         weight_norm=weight_norm,
-        transformer=transformer,
-        initialize_identity=True
+        initialize_identity=True,
     )
 
     # Create random input.
     if isinstance(transformer, NeuralSplineTransformer):
-        x = create_input(batch_size, dimension, limits=(transformer.x0, transformer.xf))
+        x = create_input(batch_size, n_features, limits=(transformer.x0, transformer.xf))
     else:
-        x = create_input(batch_size, dimension)
+        x = create_input(batch_size, n_features)
 
     y, log_det_J = maf.forward(x)
 
@@ -241,54 +218,48 @@ def test_identity_initialization_MAF(dimensions_hidden, conditioning_indices, pe
     [1, 2],
     [0, 2],
 ])
-@pytest.mark.parametrize('degrees_in', ['input', 'reversed', 'random'])
+@pytest.mark.parametrize('degrees_in_order', ['ascending', 'descending', 'random'])
 @pytest.mark.parametrize('transformer', [
     AffineTransformer(),
     MoebiusTransformer(dimension=3)
 ])
 @pytest.mark.parametrize('weight_norm', [False, True])
-def test_round_trip_MAF(conditioning_indices, periodic_indices, degrees_in, weight_norm, transformer):
-    """Test that the MAF.inverse(MAF.forward(x)) equals the identity."""
-    dimension = 5
-    dimensions_hidden = 2
+def test_maf_round_trip(conditioning_indices, periodic_indices, degrees_in_order, weight_norm, transformer):
+    """Test the autoregressive property and that the MAF.inverse(MAF.forward(x)) equals the identity."""
+    n_features = 5
     batch_size = 2
-    n_conditioning_dofs = len(conditioning_indices)
     limits = (0., 2.)
+
+    # Periodic indices with MoebiusTransformer doens't make sense.
+    if periodic_indices is not None and isinstance(transformer, MoebiusTransformer):
+        pytest.skip('Vector inputs for Moebius transformers are not compatible with periodic.')
 
     # With the MoebiusTransformer, the output must be vectors of the same size.
     if isinstance(transformer, MoebiusTransformer):
-        extra_dim = transformer.dimension - (dimension - len(conditioning_indices)) % transformer.dimension
-        dimension = dimension + extra_dim
-        blocks = transformer.dimension
-        n_blocks = dimension // blocks
+        extra_dim = transformer.dimension - (n_features - len(conditioning_indices)) % transformer.dimension
+        n_features = n_features + extra_dim
+        repeats = transformer.dimension
     else:
-        blocks = 1
-        n_blocks = dimension - n_conditioning_dofs
-
-    # Currently we don't support Moebius transformer.
-    if periodic_indices is not None and isinstance(transformer, MoebiusTransformer):
-        pytest.skip('Customized blocks (and thus MoebiusTransformers) are not supported with periodic DOFs.')
-
-    # Make sure the permutation is reproducible.
-    if degrees_in == 'random':
-        random_state = np.random.RandomState(0)
-        degrees_in = random_state.permutation(range(n_blocks))
+        repeats = 1
 
     # We don't initialize as the identity function to make the test meaningful.
     maf = MAF(
-        dimension, dimensions_hidden,
-        conditioning_indices=conditioning_indices,
+        degrees_in=generate_degrees(
+            n_features=n_features,
+            order=degrees_in_order,
+            conditioning_indices=conditioning_indices,
+            repeats=repeats,
+        ),
+        transformer=transformer,
+        hidden_layers=2,
         periodic_indices=periodic_indices,
         periodic_limits=limits,
-        degrees_in=degrees_in,
         weight_norm=weight_norm,
-        blocks=blocks,
-        transformer=transformer,
-        initialize_identity=False
+        initialize_identity=False,
     )
 
     # Create random input.
-    x = create_input(batch_size, dimension, limits=limits, periodic_indices=periodic_indices)
+    x = create_input(batch_size, n_features, limits=limits, periodic_indices=periodic_indices)
 
     # The conditioning features are always left unchanged.
     y, log_det_J = maf.forward(x)
