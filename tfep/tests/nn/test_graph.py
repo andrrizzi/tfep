@@ -19,6 +19,7 @@ import torch
 
 from tfep.nn.masked import create_autoregressive_mask
 from tfep.nn.graph import (
+    FixedGraph,
     get_all_edges,
     fix_edges_batch_size,
     compute_edge_distances,
@@ -44,14 +45,25 @@ def teardown_module(module):
 
 
 # =============================================================================
+# UTILS
+# =============================================================================
+
+def fixed_graph_get_edges(batch_size, n_nodes, mask):
+    """A utility function wrapping a call to the method FixedGraph.get_edges()."""
+    graph = FixedGraph(n_nodes=n_nodes, mask=mask)
+    return graph.get_edges(batch_size)
+
+
+# =============================================================================
 # TESTS
 # =============================================================================
 
 @pytest.mark.parametrize('batch_size', [1, 5])
 @pytest.mark.parametrize('n_nodes', [1, 3])
 @pytest.mark.parametrize('autoregressive_mask', [False, True])
-def test_get_all_edges(batch_size, n_nodes, autoregressive_mask):
-    """Test that get_all_edges determine all the masked edges of the graph."""
+@pytest.mark.parametrize('func', [get_all_edges, fixed_graph_get_edges])
+def test_get_edges(batch_size, n_nodes, autoregressive_mask, func):
+    """Test that get_all_edges() and FixedGraph.get_edges() determine all the masked edges of the graph."""
     # Create the mask.
     if autoregressive_mask is True:
         degrees_nodes = torch.arange(0, n_nodes)
@@ -60,12 +72,12 @@ def test_get_all_edges(batch_size, n_nodes, autoregressive_mask):
         mask = None
 
     # Compute all masked edges.
-    edges = get_all_edges(batch_size, n_nodes, mask)
+    edges = func(batch_size, n_nodes, mask)
 
     # Check that no mask and full mask are the same thing.
     if mask is None:
         mask = -(torch.eye(n_nodes)-1)
-        edges2 = get_all_edges(batch_size, n_nodes, mask=mask)
+        edges2 = func(batch_size, n_nodes, mask=mask)
         assert torch.all(edges == edges2)
 
     # Check that we have the expected number of edges.
@@ -84,10 +96,46 @@ def test_get_all_edges(batch_size, n_nodes, autoregressive_mask):
 
     # Check that fix_edges_batch_size correctly fixes the number of batches.
     new_batch_size = 2
-    expected_edges = get_all_edges(new_batch_size, n_nodes, mask)
+    expected_edges = func(new_batch_size, n_nodes, mask)
     fixed_edges = fix_edges_batch_size(edges, new_batch_size, n_edges, n_nodes)
     assert fixed_edges.shape == (2, new_batch_size*n_edges)
     assert torch.all(expected_edges == fixed_edges)
+
+
+def test_graph_get_edges_caching():
+    """Test that the caching in FixedGraph.get_edges() works correctly."""
+    n_nodes = 4
+    degrees_nodes = torch.arange(0, n_nodes)
+
+    # Create the graph.
+    graph = FixedGraph(
+        n_nodes=n_nodes,
+        mask=create_autoregressive_mask(degrees_nodes, degrees_nodes),
+    )
+
+    # On init, graph caches the edges for batch_size 1.
+    expected_n_edges = n_nodes * (n_nodes-1) // 2
+    assert graph._n_edges == expected_n_edges
+    assert graph._cached_edges.shape[1] == expected_n_edges
+
+    # Get first edges.
+    batch_size = 3
+    edges1 = graph.get_edges(batch_size=batch_size)
+
+    # Calls with the same batch size return the same edges.
+    edges = graph.get_edges(batch_size=batch_size)
+    assert edges1.shape[1] == batch_size * expected_n_edges
+    assert torch.all(edges1 == edges)
+
+    # The last batch might be shorter than the previous one.
+    edges = graph.get_edges(batch_size=batch_size-1)
+    assert edges.shape[1] == (batch_size-1) * expected_n_edges
+    assert torch.all(edges1[:, :edges.shape[1]] == edges)
+
+    # The first batch of the new epoch might be longer than the previous one.
+    edges = graph.get_edges(batch_size=batch_size)
+    assert edges1.shape[1] == batch_size * expected_n_edges
+    assert torch.all(edges1 == edges)
 
 
 def test_compute_edge_distances():
