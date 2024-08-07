@@ -48,11 +48,12 @@ class FixedGraph(torch.nn.Module):
     def __init__(self, n_nodes, mask=None):
         super().__init__()
         # We initially build the edges for a batch of size 1 so at this point
-        # self._edges will have shape (2, n_edges).
-        self._edges = get_all_edges(1, n_nodes, mask=mask)
+        # self._cached_edges will have shape (2, n_edges). However, we'll use
+        # this to cache the number of edges for the latest batch size.
+        self._cached_edges = get_all_edges(1, n_nodes, mask=mask)
         # The number of nodes and edges (for a single batch) is needed for get_edges().
         self._n_nodes = n_nodes
-        self._n_edges = int(self._edges.shape[1])
+        self._n_edges = int(self._cached_edges.shape[1])
 
     def get_edges(self, batch_size):
         """Return the edges between nodes for the given batch size.
@@ -73,21 +74,14 @@ class FixedGraph(torch.nn.Module):
             two entries connecting the nodes with inverse order are present.
 
         """
-        new_edges = fix_edges_batch_size(
-            self._edges, batch_size, self._n_edges, n_nodes=self._n_nodes)
-
-        # If the batch size has increased, this is likely the first call. We
-        # cache the edges with the usual batch size.
-        if new_edges.shape[1] > self._n_edges:
-            self._n_edges = new_edges.shape[1]
-
-        return new_edges
+        # Store new edges so that if the next batch is the same this will be faster.
+        self._cached_edges = fix_edges_batch_size(
+            self._cached_edges, batch_size, self._n_edges, n_nodes=self._n_nodes)
+        return self._cached_edges
 
 
 def get_all_edges(batch_size, n_nodes, mask=None):
     """Return all possible edges between nodes after applying the mask.
-
-    The function caches the returned edges in the self._edges attribute.
 
     Parameters
     ----------
@@ -103,7 +97,7 @@ def get_all_edges(batch_size, n_nodes, mask=None):
     Returns
     -------
     edges : torch.Tensor
-        Shape ``(2, n_edges*batch_size)``. The ``i``-th edge is created from node
+        Shape ``(2, batch_size*n_edges)``. The ``i``-th edge is created from node
         ``edges[0][i]`` to ``edges[1][i]``, where ``edges[0][i]`` is a node index
         in the range ``[0, batch_size*n_nodes]``.
 
