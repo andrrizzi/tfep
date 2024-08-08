@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 import torch
 
+import tfep.nn.conditioners.made
 from tfep.nn.flows import MAF, SequentialFlow, PartialFlow
 from ..utils import create_random_input
 
@@ -52,7 +53,7 @@ def teardown_module(module):
 def test_round_trip_PartialFlow(conditioning_indices, weight_norm, indices_type):
     """Test that the PartialFlow.inverse(PartialFlow.forward(x)) equals the identity."""
     dimension = 7
-    dimensions_hidden = 2
+    hidden_layers = 2
     batch_size = 2
     fixed_input_indices = [1, 4]
 
@@ -62,13 +63,15 @@ def test_round_trip_PartialFlow(conditioning_indices, weight_norm, indices_type)
 
     # Add a stack of three MAF layers
     flows = []
-    for degrees_in in ['input', 'reversed', 'input']:
+    for degrees_in_order in ['ascending', 'descending', 'ascending']:
         # We don't initialize as the identity function to make the test meaningful.
         flows.append(MAF(
-            dimension_in=dimension - len(fixed_input_indices),
-            dimensions_hidden=dimensions_hidden,
-            conditioning_indices=conditioning_indices,
-            degrees_in=degrees_in,
+            degrees_in=tfep.nn.conditioners.made.generate_degrees(
+                n_features=dimension - len(fixed_input_indices),
+                conditioning_indices=conditioning_indices,
+                order=degrees_in_order
+            ),
+            hidden_layers=hidden_layers,
             weight_norm=weight_norm,
             initialize_identity=False
         ))

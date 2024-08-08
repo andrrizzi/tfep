@@ -19,6 +19,7 @@ import pint
 import torch
 
 from tfep.app.base import TFEPMapBase
+import tfep.nn.conditioners.made
 import tfep.nn.flows
 from tfep.utils.misc import atom_to_flattened_indices
 
@@ -190,9 +191,11 @@ class CartesianMAFMap(TFEPMapBase):
         maf_layers = []
         for layer_idx in range(self.hparams.n_maf_layers):
             maf_layers.append(tfep.nn.flows.MAF(
-                dimension_in=self.n_nonfixed_dofs,
-                conditioning_indices=conditioning_indices,
-                degrees_in='input' if (layer_idx%2 == 0) else 'reversed',
+                degrees_in=tfep.nn.conditioners.made.generate_degrees(
+                    n_features=self.n_nonfixed_dofs,
+                    conditioning_indices=conditioning_indices,
+                    order='ascending' if (layer_idx%2 == 0) else 'descending',
+                ),
                 **self.kwargs,
             ))
         flow = tfep.nn.flows.SequentialFlow(*maf_layers)

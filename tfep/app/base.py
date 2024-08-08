@@ -85,8 +85,8 @@ class TFEPMapBase(ABC, lightning.LightningModule):
     ...         conditioning_indices = self.get_conditioning_indices(
     ...             idx_type="dof", remove_fixed=True, remove_reference=True)
     ...         return tfep.nn.flows.MAF(
-    ...             dimension_in=self.n_nonfixed_dofs,
-    ...             conditioning_indices=conditioning_indices,
+    ...             degrees_in=tfep.nn.conditioners.generate_degrees(
+    ...                 n_features=self.n_nonfixed_dofs, conditioning_indices=conditioning_indices)
     ...         )
     ...
 
