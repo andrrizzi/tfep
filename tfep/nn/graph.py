@@ -55,6 +55,11 @@ class FixedGraph(torch.nn.Module):
         self._n_nodes = n_nodes
         self._n_edges = int(self._last_batch_edges.shape[1])
 
+    @property
+    def n_nodes(self):
+        """int: Number of nodes in the graph."""
+        return self._n_nodes
+
     def get_edges(self, batch_size):
         """Return the edges between nodes for the given batch size.
 
