@@ -67,8 +67,8 @@ class FixedGraph(torch.nn.Module):
 
         # Encode node types. Convert them from int to floats to ease embedding.
         node_types = ensure_tensor_sequence(node_types)
-        self.register_buffer('_node_types_one_hot', torch.nn.functional.one_hot(node_types))
-        self._node_types_one_hot.to(torch.get_default_dtype())
+        node_types_encoding = torch.nn.functional.one_hot(node_types).to(torch.get_default_dtype())
+        self.register_buffer('_node_types_one_hot', node_types_encoding)
 
         # We initially build the edges for a batch of size 1 so at this point
         # self._last_batch_edges will have shape (2, n_edges). However, we'll
@@ -81,6 +81,11 @@ class FixedGraph(torch.nn.Module):
     def n_nodes(self):
         """int: Number of nodes in the graph."""
         return len(self._node_types_one_hot)
+
+    @property
+    def n_edges(self):
+        """int: Number of edges in the graph."""
+        return self._n_edges
 
     def get_edges(self, batch_size):
         """Return the edges between nodes for the given batch size.
