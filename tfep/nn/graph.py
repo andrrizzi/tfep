@@ -48,12 +48,12 @@ class FixedGraph(torch.nn.Module):
     def __init__(self, n_nodes, mask=None):
         super().__init__()
         # We initially build the edges for a batch of size 1 so at this point
-        # self._cached_edges will have shape (2, n_edges). However, we'll use
-        # this to cache the number of edges for the latest batch size.
-        self._cached_edges = get_all_edges(1, n_nodes, mask=mask)
+        # self._last_batch_edges will have shape (2, n_edges). However, we'll
+        # use this to cache the number of edges for the latest batch size.
+        self._last_batch_edges = get_all_edges(1, n_nodes, mask=mask)
         # The number of nodes and edges (for a single batch) is needed for get_edges().
         self._n_nodes = n_nodes
-        self._n_edges = int(self._cached_edges.shape[1])
+        self._n_edges = int(self._last_batch_edges.shape[1])
 
     def get_edges(self, batch_size):
         """Return the edges between nodes for the given batch size.
@@ -75,9 +75,9 @@ class FixedGraph(torch.nn.Module):
 
         """
         # Store new edges so that if the next batch is the same this will be faster.
-        self._cached_edges = fix_edges_batch_size(
-            self._cached_edges, batch_size, self._n_edges, n_nodes=self._n_nodes)
-        return self._cached_edges
+        self._last_batch_edges = fix_edges_batch_size(
+            self._last_batch_edges, batch_size, self._n_edges, n_nodes=self._n_nodes)
+        return self._last_batch_edges
 
 
 def get_all_edges(batch_size, n_nodes, mask=None):
@@ -222,7 +222,7 @@ def compute_edge_distances(x, edges, normalize_directions=False, inverse_directi
     return distances, directions
 
 
-def prune_long_edges(r_cutoff, edges, distances, directions):
+def prune_long_edges(r_cutoff, edges, distances, *args):
     """Detect which edges have distances larger than the cutoff and remove them.
 
     Parameters
@@ -238,9 +238,9 @@ def prune_long_edges(r_cutoff, edges, distances, directions):
     distances : torch.Tensor
         Shape ``(batch_size*n_edges,)``. ``distances[i]`` is the distance between
         the nodes of the ``i``-th edge.
-    direction : torch.Tensor
-        Shape ``(batch_size*n_edges, 3)``. ``direction[i]`` is the direction
-        connecting the nodes of the ``i``-th edge.
+    *args : Sequence[torch.Tensor]
+        Other tensors of shape ``(batch_size*n_edges, *)`` to prune in the same
+        way.
 
     Returns
     -------
@@ -249,16 +249,15 @@ def prune_long_edges(r_cutoff, edges, distances, directions):
     distances : torch.Tensor, optional
         Shape ``(batch_size*n_pruned_edges,)``. The distances of the nodes across
         the edges after the pruning.
-    direction : torch.Tensor, optional
-        Shape ``(batch_size*n_pruned_edges, 3)``. The edge directions after the
-        pruning.
+    *other : torch.Tensor, optional
+        Other pruned tensors of shape ``(batch_size*n_pruned_edges, *)``.
 
     """
     mask = distances <= r_cutoff
     edges = edges[:, mask]
     distances = distances[mask]
-    directions = directions[mask]
-    return edges, distances, directions
+    pruned_args = [arg[mask] for arg in args]
+    return edges, distances, *pruned_args
 
 
 def unsorted_segment_sum(data, segment_ids, n_segments):

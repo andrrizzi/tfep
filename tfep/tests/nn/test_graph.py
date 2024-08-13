@@ -116,7 +116,7 @@ def test_graph_get_edges_caching():
     # On init, graph caches the edges for batch_size 1.
     expected_n_edges = n_nodes * (n_nodes-1) // 2
     assert graph._n_edges == expected_n_edges
-    assert graph._cached_edges.shape[1] == expected_n_edges
+    assert graph._last_batch_edges.shape[1] == expected_n_edges
 
     # Get first edges.
     batch_size = 3
