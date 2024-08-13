@@ -93,7 +93,7 @@ class FixedGraph(torch.nn.Module):
         Returns
         -------
         edges : torch.Tensor
-            Shape ``(2, n_edges*batch_size)``. The ``i``-th edge is created from
+            Shape ``(2, batch_size*n_edges)``. The ``i``-th edge is created from
             node ``edges[0][i]`` to ``edges[1][i]``, where ``edges[0][i]`` is a
             node index in the range ``[0, batch_size*n_nodes]``.
 
@@ -103,8 +103,9 @@ class FixedGraph(torch.nn.Module):
         """
         # Store new edges so that if the next batch is the same this will be faster.
         self._last_batch_edges = fix_node_indices_batch_size(
-            node_indices=self._last_batch_edges[:, :self._n_edges],
-            batch_size=batch_size,
+            node_indices=self._last_batch_edges,
+            new_batch_size=batch_size,
+            n_indices=self._n_edges,
             n_nodes=self.n_nodes,
         )
         return self._last_batch_edges
@@ -151,13 +152,22 @@ def get_all_edges(batch_size, n_nodes, mask=None):
 
     # Determine the edges for the given shape.
     edges = fix_node_indices_batch_size(
-        node_indices=edges, batch_size=batch_size, n_nodes=n_nodes)
+        node_indices=edges,
+        new_batch_size=batch_size,
+        n_indices=edges.shape[-1],
+        n_nodes=n_nodes,
+    )
 
     return edges
 
 
-def fix_node_indices_batch_size(node_indices: torch.Tensor, batch_size: int, n_nodes: int):
-    """Expand a tensor of node indices to be compatible to shape ``(*, batch_size*n_indices)``.
+def fix_node_indices_batch_size(
+        node_indices: torch.Tensor,
+        new_batch_size: int,
+        n_indices : int,
+        n_nodes: int,
+):
+    """Expand a tensor of node indices to be compatible to shape ``(*, new_batch_size*n_indices)``.
 
     This is useful, for example, to update the indices of source/destination nodes
     in the edges for the last batch, which might be smaller than the normal batch size.
@@ -165,35 +175,43 @@ def fix_node_indices_batch_size(node_indices: torch.Tensor, batch_size: int, n_n
     Parameters
     ----------
     node_indices : torch.Tensor
-        Shape ``(*, n_indices)``, where ``n_indices`` is the number of node
-        indices for batch size = 1. For example, if this is the output of
-        :func:`.get_all_edges()`, then ``n_indices == n_edges``.
-    batch_size : int
+        Shape ``(*, old_batch_size*n_indices)``.
+    new_batch_size : int
         The output batch size.
+    n_indices : int
+        The number of node indices for batch size = 1.
     n_nodes : int, optional
         The total number of nodes in the graph.
 
     Returns
     -------
     fixed_indices : torch.Tensor
-        Shape ``(*, batch_size*n_indices)``. The new edges after fixing the
+        Shape ``(*, new_batch_size*n_indices)``. The new edges after fixing the
         batch size.
 
     """
-    if batch_size == 1:
+    batch_indices_dim = new_batch_size * n_indices
+    if node_indices.shape[-1] == batch_indices_dim:
         return node_indices
 
-    # To shape (*, batch_size, n_indices).
+    # Check if we have too many batches.
+    if node_indices.shape[-1] > batch_indices_dim:
+        return node_indices[..., :batch_indices_dim]
+
+    # Otherwise, reduce to 1 batch.
+    node_indices = node_indices[..., :n_indices]
+
+    # To shape (*, new_batch_size, n_indices).
     node_indices = node_indices.unsqueeze(-2)
     size = list(node_indices.shape)
-    size[-2] = batch_size
+    size[-2] = new_batch_size
     node_indices = node_indices.expand(*size)
 
-    # Now multiply repeated node indices by the batch index. shift has shape (1, batch_size, 1).
-    shift = torch.arange(0, batch_size*n_nodes, n_nodes).unsqueeze(-1)
+    # Now multiply repeated node indices by the batch index. shift has shape (1, new_batch_size, 1).
+    shift = torch.arange(0, new_batch_size*n_nodes, n_nodes).unsqueeze(-1)
     node_indices = node_indices + shift
 
-    # From shape (*, batch_size, n_indices) to (*, batch_size*n_indices)
+    # From shape (*, new_batch_size, n_indices) to (*, new_batch_size*n_indices)
     node_indices = node_indices.flatten(start_dim=-2)
 
     return node_indices

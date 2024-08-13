@@ -111,8 +111,9 @@ def test_get_edges(batch_size, n_nodes, autoregressive_mask, func):
     new_batch_size = 2
     expected_edges = func(new_batch_size, n_nodes, mask)
     fixed_edges = fix_node_indices_batch_size(
-        node_indices=edges[:, :n_edges],
-        batch_size=new_batch_size,
+        node_indices=edges,
+        new_batch_size=new_batch_size,
+        n_indices=n_edges,
         n_nodes=n_nodes,
     )
     assert fixed_edges.shape == (2, new_batch_size*n_edges)
