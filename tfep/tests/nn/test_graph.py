@@ -50,13 +50,26 @@ def teardown_module(module):
 
 def fixed_graph_get_edges(batch_size, n_nodes, mask):
     """A utility function wrapping a call to the method FixedGraph.get_edges()."""
-    graph = FixedGraph(n_nodes=n_nodes, mask=mask)
+    graph = FixedGraph(node_types=[0]*n_nodes, mask=mask)
     return graph.get_edges(batch_size)
 
 
 # =============================================================================
 # TESTS
 # =============================================================================
+
+@pytest.mark.parametrize('node_types,expected_encoding', [
+    ([0, 1, 0], [[1, 0], [0, 1], [1, 0]]),
+    ([3, 1], [[0, 0, 0, 1], [0, 1, 0, 0]])
+])
+def test_graph_node_type_encoding(node_types, expected_encoding):
+    """Test the one hot encoding of the node types."""
+    graph = FixedGraph(node_types)
+    assert torch.allclose(
+        graph._node_types_one_hot,
+        torch.tensor(expected_encoding).to(graph._node_types_one_hot)
+    )
+
 
 @pytest.mark.parametrize('batch_size', [1, 5])
 @pytest.mark.parametrize('n_nodes', [1, 3])
@@ -104,12 +117,14 @@ def test_get_edges(batch_size, n_nodes, autoregressive_mask, func):
 
 def test_graph_get_edges_caching():
     """Test that the caching in FixedGraph.get_edges() works correctly."""
-    n_nodes = 4
+    node_types = [0, 2, 1, 0]
+
+    n_nodes = len(node_types)
     degrees_nodes = torch.arange(0, n_nodes)
 
     # Create the graph.
     graph = FixedGraph(
-        n_nodes=n_nodes,
+        node_types=node_types,
         mask=create_autoregressive_mask(degrees_nodes, degrees_nodes),
     )
 

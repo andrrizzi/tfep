@@ -14,9 +14,13 @@ Utility functions for graphs.
 # GLOBAL IMPORTS
 # =============================================================================
 
+from collections.abc import Sequence
 import itertools
+from typing import Optional
 
 import torch
+
+from tfep.utils.misc import ensure_tensor_sequence
 
 
 # =============================================================================
@@ -34,31 +38,49 @@ class FixedGraph(torch.nn.Module):
     method, which takes care of determining the edges compatible with features
     in the shape ``(batch_size*n_nodes, n_feats_per_node)``.
 
-    Parameters
-    ----------
-    n_nodes : int
-        The number of nodes in the graph.
-    mask : torch.Tensor, optional
-        Shape ``(n_nodes, n_nodes)``. A (directional) edge from node ``i`` to
-        node ``j`` is created only if ``mask[i, j] != 0``. If ``mask`` is not
-        provided, all nodes are connected to all nodes (excluding self interactions).
-
     """
 
-    def __init__(self, n_nodes, mask=None):
+    def __init__(
+            self,
+            node_types : Sequence[int],
+            mask : Optional[torch.Tensor] = None,
+    ):
+        """Constructor.
+
+        Parameters
+        ----------
+        node_types : Sequence[int]
+            Shape ``(n_nodes,)``. ``node_types[i]`` is the ID of the node type
+            for the i-th node. These are usually used to indicate an atom element.
+            These are encoded into a ``self._node_types_one_hot`` encoding using
+            ``torch.nn.functional.one_hot`` so they should start from 0 and
+            contain only consecutive numbers to limit the size of the encoding
+            (i.e., ``0 <= node_types[i] < n_node_types`` for all ``i``).
+        mask : torch.Tensor, optional
+            Shape ``(n_nodes, n_nodes)``. A (directional) edge from node ``i`` to
+            node ``j`` is created only if ``mask[i, j] != 0``. If ``mask`` is not
+            provided, all nodes are connected to all nodes (excluding self
+            interactions).
+
+        """
         super().__init__()
+
+        # Encode node types. Convert them from int to floats to ease embedding.
+        node_types = ensure_tensor_sequence(node_types)
+        self.register_buffer('_node_types_one_hot', torch.nn.functional.one_hot(node_types))
+        self._node_types_one_hot.to(torch.get_default_dtype())
+
         # We initially build the edges for a batch of size 1 so at this point
         # self._last_batch_edges will have shape (2, n_edges). However, we'll
         # use this to cache the number of edges for the latest batch size.
-        self._last_batch_edges = get_all_edges(1, n_nodes, mask=mask)
-        # The number of nodes and edges (for a single batch) is needed for get_edges().
-        self._n_nodes = n_nodes
+        self._last_batch_edges = get_all_edges(batch_size=1, n_nodes=self.n_nodes, mask=mask)
+        # The number of edges for a single batch. Needed by get_edges().
         self._n_edges = int(self._last_batch_edges.shape[1])
 
     @property
     def n_nodes(self):
         """int: Number of nodes in the graph."""
-        return self._n_nodes
+        return len(self._node_types_one_hot)
 
     def get_edges(self, batch_size):
         """Return the edges between nodes for the given batch size.
@@ -81,7 +103,7 @@ class FixedGraph(torch.nn.Module):
         """
         # Store new edges so that if the next batch is the same this will be faster.
         self._last_batch_edges = fix_edges_batch_size(
-            self._last_batch_edges, batch_size, self._n_edges, n_nodes=self._n_nodes)
+            self._last_batch_edges, batch_size, self._n_edges, n_nodes=self.n_nodes)
         return self._last_batch_edges
 
 
