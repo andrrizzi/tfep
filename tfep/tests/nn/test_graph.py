@@ -21,7 +21,7 @@ from tfep.nn.masked import create_autoregressive_mask
 from tfep.nn.graph import (
     FixedGraph,
     get_all_edges,
-    fix_edges_batch_size,
+    fix_node_indices_batch_size,
     compute_edge_distances,
     prune_long_edges,
     unsorted_segment_sum,
@@ -107,10 +107,14 @@ def test_get_edges(batch_size, n_nodes, autoregressive_mask, func):
 
         assert mask[edge_src, edge_dst] == 1.0
 
-    # Check that fix_edges_batch_size correctly fixes the number of batches.
+    # Check that fix_node_indices_batch_size correctly fixes the number of batches.
     new_batch_size = 2
     expected_edges = func(new_batch_size, n_nodes, mask)
-    fixed_edges = fix_edges_batch_size(edges, new_batch_size, n_edges, n_nodes)
+    fixed_edges = fix_node_indices_batch_size(
+        node_indices=edges[:, :n_edges],
+        batch_size=new_batch_size,
+        n_nodes=n_nodes,
+    )
     assert fixed_edges.shape == (2, new_batch_size*n_edges)
     assert torch.all(expected_edges == fixed_edges)
 

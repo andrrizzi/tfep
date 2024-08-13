@@ -102,8 +102,11 @@ class FixedGraph(torch.nn.Module):
 
         """
         # Store new edges so that if the next batch is the same this will be faster.
-        self._last_batch_edges = fix_edges_batch_size(
-            self._last_batch_edges, batch_size, self._n_edges, n_nodes=self.n_nodes)
+        self._last_batch_edges = fix_node_indices_batch_size(
+            node_indices=self._last_batch_edges[:, :self._n_edges],
+            batch_size=batch_size,
+            n_nodes=self.n_nodes,
+        )
         return self._last_batch_edges
 
 
@@ -147,65 +150,53 @@ def get_all_edges(batch_size, n_nodes, mask=None):
         edges = edges.t()
 
     # Determine the edges for the given shape.
-    n_edges = edges.shape[1]
-    edges = fix_edges_batch_size(edges, batch_size, n_edges, n_nodes)
+    edges = fix_node_indices_batch_size(
+        node_indices=edges, batch_size=batch_size, n_nodes=n_nodes)
 
     return edges
 
 
-def fix_edges_batch_size(edges, new_batch_size, n_edges, n_nodes=None):
-    """Return edges compatible with with features in shape ``(new_batch_size*n_nodes, n_feats)``.
+def fix_node_indices_batch_size(node_indices: torch.Tensor, batch_size: int, n_nodes: int):
+    """Expand a tensor of node indices to be compatible to shape ``(*, batch_size*n_indices)``.
 
-    This takes previously cached edges for batch size ``old_batch_size`` and
-    reformat them to be compatible with ``new_batch_size`. This happens, for
-    example, for the last batch, which could be smaller than the one used to
-    create the edges cached during the first forward pass.
+    This is useful, for example, to update the indices of source/destination nodes
+    in the edges for the last batch, which might be smaller than the normal batch size.
 
     Parameters
     ----------
-    edges : torch.Tensor
-        Shape ``(2, old_batch_size*n_edges)``, where ``n_edges`` are the number
-        of edges between nodes in the graph. This is the output of :func:`.get_all_edges()`.
-    new_batch_size : int
+    node_indices : torch.Tensor
+        Shape ``(*, n_indices)``, where ``n_indices`` is the number of node
+        indices for batch size = 1. For example, if this is the output of
+        :func:`.get_all_edges()`, then ``n_indices == n_edges``.
+    batch_size : int
         The output batch size.
-    n_edges : int
-        The number of edges between nodes in the graph.
     n_nodes : int, optional
-        The number of nodes in the graph. This is only required if
-        ``new_batch_size > old_batch_size``.
+        The total number of nodes in the graph.
 
     Returns
     -------
-    edges : torch.Tensor
-        Shape ``(2, new_batch_size*n_edges)``. The new edges after fixing the
+    fixed_indices : torch.Tensor
+        Shape ``(*, batch_size*n_indices)``. The new edges after fixing the
         batch size.
 
     """
-    n_returned_edges = new_batch_size * n_edges
+    if batch_size == 1:
+        return node_indices
 
-    if edges.shape[1] == n_returned_edges:
-        return edges
+    # To shape (*, batch_size, n_indices).
+    node_indices = node_indices.unsqueeze(-2)
+    size = list(node_indices.shape)
+    size[-2] = batch_size
+    node_indices = node_indices.expand(*size)
 
-    if edges.shape[1] > n_returned_edges:
-        # Cut extra batches.
-        edges = edges[:, :n_returned_edges]
-    else:
-        # Add more batches. First determine the edges for the first batch.
-        if edges.shape[1] > n_edges:
-            edges = edges[:, :n_edges]
+    # Now multiply repeated node indices by the batch index. shift has shape (1, batch_size, 1).
+    shift = torch.arange(0, batch_size*n_nodes, n_nodes).unsqueeze(-1)
+    node_indices = node_indices + shift
 
-        # To shape (2, batch_size, n_edges).
-        edges = edges.unsqueeze(1).expand(-1, new_batch_size, -1)
+    # From shape (*, batch_size, n_indices) to (*, batch_size*n_indices)
+    node_indices = node_indices.flatten(start_dim=-2)
 
-        # Now multiply repeated node indices by the batch index. shift has shape (1, batch_size, 1).
-        shift = torch.arange(0, new_batch_size*n_nodes, n_nodes).unsqueeze(-1)
-        edges = edges + shift
-
-        # To shape (2, batch_size*n_edges)
-        n_edges = edges.shape[-1]
-        edges = edges.reshape((2, new_batch_size*n_edges))
-
-    return edges
+    return node_indices
 
 
 # TODO: MERGE THIS WITH tfep.utils.geometry.pdist?
