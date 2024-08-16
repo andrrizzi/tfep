@@ -54,7 +54,7 @@ class Transformer(torch.nn.Module):
         return super().forward(x)  # Raises NotImplementedError.
 
     @abc.abstractmethod
-    def inverse(self, y, parameters):
+    def inverse(self, y: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Reverse the transformation.
 
         Parameters
