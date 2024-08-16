@@ -216,13 +216,7 @@ class MAF(torch.nn.Module):
                 identity_conditioner,
                 (self._transformer.n_parameters_per_input * n_mapped_features,)
             )
-
-            # Setting to 0.0 only the last layer suffices.
-            if weight_norm:
-                self._conditioner.layers[-1].weight_g.data.fill_(0.0)
-            else:
-                self._conditioner.layers[-1].weight.data.fill_(0.0)
-            self._conditioner.layers[-1].bias.data = identity_conditioner
+            self._conditioner.set_output(identity_conditioner)
 
     def n_parameters(self) -> int:
         """The total number of (unmasked) parameters."""

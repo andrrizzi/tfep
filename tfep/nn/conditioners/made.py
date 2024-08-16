@@ -21,6 +21,7 @@ import numpy as np
 import torch
 
 from tfep.nn import masked
+from tfep.nn.conditioners.conditioner import Conditioner
 from tfep.utils.misc import ensure_tensor_sequence
 
 
@@ -148,7 +149,7 @@ def generate_degrees(
 # MADE
 # =============================================================================
 
-class MADE(torch.nn.Module):
+class MADE(Conditioner):
     """
     An autoregressive layer implemented through masked affine layers.
 
@@ -342,12 +343,25 @@ class MADE(torch.nn.Module):
         """Shape: ``(n_hidden_layers,)``. ``dimensions_hidden[i]`` is the number of nodes in the ``i``-th hidden layer."""
         return torch.tensor([l.out_features for l in self.layers[:-1:2]])
 
+    @property
+    def weight_norm(self):
+        """bool: ```True``` if weight norm is used, ```False``` otherwise."""
+        return hasattr(self.layers[-1], 'weight_g')
+
     def n_parameters(self) -> int:
         """The total number of (unmasked) parameters."""
         return sum(l.n_parameters() for l in self.layers[::2])
 
     def forward(self, x):
         return self.layers(x)
+
+    def set_output(self, output: torch.Tensor):
+        """Implement :func:`tfep.nn.flows.autoregressive.Conditioner.set_output`."""
+        if self.weight_norm:
+            self.layers[-1].weight_g.data.fill_(0.0)
+        else:
+            self.layers[-1].weight.data.fill_(0.0)
+        self.layers[-1].bias.data = output
 
     @classmethod
     def _get_degrees_hidden(
