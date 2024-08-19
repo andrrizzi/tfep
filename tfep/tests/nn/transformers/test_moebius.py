@@ -48,6 +48,7 @@ def teardown_module(module):
 def create_moebius_random_input(batch_size, n_features, dimension, unit_sphere):
     """Create random input and parameter for the Moebius transformation."""
     x, w = create_random_input(batch_size, n_features, n_parameters=1, seed=0, par_func=torch.randn)
+    w = w.squeeze(1)
 
     # Map the points on the unit sphere.
     if unit_sphere:
@@ -181,9 +182,9 @@ def test_moebius_transformer_reference(batch_size, n_features, dimension, unit_s
 
     # Compare PyTorch and reference implementation.
     if isinstance(transformer, MoebiusTransformer):
-        ref_y, ref_x_norm, ref_y_norm = reference_moebius_transformer(x, w[:, 0], dimension)
+        ref_y, ref_x_norm, ref_y_norm = reference_moebius_transformer(x, w, dimension)
     else:
-        ref_y, ref_x_norm, ref_y_norm = reference_symmetrized_moebius_transformer(x, w[:, 0], dimension)
+        ref_y, ref_x_norm, ref_y_norm = reference_symmetrized_moebius_transformer(x, w, dimension)
     assert np.allclose(ref_y, torch_y.detach().cpu().numpy())
 
     # Make sure the transform doesn't alter the distance from the center of the sphere.
@@ -213,7 +214,7 @@ def test_moebius_transformer_identity(batch_size, n_features, dimension, unit_sp
     x, _ = create_moebius_random_input(batch_size, n_features, dimension, unit_sphere)
 
     # The identity should be encoded with parameters w = 0.
-    w = torch.zeros_like(x).unsqueeze(1)
+    w = torch.zeros_like(x)
 
     # Compare PyTorch and reference.
     if transformer_cls == MoebiusTransformer:

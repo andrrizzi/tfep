@@ -134,7 +134,8 @@ def test_sos_affine_transformer_equivalence(n_polynomials):
 
     # Check that they are equivalent.
     affine_y, affine_log_det_J = AffineTransformer()(x, affine_parameters)
-    sos_y, sos_log_det_J = SOSPolynomialTransformer(n_polynomials=n_polynomials)(x, sos_coefficients)
+    sos_transformer = SOSPolynomialTransformer(n_polynomials=n_polynomials)
+    sos_y, sos_log_det_J = sos_transformer(x, sos_coefficients.reshape(batch_size, -1))
 
     assert torch.allclose(affine_y, sos_y)
     assert torch.allclose(affine_log_det_J, sos_log_det_J)

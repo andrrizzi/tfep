@@ -16,6 +16,7 @@ Moebius transformation for autoregressive normalizing flows.
 
 import torch
 
+from tfep.nn.transformers.transformer import Transformer
 from tfep.utils.math import batchwise_dot, batchwise_outer
 
 
@@ -23,7 +24,7 @@ from tfep.utils.math import batchwise_dot, batchwise_outer
 # MOEBIUS TRANSFORMERS
 # =============================================================================
 
-class MoebiusTransformer(torch.nn.Module):
+class MoebiusTransformer(Transformer):
     r"""Moebius transformer.
 
     This implements a generalization of the Moebius transformation proposed in
@@ -43,17 +44,6 @@ class MoebiusTransformer(torch.nn.Module):
     The implementation of the transformation on the unit sphere is slightly more
     efficient and can be toggled with the ``unit_sphere`` argument.
 
-    Parameters
-    ----------
-    dimension : int
-        The dimensionality of the vectors in ``x`` and ``w``.
-    max_radius : float
-        Must be stringly less than 1. Rescaling of the ``w`` vectors will be
-        performed so that its maximum norm will be ``max_radius * |x|``.
-    unit_sphere : bool
-        If ``True``, the input vectors ``x`` are assumed to be on the unit sphere,
-        which makes the implementation slightly faster.
-
     References
     ----------
     [1] Kato S, McCullagh P. Moebius transformation and a Cauchy family
@@ -66,14 +56,27 @@ class MoebiusTransformer(torch.nn.Module):
     # Number of parameters needed by the transformer for each input dimension.
     n_parameters_per_input = 1
 
-    def __init__(self, dimension, max_radius=0.99, unit_sphere=False):
-        """Constructor."""
+    def __init__(self, dimension: int, max_radius: float = 0.99, unit_sphere: bool = False):
+        """Constructor.
+
+        Parameters
+        ----------
+        dimension : int
+            The dimensionality of the vectors in ``x`` and ``w``.
+        max_radius : float
+            Must be stringly less than 1. Rescaling of the ``w`` vectors will be
+            performed so that its maximum norm will be ``max_radius * |x|``.
+        unit_sphere : bool
+            If ``True``, the input vectors ``x`` are assumed to be on the unit sphere,
+            which makes the implementation slightly faster.
+
+        """
         super().__init__()
         self.dimension = dimension
         self.max_radius = max_radius
         self.unit_sphere = unit_sphere
 
-    def forward(self, x, w):
+    def forward(self, x: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Apply the transformation.
 
         Parameters
@@ -82,7 +85,7 @@ class MoebiusTransformer(torch.nn.Module):
             Shape ``(batch_size, n_vectors*dimension)``. Contiguous elements of ``x``
             are interpreted as vectors (i.e., the first and second input vectors are
             ``x[:dimension]`` and ``x[dimension:2*dimension]``.
-        w : torch.Tensor
+        parameters : torch.Tensor
             Shape ``(batch_size, n_vectors*dimension)``. The transformation parameters.
             These parameter vectors are automatically rescaled so that ``|w| < |x|``.
 
@@ -97,13 +100,13 @@ class MoebiusTransformer(torch.nn.Module):
         """
         return moebius_transformer(
             x,
-            w[:, 0],
+            parameters,
             dimension=self.dimension,
             max_radius=self.max_radius,
             unit_sphere=self.unit_sphere
         )
 
-    def inverse(self, y, w):
+    def inverse(self, y: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Reverse the transformation.
 
         Parameters
@@ -112,7 +115,7 @@ class MoebiusTransformer(torch.nn.Module):
             Shape ``(batch_size, n_vectors*dimension)``. Contiguous elements of ``y``
             are interpreted as vectors (i.e., the first and second input vectors are
             ``y[:dimension]`` and ``y[dimension:2*dimension]``.
-        w : torch.Tensor
+        parameters : torch.Tensor
             Shape ``(batch_size, n_vectors*dimension)``. The transformation parameters.
             These parameter vectors are automatically rescaled so that ``|w| < |y|``.
 
@@ -127,13 +130,13 @@ class MoebiusTransformer(torch.nn.Module):
         """
         return moebius_transformer(
             y,
-            -w[:, 0],
+            -parameters,
             dimension=self.dimension,
             max_radius=self.max_radius,
             unit_sphere=self.unit_sphere
         )
 
-    def get_identity_parameters(self, n_features):
+    def get_parameters_identity(self, n_features: int) -> torch.Tensor:
         """Return the value of the parameters that makes this the identity function.
 
         This can be used to initialize the normalizing flow to perform the identity
@@ -146,15 +149,15 @@ class MoebiusTransformer(torch.nn.Module):
 
         Returns
         -------
-        w : torch.Tensor
+        parameters : torch.Tensor
             A tensor of shape ``(n_features,)`` representing the parameter
             vector to perform the identity function with a Moebius transformer.
 
         """
-        return torch.zeros(size=(self.n_parameters_per_input, n_features))
+        return torch.zeros(size=(self.n_parameters_per_input*n_features,))
 
 
-class SymmetrizedMoebiusTransformer(torch.nn.Module):
+class SymmetrizedMoebiusTransformer(Transformer):
     r"""Symmetrized Moebius transformer.
 
     This implements a generalization of the symmetrized Moebius transformation
@@ -172,14 +175,6 @@ class SymmetrizedMoebiusTransformer(torch.nn.Module):
     following the same strategy as in [2] to satisfy the condition on the norm.
     Consequently, ``w``s of any norm can be passed.
 
-    Parameters
-    ----------
-    dimension : int
-        The dimensionality of the ``x`` and ``w`` vectors.
-    max_radius : float
-        Must be stringly less than 1. Rescaling of the ``w`` vectors will be
-        performed so that its maximum norm will be ``max_radius * |x|``.
-
     References
     ----------
     [1] Köhler J, Invernizzi M, De Haan P, Noé F. Rigid body flows for sampling
@@ -192,13 +187,23 @@ class SymmetrizedMoebiusTransformer(torch.nn.Module):
     # Number of parameters needed by the transformer for each input dimension.
     n_parameters_per_input = 1
 
-    def __init__(self, dimension, max_radius=0.99, unit_sphere=False):
-        """Constructor."""
+    def __init__(self, dimension: int, max_radius: float = 0.99):
+        """Constructor.
+
+        Parameters
+        ----------
+        dimension : int
+            The dimensionality of the ``x`` and ``w`` vectors.
+        max_radius : float
+            Must be stringly less than 1. Rescaling of the ``w`` vectors will be
+            performed so that its maximum norm will be ``max_radius * |x|``.
+
+        """
         super().__init__()
         self.dimension = dimension
         self.max_radius = max_radius
 
-    def forward(self, x, w):
+    def forward(self, x: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Apply the transformation.
 
         Parameters
@@ -207,7 +212,7 @@ class SymmetrizedMoebiusTransformer(torch.nn.Module):
             Shape ``(batch_size, n_vectors*dimension)``. Contiguous elements of ``x``
             are interpreted as vectors (i.e., the first and second input vectors are
             ``x[:dimension]`` and ``x[dimension:2*dimension]``.
-        w : torch.Tensor
+        parameters : torch.Tensor
             Shape ``(batch_size, n_vectors*dimension)``. The transformation parameters.
             These parameter vectors are automatically rescaled so that ``|w| < |x|``.
 
@@ -222,12 +227,12 @@ class SymmetrizedMoebiusTransformer(torch.nn.Module):
         """
         return symmetrized_moebius_transformer(
             x,
-            w[:, 0],
+            parameters,
             dimension=self.dimension,
             max_radius=self.max_radius,
         )
 
-    def inverse(self, y, w):
+    def inverse(self, y: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Reverse the transformation.
 
         Parameters
@@ -236,7 +241,7 @@ class SymmetrizedMoebiusTransformer(torch.nn.Module):
             Shape ``(batch_size, n_vectors*dimension)``. Contiguous elements of ``y``
             are interpreted as vectors (i.e., the first and second input vectors are
             ``y[:dimension]`` and ``y[dimension:2*dimension]``.
-        w : torch.Tensor
+        parameters : torch.Tensor
             Shape ``(batch_size, n_vectors*dimension)``. The transformation parameters.
             These parameter vectors are automatically rescaled so that ``|w| < |y|``.
 
@@ -251,12 +256,12 @@ class SymmetrizedMoebiusTransformer(torch.nn.Module):
         """
         return symmetrized_moebius_transformer_inverse(
             y,
-            w[:, 0],
+            parameters,
             dimension=self.dimension,
             max_radius=self.max_radius,
         )
 
-    def get_identity_parameters(self, n_features):
+    def get_parameters_identity(self, n_features: int) -> torch.Tensor:
         """Return the value of the parameters that makes this the identity function.
 
         This can be used to initialize the normalizing flow to perform the identity
@@ -274,7 +279,7 @@ class SymmetrizedMoebiusTransformer(torch.nn.Module):
             vector to perform the identity function with a Moebius transformer.
 
         """
-        return torch.zeros(size=(self.n_parameters_per_input, n_features))
+        return torch.zeros(size=(self.n_parameters_per_input*n_features,))
 
 
 # =============================================================================

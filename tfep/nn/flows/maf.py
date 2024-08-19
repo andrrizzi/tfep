@@ -206,16 +206,7 @@ class MAF(torch.nn.Module):
         # Initialize the log_scale and shift nets to 0.0 so that at
         # the beginning the MAF layer performs the identity function.
         if initialize_identity:
-            # Determine the conditioner that will make the transformer the identity function.
-            identity_conditioner = self._transformer.get_identity_parameters(n_mapped_features)
-
-            # There is a single output bias parameter vector so we need to
-            # convert from shape (batch_size, n_parameters_per_input, n_features)
-            # to (batch_size, n_parameters_per_input * n_features).
-            identity_conditioner = torch.reshape(
-                identity_conditioner,
-                (self._transformer.n_parameters_per_input * n_mapped_features,)
-            )
+            identity_conditioner = self._transformer.get_parameters_identity(n_mapped_features)
             self._conditioner.set_output(identity_conditioner)
 
     def n_parameters(self) -> int:
@@ -293,18 +284,10 @@ class MAF(torch.nn.Module):
 
     def _run_conditioner(self, x):
         """Return the conditioning parameters with shape (batch_size, n_parameters, n_features)."""
-        batch_size, n_features = x.shape
-
         # Lift periodic features.
         if self._lifter is not None:
             x = self._lifter(x)
-
-        # The conditioner return the parameters with shape (batch_size, n_features*n_parameters).
-        return self._conditioner(x).reshape(
-            batch_size,
-            self._transformer.n_parameters_per_input,
-            -1
-        )
+        return self._conditioner(x)
 
 
 # =============================================================================

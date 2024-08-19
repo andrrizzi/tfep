@@ -191,7 +191,7 @@ def test_circular_spline_transformer_periodic(circular):
     ])
 
     # Create random parameters.
-    parameters = torch.randn((batch_size, 3*n_bins+1, n_features))
+    parameters = torch.randn((batch_size, (3*n_bins+1) * n_features))
 
     # Create and run the transformer.
     transformer = NeuralSplineTransformer(x0=x0, xf=xf, n_bins=n_bins, circular=circular)
@@ -211,8 +211,8 @@ def test_circular_spline_transformer_periodic(circular):
     assert torch.allclose(log_det_J+log_det_J_inv, torch.zeros_like(log_det_J))
 
     # If the shifts are 0.0, the boundaries must be mapped to themselves.
-    parameters[:, 3*n_bins, circular_indices] = 0.0
-    y, log_det_J = transformer(x, parameters)
+    parameters.reshape(batch_size, -1, n_features)[:, 3*n_bins, circular_indices] = 0.0
+    y, log_det_J = transformer(x, parameters.reshape(batch_size, -1))
     assert torch.allclose(x[:2], y[:2], atol=10*epsilon)
 
 
@@ -225,7 +225,7 @@ def test_circular_spline_transformer_periodic(circular):
     torch.tensor([1, 2]),
 ])
 def test_identity_neural_spline(circular):
-    """Test that get_identity_parameters returns the correct parameters for the identity function."""
+    """Test that get_parameters_identity returns the correct parameters for the identity function."""
     batch_size = 5
     n_features = 3
     n_bins = 3
@@ -237,10 +237,10 @@ def test_identity_neural_spline(circular):
 
     # Obtain identity parameters.
     transformer = NeuralSplineTransformer(x0=x0, xf=xf, n_bins=n_bins, circular=circular)
-    parameters = transformer.get_identity_parameters(n_features)
+    parameters = transformer.get_parameters_identity(n_features)
     # We need to clone to actually allocate the memory or sliced
     # assignment operations on parameters won't work.
-    parameters = parameters.unsqueeze(0).expand(batch_size, -1, -1).clone()
+    parameters = parameters.unsqueeze(0).expand(batch_size, -1).clone()
 
     # Check that the parameters give the identity functions.
     y, log_det_J = transformer(x, parameters)
