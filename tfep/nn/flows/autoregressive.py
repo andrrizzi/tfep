@@ -114,7 +114,7 @@ class AutoregressiveFlow(torch.nn.Module):
             inverse_masks[idx, indices] = True
 
         # Now build a 1D tensor of feature indices to pass to the transformer.
-        transformer_indices = torch.cat(transformer_indices).sort()
+        transformer_indices = torch.cat(transformer_indices).sort().values
 
         # Determine the features that must be simply propagated without mapping.
         fixed_indices = torch.arange(n_features_in)
