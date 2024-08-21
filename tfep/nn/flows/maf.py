@@ -20,6 +20,7 @@ from typing import Optional, Union
 import torch
 
 from tfep.nn.conditioners.made import MADE
+from tfep.nn.flows.autoregressive import AutoregressiveFlow
 from tfep.nn.transformers.affine import AffineTransformer
 from tfep.utils.misc import ensure_tensor_sequence
 
@@ -28,7 +29,7 @@ from tfep.utils.misc import ensure_tensor_sequence
 # MAF
 # =============================================================================
 
-class MAF(torch.nn.Module):
+class MAF(AutoregressiveFlow):
     """Masked Autoregressive Flow.
 
     This implements an autoregressive flow in which the :class:`tfep.nn.conditioners.MADE` [1]
@@ -132,12 +133,9 @@ class MAF(torch.nn.Module):
             the flow initially performs the identity function.
 
         """
-        super().__init__()
-
         # By default, use an affine transformer.
         if transformer is None:
             transformer = AffineTransformer()
-        self._transformer = transformer
 
         # Convert all sequences to Tensors to simplify the code.
         degrees_in = ensure_tensor_sequence(degrees_in)
@@ -154,13 +152,13 @@ class MAF(torch.nn.Module):
 
         # Create the lifter used to map the periodic degrees of freedom.
         if periodic_indices is None:
-            self._lifter = None
+            embedding = None
             degrees_in_embedded = degrees_in
         elif periodic_limits is None:
             raise ValueError('periodic_limits must be given if periodic_indices is passed.')
         else:
             # Initialize Module lifting the periodic features.
-            self._lifter = _LiftPeriodic(
+            embedding = _LiftPeriodic(
                 dimension_in=len(degrees_in),
                 periodic_indices=periodic_indices,
                 limits=periodic_limits
@@ -172,122 +170,32 @@ class MAF(torch.nn.Module):
             repeats[periodic_indices] = 2
             degrees_in_embedded = torch.repeat_interleave(degrees_in, repeats)
 
-        # Keep track of all mapped and conditioning input features.
-        mapped_mask = degrees_in != -1
-        n_mapped_features = mapped_mask.count_nonzero()
-        if n_mapped_features == len(degrees_in):
-            # We set them to None to avoid some indexing operations in forward/inverse.
-            self.register_buffer('_conditioning_mask', None)
-            self.register_buffer('_mapped_mask', None)
-        else:
-            self.register_buffer('_conditioning_mask', ~mapped_mask)
-            self.register_buffer('_mapped_mask', mapped_mask)
+        # Find transformer indices in the order they need to be evaluated during the inverse.
+        transformer_indices = [(degrees_in == degree).nonzero().flatten()
+                               for degree in range(max_degree_in+1)]
 
-        # Create a map: mapped_degree_in -> mask which will be useful for inverse().
-        self.register_buffer('_mapped_degree_to_mask', torch.empty(max_degree_in+1, len(degrees_in), dtype=bool))
-        for degree in range(max_degree_in+1):
-            self._mapped_degree_to_mask[degree] = degrees_in == degree
+        # Fix the degrees of the conditioner's output.
+        degrees_out = degrees_in[degrees_in != -1]
+        degrees_out = degrees_out.tile((transformer.n_parameters_per_input,))
 
-        # The output degrees.
-        if self._mapped_mask is not None:
-            degrees_out = degrees_in[self._mapped_mask]
-        else:
-            degrees_out = degrees_in
-        degrees_out = degrees_out.tile((self._transformer.n_parameters_per_input,))
-
-        # We need two MADE layers for the scaling and the shifting.
-        self._conditioner = MADE(
-            degrees_in=degrees_in_embedded,
-            degrees_out=degrees_out,
-            hidden_layers=hidden_layers,
-            weight_norm=weight_norm,
+        # Initialize parent class.
+        super().__init__(
+            n_features_in=len(degrees_in),
+            transformer_indices=transformer_indices,
+            conditioner=MADE(
+                degrees_in=degrees_in_embedded,
+                degrees_out=degrees_out,
+                hidden_layers=hidden_layers,
+                weight_norm=weight_norm,
+            ),
+            transformer=transformer,
+            embedding=embedding,
+            initialize_identity=initialize_identity,
         )
-
-        # Initialize the log_scale and shift nets to 0.0 so that at
-        # the beginning the MAF layer performs the identity function.
-        if initialize_identity:
-            identity_conditioner = self._transformer.get_parameters_identity(n_mapped_features)
-            self._conditioner.set_output(identity_conditioner)
 
     def n_parameters(self) -> int:
         """The total number of (unmasked) parameters."""
         return self._conditioner.n_parameters()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Map the input data.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            An input batch of data of shape ``(batch_size, dimension_in)``.
-
-        Returns
-        -------
-        y : torch.Tensor
-            The mapped data of shape ``(batch_size, dimension_in)``.
-        log_det_J : torch.Tensor
-            The log absolute value of the Jacobian of the flow as a tensor of
-            shape ``(batch_size,)``.
-
-        """
-        parameters = self._run_conditioner(x)
-
-        # Make sure the conditioning dimensions are not altered.
-        if self._mapped_mask is None:
-            y, log_det_J = self._transformer(x, parameters)
-        else:
-            # There are conditioning dimensions.
-            y = torch.empty_like(x)
-
-            y[:, self._conditioning_mask] = x[:, self._conditioning_mask]
-            y[:, self._mapped_mask], log_det_J = self._transformer(
-                x[:, self._mapped_mask], parameters)
-
-        return y, log_det_J
-
-    def inverse(self, y: torch.Tensor) -> torch.Tensor:
-        # This is slower than forward because to evaluate x_i we need
-        # all x_<i. For the algorithm, see Eq 39 in arXiv:1912.02762.
-
-
-        # Initialize x to an arbitrary value.
-        x = torch.zeros_like(y)
-
-        if self._mapped_mask is not None:
-            # All outputs of the nets depend on the conditioning features,
-            # which are not transformed by the MAF.
-            x[:, self._conditioning_mask] = y[:, self._conditioning_mask]
-
-            # Isolate the features that are mapped.
-            y = y[:, self._mapped_mask]
-
-            # Isolate also the mapped features on the masks.
-            mapped_degree_to_mapped_mask = self._mapped_degree_to_mask[:, self._mapped_mask]
-        else:
-            mapped_degree_to_mapped_mask = self._mapped_degree_to_mask
-
-        # Compute the inverse.
-        for degree, (mask, mask_mapped) in enumerate(zip(
-                self._mapped_degree_to_mask, mapped_degree_to_mapped_mask)):
-            # Compute the inversion with the current x.
-            # Cloning, allows to compute gradients on inverse.
-            parameters = self._run_conditioner(x.clone())
-
-            # The log_det_J that we compute with the last pass is the total log_det_J.
-            # x_temp has shape (batch_size, n_mapped_features).
-            x_temp, log_det_J = self._transformer.inverse(y, parameters)
-
-            # No need to update all the xs, but only those we can update at this point.
-            x[:, mask] = x_temp[:, mask_mapped]
-
-        return x, log_det_J
-
-    def _run_conditioner(self, x):
-        """Return the conditioning parameters with shape (batch_size, n_parameters, n_features)."""
-        # Lift periodic features.
-        if self._lifter is not None:
-            x = self._lifter(x)
-        return self._conditioner(x)
 
 
 # =============================================================================
