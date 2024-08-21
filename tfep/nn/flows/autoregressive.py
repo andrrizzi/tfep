@@ -248,8 +248,8 @@ class AutoregressiveFlow(torch.nn.Module):
             Shape ``(batch_size, n_parameters)``. The transformer parameters.
 
         """
-        if self._conditioner_indices is not None:
+        if len(self._conditioner_indices) > 0:
             x = x[:, self._conditioner_indices]
-        if self.embedding is not None:
-            x = self.embedding(x)
+        if self._embedding is not None:
+            x = self._embedding(x)
         return self._conditioner(x)
