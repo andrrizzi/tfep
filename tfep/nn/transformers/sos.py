@@ -113,7 +113,7 @@ class SOSPolynomialTransformer(Transformer):
         raise NotImplementedError(
             'Inversion of SOS polynomial transformer has not been implemented yet.')
 
-    def get_parameters_identity(self, n_features: int) -> torch.Tensor:
+    def get_identity_parameters(self, n_features: int) -> torch.Tensor:
         """Return the value of the parameters that makes this the identity function.
 
         This can be used to initialize the normalizing flow to perform the identity

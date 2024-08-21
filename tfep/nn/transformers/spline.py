@@ -184,7 +184,7 @@ class NeuralSplineTransformer(Transformer):
 
         return x, log_det_J
 
-    def get_parameters_identity(self, n_features: int) -> torch.Tensor:
+    def get_identity_parameters(self, n_features: int) -> torch.Tensor:
         """Return the value of the parameters that makes this the identity function.
 
         Note that if ``x0 != y0`` or ``y0 != y1`` it is

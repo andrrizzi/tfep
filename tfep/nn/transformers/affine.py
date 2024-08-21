@@ -95,7 +95,7 @@ class AffineTransformer(Transformer):
         shift, log_scale = self._split_parameters(parameters)
         return affine_transformer_inverse(y, shift, log_scale)
 
-    def get_parameters_identity(self, n_features: int) -> torch.Tensor:
+    def get_identity_parameters(self, n_features: int) -> torch.Tensor:
         """Return the value of the parameters that makes this the identity function.
 
         This can be used to initialize the normalizing flow to perform the identity
@@ -215,7 +215,7 @@ class VolumePreservingShiftTransformer(Transformer):
             y, shift=parameters, periodic_indices=self.periodic_indices,
             periodic_limits=self.periodic_limits)
 
-    def get_parameters_identity(self, n_features: int) -> torch.Tensor:
+    def get_identity_parameters(self, n_features: int) -> torch.Tensor:
         """Return the value of the parameters that makes this the identity function.
 
         This can be used to initialize the normalizing flow to perform the identity

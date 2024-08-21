@@ -136,7 +136,7 @@ class MoebiusTransformer(Transformer):
             unit_sphere=self.unit_sphere
         )
 
-    def get_parameters_identity(self, n_features: int) -> torch.Tensor:
+    def get_identity_parameters(self, n_features: int) -> torch.Tensor:
         """Return the value of the parameters that makes this the identity function.
 
         This can be used to initialize the normalizing flow to perform the identity
@@ -261,7 +261,7 @@ class SymmetrizedMoebiusTransformer(Transformer):
             max_radius=self.max_radius,
         )
 
-    def get_parameters_identity(self, n_features: int) -> torch.Tensor:
+    def get_identity_parameters(self, n_features: int) -> torch.Tensor:
         """Return the value of the parameters that makes this the identity function.
 
         This can be used to initialize the normalizing flow to perform the identity

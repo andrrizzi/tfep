@@ -77,7 +77,7 @@ class Transformer(torch.nn.Module):
         pass
 
     @abc.abstractmethod
-    def get_parameters_identity(self, n_features: int) -> torch.Tensor:
+    def get_identity_parameters(self, n_features: int) -> torch.Tensor:
         """Returns the parameters that would make this transformer the identity function.
 
         Parameters
