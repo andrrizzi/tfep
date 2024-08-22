@@ -53,7 +53,6 @@ class AutoregressiveFlow(torch.nn.Module):
             conditioner: torch.nn.Module,
             transformer: torch.nn.Module,
             conditioner_indices: Optional[Sequence[int]] = None,
-            embedding: Optional[torch.nn.Module] = None,
             initialize_identity: bool = True,
     ):
         """Constructor.
@@ -81,11 +80,7 @@ class AutoregressiveFlow(torch.nn.Module):
             The transformer used to map the input features.
         conditioner_indices : Sequence[int], optional
             The subset of features can be passed to the conditioner. By default,
-            all input features are passed. When present, these features are passed
-            to the ``embedding`` layer instead of directly to the ``conditioner``.
-        embedding : torch.nn.Module, optional
-            If present, the conditioner input features are first passed to this
-            layer whose output is then fed to the ``conditioner``.
+            all input features are passed.
         initialize_identity : bool, optional
             If ``True``, the flow is initialized to perform the identity function.
 
@@ -129,7 +124,6 @@ class AutoregressiveFlow(torch.nn.Module):
         # Store everything.
         self._conditioner = conditioner
         self._transformer = transformer
-        self._embedding = embedding
         self.register_buffer('_transformer_indices', transformer_indices)
         self.register_buffer('_inverse_masks', inverse_masks)
         self.register_buffer('_fixed_indices', fixed_indices)
@@ -250,6 +244,4 @@ class AutoregressiveFlow(torch.nn.Module):
         """
         if len(self._conditioner_indices) > 0:
             x = x[:, self._conditioner_indices]
-        if self._embedding is not None:
-            x = self._embedding(x)
         return self._conditioner(x)
