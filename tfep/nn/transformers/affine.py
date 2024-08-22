@@ -20,14 +20,14 @@ import torch
 import torch.autograd
 import torch.nn.functional
 
-from tfep.nn.transformers.transformer import Transformer
+from tfep.nn.transformers.transformer import MAFTransformer
 
 
 # =============================================================================
 # AFFINE
 # =============================================================================
 
-class AffineTransformer(Transformer):
+class AffineTransformer(MAFTransformer):
     r"""Affine transformer module for autoregressive normalizing flows.
 
     This is an implementation of the transformation
@@ -115,6 +115,25 @@ class AffineTransformer(Transformer):
         """
         return torch.zeros(size=(self.n_parameters_per_input*n_features,))
 
+    def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
+        """Returns the degrees associated to the conditioner's output.
+
+        Parameters
+        ----------
+        degrees_in : torch.Tensor
+            Shape ``(n_transformed_features,)``. The autoregressive degrees
+            associated to the features provided as input to the transformer.
+
+        Returns
+        -------
+        degrees_out : torch.Tensor
+            Shape ``(n_parameters,)``. The autoregressive degrees associated
+            to each output of the conditioner that will be fed to the
+            transformer as parameters.
+
+        """
+        return degrees_in.tile((self.n_parameters_per_input,))
+
     def _split_parameters(self, parameters):
         """Divide shift from log scale."""
         # From (batch, 2*n_features) to (batch, 2, n_features).
@@ -127,7 +146,7 @@ class AffineTransformer(Transformer):
 # VOLUME PRESERVING TRANSFORMER
 # =============================================================================
 
-class VolumePreservingShiftTransformer(Transformer):
+class VolumePreservingShiftTransformer(MAFTransformer):
     r"""Implement a volume-preserving transformer for autoregressive normalizing flows.
 
     This is an implementation of the transformation
@@ -234,6 +253,25 @@ class VolumePreservingShiftTransformer(Transformer):
 
         """
         return torch.zeros(size=(self.n_parameters_per_input*n_features,))
+
+    def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
+        """Returns the degrees associated to the conditioner's output.
+
+        Parameters
+        ----------
+        degrees_in : torch.Tensor
+            Shape ``(n_transformed_features,)``. The autoregressive degrees
+            associated to the features provided as input to the transformer.
+
+        Returns
+        -------
+        degrees_out : torch.Tensor
+            Shape ``(n_parameters,)``. The autoregressive degrees associated
+            to each output of the conditioner that will be fed to the
+            transformer as parameters.
+
+        """
+        return degrees_in.tile((self.n_parameters_per_input,))
 
 
 # =============================================================================

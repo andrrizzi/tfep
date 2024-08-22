@@ -26,8 +26,8 @@ import torch
 class Transformer(torch.nn.Module):
     """A transformer for an autoregressive flow.
 
-    This class documents the API of a transformer layer compatible with an
-    :class:`.AutoregressiveFlow`.
+    This class documents the API of a transformer layer compatible with
+    :class:`tfep.nn.flows.autoregressive.AutoregressiveFlow`.
 
     """
 
@@ -90,6 +90,38 @@ class Transformer(torch.nn.Module):
         parameters_identity : torch.Tensor
             Shape ``(n_parameters,)``. The parameters of the transformation that
             makes this transformer the identity function.
+
+        """
+        pass
+
+
+class MAFTransformer(Transformer):
+    """A transformer for a masked autoregressive flow (MAF).
+
+    This class documents the API of a transformer layer compatible with
+    :class:`tfep.nn.flows.maf.MAF`.
+
+    Besides the explicit methods documented here, the transformer needs to
+    implement the :class:`.Transformer` interface.
+
+    """
+
+    @abc.abstractmethod
+    def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
+        """Returns the degrees associated to the conditioner's output.
+
+        Parameters
+        ----------
+        degrees_in : torch.Tensor
+            Shape ``(n_transformed_features,)``. The autoregressive degrees
+            associated to the features provided as input to the transformer.
+
+        Returns
+        -------
+        degrees_out : torch.Tensor
+            Shape ``(n_parameters,)``. The autoregressive degrees associated
+            to each output of the conditioner that will be fed to the
+            transformer as parameters.
 
         """
         pass

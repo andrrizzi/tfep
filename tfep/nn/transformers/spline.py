@@ -20,14 +20,14 @@ import numpy as np
 import torch
 import torch.autograd
 
-from tfep.nn.transformers.transformer import Transformer
+from tfep.nn.transformers.transformer import MAFTransformer
 
 
 # =============================================================================
 # NEURAL SPLINE
 # =============================================================================
 
-class NeuralSplineTransformer(Transformer):
+class NeuralSplineTransformer(MAFTransformer):
     r"""Neural spline transformer module for autoregressive normalizing flows.
 
     This is an implementation of the neural spline transformer proposed
@@ -228,6 +228,25 @@ class NeuralSplineTransformer(Transformer):
             id_conditioner[3*self.n_bins, self._circular] = 0
 
         return id_conditioner.reshape(-1)
+
+    def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
+        """Returns the degrees associated to the conditioner's output.
+
+        Parameters
+        ----------
+        degrees_in : torch.Tensor
+            Shape ``(n_transformed_features,)``. The autoregressive degrees
+            associated to the features provided as input to the transformer.
+
+        Returns
+        -------
+        degrees_out : torch.Tensor
+            Shape ``(n_parameters,)``. The autoregressive degrees associated
+            to each output of the conditioner that will be fed to the
+            transformer as parameters.
+
+        """
+        return degrees_in.tile((self.n_parameters_per_input,))
 
     def _get_parameters(self, parameters):
         # From (batch_size, 3*n_bins+1*n_features) to (batch_size, 3*n_bins+1, n_features).

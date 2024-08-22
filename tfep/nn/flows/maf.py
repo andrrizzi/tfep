@@ -174,9 +174,8 @@ class MAF(AutoregressiveFlow):
         transformer_indices = [(degrees_in == degree).nonzero().flatten()
                                for degree in range(max_degree_in+1)]
 
-        # Fix the degrees of the conditioner's output.
-        degrees_out = degrees_in[degrees_in != -1]
-        degrees_out = degrees_out.tile((transformer.n_parameters_per_input,))
+        # We need out degrees only for the transformed inputs.
+        degrees_out = transformer.get_degrees_out(degrees_in[degrees_in != -1])
 
         # Initialize parent class.
         super().__init__(

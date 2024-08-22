@@ -16,7 +16,7 @@ Moebius transformation for autoregressive normalizing flows.
 
 import torch
 
-from tfep.nn.transformers.transformer import Transformer
+from tfep.nn.transformers.transformer import MAFTransformer
 from tfep.utils.math import batchwise_dot, batchwise_outer
 
 
@@ -24,7 +24,7 @@ from tfep.utils.math import batchwise_dot, batchwise_outer
 # MOEBIUS TRANSFORMERS
 # =============================================================================
 
-class MoebiusTransformer(Transformer):
+class MoebiusTransformer(MAFTransformer):
     r"""Moebius transformer.
 
     This implements a generalization of the Moebius transformation proposed in
@@ -156,8 +156,27 @@ class MoebiusTransformer(Transformer):
         """
         return torch.zeros(size=(self.n_parameters_per_input*n_features,))
 
+    def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
+        """Returns the degrees associated to the conditioner's output.
 
-class SymmetrizedMoebiusTransformer(Transformer):
+        Parameters
+        ----------
+        degrees_in : torch.Tensor
+            Shape ``(n_transformed_features,)``. The autoregressive degrees
+            associated to the features provided as input to the transformer.
+
+        Returns
+        -------
+        degrees_out : torch.Tensor
+            Shape ``(n_parameters,)``. The autoregressive degrees associated
+            to each output of the conditioner that will be fed to the
+            transformer as parameters.
+
+        """
+        return degrees_in.tile((self.n_parameters_per_input,))
+
+
+class SymmetrizedMoebiusTransformer(MAFTransformer):
     r"""Symmetrized Moebius transformer.
 
     This implements a generalization of the symmetrized Moebius transformation
@@ -280,6 +299,25 @@ class SymmetrizedMoebiusTransformer(Transformer):
 
         """
         return torch.zeros(size=(self.n_parameters_per_input*n_features,))
+
+    def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
+        """Returns the degrees associated to the conditioner's output.
+
+        Parameters
+        ----------
+        degrees_in : torch.Tensor
+            Shape ``(n_transformed_features,)``. The autoregressive degrees
+            associated to the features provided as input to the transformer.
+
+        Returns
+        -------
+        degrees_out : torch.Tensor
+            Shape ``(n_parameters,)``. The autoregressive degrees associated
+            to each output of the conditioner that will be fed to the
+            transformer as parameters.
+
+        """
+        return degrees_in.tile((self.n_parameters_per_input,))
 
 
 # =============================================================================

@@ -18,14 +18,14 @@ import numpy as np
 import torch
 import torch.autograd
 
-from tfep.nn.transformers.transformer import Transformer
+from tfep.nn.transformers.transformer import MAFTransformer
 
 
 # =============================================================================
 # SUM-OF-SQUARES POLYNOMIAL TRANSFORMER
 # =============================================================================
 
-class SOSPolynomialTransformer(Transformer):
+class SOSPolynomialTransformer(MAFTransformer):
     """Sum-of-squares polynomial transformer module for autoregressive normalizing flows.
 
     This is an implementation of the polynomial transformer proposed in [1].
@@ -135,6 +135,25 @@ class SOSPolynomialTransformer(Transformer):
         # The sum of the squared linear parameters must be 1.
         id_conditioner[1::self.parameters_per_polynomial].fill_(np.sqrt(1 / self.n_polynomials))
         return id_conditioner.flatten()
+
+    def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
+        """Returns the degrees associated to the conditioner's output.
+
+        Parameters
+        ----------
+        degrees_in : torch.Tensor
+            Shape ``(n_transformed_features,)``. The autoregressive degrees
+            associated to the features provided as input to the transformer.
+
+        Returns
+        -------
+        degrees_out : torch.Tensor
+            Shape ``(n_parameters,)``. The autoregressive degrees associated
+            to each output of the conditioner that will be fed to the
+            transformer as parameters.
+
+        """
+        return degrees_in.tile((self.n_parameters_per_input,))
 
 
 # =============================================================================
