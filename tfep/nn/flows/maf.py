@@ -20,6 +20,7 @@ from typing import Optional, Union
 import torch
 
 from tfep.nn.conditioners.made import MADE
+from tfep.nn.embeddings.mafembed import MAFEmbedding
 from tfep.nn.flows.autoregressive import AutoregressiveFlow
 from tfep.nn.transformers.affine import AffineTransformer
 from tfep.utils.misc import ensure_tensor_sequence
@@ -83,8 +84,7 @@ class MAF(AutoregressiveFlow):
             degrees_in: Sequence[int],
             transformer: Optional[torch.nn.Module] = None,
             hidden_layers: Union[int, Sequence[int], Sequence[Sequence[int]]] = 2,
-            periodic_indices: Optional[Sequence[int]] = None,
-            periodic_limits: Optional[Sequence[int]] = None,
+            embedding: Optional[MAFEmbedding] = None,
             weight_norm: bool = True,
             initialize_identity: bool = True,
     ):
@@ -116,15 +116,9 @@ class MAF(AutoregressiveFlow):
             ``i``-th node of the ``l``-th hidden layer.
 
             Default is 2.
-        periodic_indices : Sequence[int] or None, optional
-            Shape (n_periodic,). The (ordered) indices of the input features that
-            are periodic. When passed to the conditioner, these are transformed
-            to ``(cos(a), sin(a))``, where ``a`` is a shifted/rescaled feature
-            to be in the interval [0, 2pi]. This way the conditioner will have
-            periodic input.
-        periodic_limits : Sequence[int] or None, optional
-            A pair ``(lower, upper)`` defining the limits of the periodic input
-            features  (e.g. ``[-pi, pi]``). The period is ``upper - lower``.
+        embedding : torch.nn.Module, optional
+            If present, the conditioner input features are first passed to this
+            layer whose output is then fed to the ``conditioner``.
         weight_norm : bool, optional
             If ``True``, weight normalization is applied to the masked linear
             modules. Default is ``True``.
@@ -139,8 +133,6 @@ class MAF(AutoregressiveFlow):
 
         # Convert all sequences to Tensors to simplify the code.
         degrees_in = ensure_tensor_sequence(degrees_in)
-        periodic_indices = ensure_tensor_sequence(periodic_indices)
-        periodic_limits = ensure_tensor_sequence(periodic_limits)
 
         # Check that degrees_in satisfy the requirements.
         min_degree_in = degrees_in.min().tolist()
@@ -151,24 +143,10 @@ class MAF(AutoregressiveFlow):
                              'from 0 (or -1 for conditioning input features).')
 
         # Create the lifter used to map the periodic degrees of freedom.
-        if periodic_indices is None:
-            embedding = None
+        if embedding is None:
             degrees_in_embedded = degrees_in
-        elif periodic_limits is None:
-            raise ValueError('periodic_limits must be given if periodic_indices is passed.')
         else:
-            # Initialize Module lifting the periodic features.
-            embedding = _LiftPeriodic(
-                dimension_in=len(degrees_in),
-                periodic_indices=periodic_indices,
-                limits=periodic_limits
-            )
-
-            # Each periodic feature is transformed to (cosa, sina). We assign
-            # the same degree to each lifted feature.
-            repeats = torch.ones_like(degrees_in)
-            repeats[periodic_indices] = 2
-            degrees_in_embedded = torch.repeat_interleave(degrees_in, repeats)
+            degrees_in_embedded = embedding.get_degrees_out(degrees_in)
 
         # Find transformer indices in the order they need to be evaluated during the inverse.
         transformer_indices = [(degrees_in == degree).nonzero().flatten()
@@ -181,16 +159,18 @@ class MAF(AutoregressiveFlow):
         super().__init__(
             n_features_in=len(degrees_in),
             transformer_indices=transformer_indices,
-            conditioner=MADE(
+            conditioner=_EmbeddedMADE(
+                embedding=embedding,
                 degrees_in=degrees_in_embedded,
                 degrees_out=degrees_out,
                 hidden_layers=hidden_layers,
                 weight_norm=weight_norm,
             ),
             transformer=transformer,
-            embedding=embedding,
             initialize_identity=initialize_identity,
         )
+
+        self._embedding = embedding
 
     def n_parameters(self) -> int:
         """The total number of (unmasked) parameters."""
@@ -198,85 +178,17 @@ class MAF(AutoregressiveFlow):
 
 
 # =============================================================================
-# HELPER FUNCTIONS FOR PERIODIC DOFs
+# HELPER CLASS FOR EMBEDDINGS
 # =============================================================================
 
-class _LiftPeriodic(torch.nn.Module):
-    """Lift periodic DOFs into a periodic representation (cos, sin).
+class _EmbeddedMADE(MADE):
+    """A MADE conditioner with embedded input features."""
 
-    Parameters
-    ----------
-    dimension_in : int
-        Dimension of the input.
-    periodic_indices : torch.Tensor[int]
-        Shape (n_periodic,). The (ordered) indices of the input features that
-        are periodic and must be lifted to the (cos, sin) representation.
-    limits : torch.Tensor[float]
-        A pair ``(lower, upper)`` defining the limits of the periodic variables.
-        The period is given by ``upper - lower``.
-
-    """
-
-    def __init__(
-            self,
-            dimension_in : int,
-            periodic_indices : torch.Tensor,
-            limits : torch.Tensor,
-    ):
-        super().__init__()
-        self.register_buffer('limits', limits)
-
-        # Cache a set of periodic/nonperiodic indices BEFORE and AFTER the input has been lifted.
-        periodic_indices_set = set(periodic_indices.tolist())
-        self.register_buffer('_periodic_indices', periodic_indices)
-        self.register_buffer('_nonperiodic_indices', torch.tensor([i for i in range(dimension_in)
-                                                                   if i not in periodic_indices_set]))
-
-        periodic_indices_lifted = []  # Shape (n_periodic,).
-        nonperiodic_indices_lifted = []  # Shape (n_non_periodic,).
-
-        shift_idx = 0
-        for i in range(dimension_in):
-            if i in periodic_indices_set:
-                periodic_indices_lifted.append(i+shift_idx)
-                shift_idx += 1
-            else:
-                nonperiodic_indices_lifted.append(i + shift_idx)
-
-        # Cache as Tensor.
-        self.register_buffer('_periodic_indices_lifted', torch.tensor(periodic_indices_lifted))
-        self.register_buffer('_nonperiodic_indices_lifted', torch.tensor(nonperiodic_indices_lifted))
+    def __init__(self, embedding, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.embedding = embedding
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Lift each periodic degree of freedom x into a periodic representation (cosx, sinx).
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Shape ``(batch_size, n_features)``. Input tensor.
-
-        Returns
-        -------
-        y : torch.Tensor
-            Shape ``(batch_size, n_features + n_periodic)``. The input with the
-            periodic DOFs transformed. The cosx, sinx representation is placed
-            contiguously where the original DOF was. E.g., if ``2`` is the first
-            element in ``periodic_indices``, then cos and sin will be placed at
-            ``y[:, 2]`` and ``y[:, 3]`` respectively.
-        """
-        batch_size, n_features = x.shape
-
-        # Transform periodic interval to [0, 2pi].
-        period_scale = 2*torch.pi / (self.limits[1] - self.limits[0])
-        x_periodic = (x[:, self._periodic_indices] - self.limits[0]) * period_scale
-        cosx = torch.cos(x_periodic)
-        sinx = torch.sin(x_periodic)
-
-        # Fill output.
-        n_periodic = len(self._periodic_indices)
-        y = torch.empty((batch_size, n_features+n_periodic)).to(x)
-        y[:, self._periodic_indices_lifted] = cosx
-        y[:, self._periodic_indices_lifted+1] = sinx
-        y[:, self._nonperiodic_indices_lifted] = x[:, self._nonperiodic_indices]
-
-        return y
+        if self.embedding is not None:
+            x = self.embedding(x)
+        return super().forward(x)

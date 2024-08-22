@@ -22,7 +22,8 @@ from tfep.nn.transformers import (
     NeuralSplineTransformer, MoebiusTransformer
 )
 from tfep.nn.conditioners.made import generate_degrees
-from tfep.nn.flows.maf import MAF, _LiftPeriodic
+from tfep.nn.embeddings.mafembed import PeriodicEmbedding
+from tfep.nn.flows.maf import MAF
 from ..utils import create_random_input
 
 
@@ -76,53 +77,6 @@ def create_input(batch_size, dimension_in, limits=None, periodic_indices=None, s
 # TESTS
 # =============================================================================
 
-@pytest.mark.parametrize('n_periodic', [2, 3])
-@pytest.mark.parametrize('limits', [
-    (0., 1.),
-    (-1., 1.),
-    (0., 2*torch.pi),
-    (-torch.pi, torch.pi),
-    (-5., -2.5),
-])
-def test_lift_periodic(n_periodic, limits):
-    """Test that _LiftPeriodic lifts the correct degrees of freedom."""
-    batch_size = 3
-    dimension_in = 5
-    limits = torch.tensor(limits)
-
-    # Select a few random indices for sampling.
-    periodic_indices = torch.sort(torch.randperm(dimension_in)[:n_periodic]).values
-    lifter = _LiftPeriodic(dimension_in=dimension_in, periodic_indices=periodic_indices, limits=limits)
-
-    # Create random input with the correct periodicity.
-    x = create_input(batch_size, dimension_in, limits=limits, periodic_indices=periodic_indices)
-
-    # Lift periodic DOFs.
-    x_lifted = lifter(x)
-
-    # The lifted input must have n_periodic more elements.
-    assert x.shape[1] + n_periodic == x_lifted.shape[1]
-
-    # The lifter leaves unaltered the non-periodic DOFs and duplicate the periodic ones.
-    shift_idx = 0
-    for i in range(dimension_in):
-        if i in periodic_indices:
-            shift_idx += 1
-        else:
-            assert torch.all(x[:, i] == x_lifted[:, i+shift_idx])
-    assert shift_idx == n_periodic
-
-    # The limits are mapped to the same values (cos=1, sin=0).
-    x[0, periodic_indices[0]] = limits[0]
-    x[0, periodic_indices[1]] = limits[1]
-    x_lifted = lifter(x)
-
-    expected = torch.tensor([1.0, 0.0])
-    assert torch.allclose(x_lifted[0, periodic_indices[0]:periodic_indices[0]+2], expected)
-    # The "+ 1" here is because of the shift idx due to periodic_indices[0].
-    assert torch.allclose(x_lifted[0, periodic_indices[1]+1:periodic_indices[1]+3], expected)
-
-
 @pytest.mark.parametrize('hidden_layers', [1, 4])
 @pytest.mark.parametrize('conditioning_indices', [
     [],
@@ -163,8 +117,16 @@ def test_identity_initialization_MAF(hidden_layers, conditioning_indices, period
     limits = [-2., 2.]
 
     # Periodic indices with MoebiusTransformer doens't make sense.
-    if periodic_indices is not None and isinstance(transformer, MoebiusTransformer):
+    if periodic_indices is None:
+        embedding = None
+    elif isinstance(transformer, MoebiusTransformer):
         pytest.skip('Vector inputs for Moebius transformers are not compatible with periodic.')
+    else:
+        embedding = PeriodicEmbedding(
+            n_features_in=n_features,
+            periodic_indices=periodic_indices,
+            limits=limits,
+        )
 
     # With the MoebiusTransformer, the output must be vectors of the same size.
     if isinstance(transformer, MoebiusTransformer):
@@ -184,8 +146,7 @@ def test_identity_initialization_MAF(hidden_layers, conditioning_indices, period
         ),
         transformer=transformer,
         hidden_layers=hidden_layers,
-        periodic_indices=periodic_indices,
-        periodic_limits=limits,
+        embedding=embedding,
         weight_norm=weight_norm,
         initialize_identity=True,
     )
@@ -231,8 +192,16 @@ def test_maf_round_trip(conditioning_indices, periodic_indices, degrees_in_order
     limits = (0., 2.)
 
     # Periodic indices with MoebiusTransformer doens't make sense.
-    if periodic_indices is not None and isinstance(transformer, MoebiusTransformer):
+    if periodic_indices is None:
+        embedding = None
+    elif isinstance(transformer, MoebiusTransformer):
         pytest.skip('Vector inputs for Moebius transformers are not compatible with periodic.')
+    else:
+        embedding = PeriodicEmbedding(
+            n_features_in=n_features,
+            periodic_indices=periodic_indices,
+            limits=limits,
+        )
 
     # With the MoebiusTransformer, the output must be vectors of the same size.
     if isinstance(transformer, MoebiusTransformer):
@@ -252,8 +221,7 @@ def test_maf_round_trip(conditioning_indices, periodic_indices, degrees_in_order
         ),
         transformer=transformer,
         hidden_layers=2,
-        periodic_indices=periodic_indices,
-        periodic_limits=limits,
+        embedding=embedding,
         weight_norm=weight_norm,
         initialize_identity=False,
     )
