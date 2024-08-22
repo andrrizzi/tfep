@@ -17,7 +17,7 @@ E(n) equivariant graph neural network for continuous normalizing flows.
 import torch
 
 import tfep.nn.graph
-from tfep.nn.encoders import GaussianBasisExpansion, BehlerParrinelloRadialExpansion
+from tfep.nn.embeddings import GaussianBasisExpansion, BehlerParrinelloRadialExpansion
 from tfep.utils.misc import flattened_to_atom, atom_to_flattened
 
 
