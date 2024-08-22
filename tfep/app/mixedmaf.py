@@ -23,6 +23,7 @@ import pint
 import torch
 
 import tfep.nn.conditioners.made
+import tfep.nn.embeddings
 import tfep.nn.flows
 from tfep.app.base import TFEPMapBase
 from tfep.utils.geometry import (
@@ -321,9 +322,12 @@ class MixedMAFMap(TFEPMapBase):
                     order='ascending' if (layer_idx%2 == 0) else 'descending',
                 ),
                 transformer=transformer,
-                periodic_indices=maf_periodic_dof_indices,
-                # The periodic limits are 0 to 1 if normalize_angles=True in _CartesianToMixedFlow
-                periodic_limits=[0, 1],
+                embedding=tfep.nn.embeddings.PeriodicEmbedding(
+                    n_features_in=self.n_nonfixed_dofs,
+                    periodic_indices=maf_periodic_dof_indices,
+                    # The periodic limits are 0 to 1 if normalize_angles=True in _CartesianToMixedFlow
+                    limits=[0, 1],
+                ),
                 **self._kwargs,
             ))
         flow = tfep.nn.flows.SequentialFlow(*maf_layers)
