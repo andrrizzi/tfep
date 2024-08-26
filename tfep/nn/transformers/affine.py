@@ -17,8 +17,6 @@ Affine transformer for autoregressive normalizing flows.
 from typing import Optional
 
 import torch
-import torch.autograd
-import torch.nn.functional
 
 from tfep.nn.transformers.transformer import MAFTransformer
 
