@@ -37,7 +37,8 @@ class AffineTransformer(MAFTransformer):
 
     See Also
     --------
-    nets.functions.transformer.affine_transformer
+    :func:`.affine_transformer`
+        Functional API for the transformer.
 
     """
     # Number of parameters needed by the transformer for each input dimension.
@@ -157,6 +158,7 @@ class VolumePreservingShiftTransformer(MAFTransformer):
     See Also
     --------
     :func:`.volume_preserving_shift_transformer`
+        Functional API for the transformer.
 
     """
     # Number of parameters needed by the transformer for each input dimension.
@@ -312,7 +314,8 @@ def affine_transformer(x, shift, log_scale):
 
     See Also
     --------
-    tfep.nn.transformers.AffineTransformer
+    :class:`.AffineTransformer`
+        Object-oriented API for the transformer.
 
     """
     y =  x * torch.exp(log_scale) + shift
@@ -399,6 +402,7 @@ def volume_preserving_shift_transformer(x, shift, periodic_indices=None, periodi
     See Also
     --------
     :class:`.VolumePreservingShiftTransformer`
+        Object-oriented API for the transformer.
 
     """
     y = x + shift
