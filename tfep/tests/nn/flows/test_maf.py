@@ -24,6 +24,8 @@ from tfep.nn.transformers import (
 from tfep.nn.conditioners.made import generate_degrees
 from tfep.nn.embeddings.mafembed import PeriodicEmbedding
 from tfep.nn.flows.maf import MAF
+
+from .. import check_autoregressive_property
 from ..utils import create_random_input
 
 
@@ -185,7 +187,7 @@ def test_identity_initialization_MAF(hidden_layers, conditioning_indices, period
     MoebiusTransformer(dimension=3)
 ])
 @pytest.mark.parametrize('weight_norm', [False, True])
-def test_maf_round_trip(conditioning_indices, periodic_indices, degrees_in_order, weight_norm, transformer):
+def test_maf_autoregressive_round_trip(conditioning_indices, periodic_indices, degrees_in_order, weight_norm, transformer):
     """Test the autoregressive property and that the MAF.inverse(MAF.forward(x)) equals the identity."""
     n_features = 5
     batch_size = 2
@@ -211,14 +213,17 @@ def test_maf_round_trip(conditioning_indices, periodic_indices, degrees_in_order
     else:
         repeats = 1
 
+    # Input degrees.
+    degrees_in = generate_degrees(
+        n_features=n_features,
+        order=degrees_in_order,
+        conditioning_indices=conditioning_indices,
+        repeats=repeats,
+    )
+
     # We don't initialize as the identity function to make the test meaningful.
     maf = MAF(
-        degrees_in=generate_degrees(
-            n_features=n_features,
-            order=degrees_in_order,
-            conditioning_indices=conditioning_indices,
-            repeats=repeats,
-        ),
+        degrees_in=degrees_in,
         transformer=transformer,
         hidden_layers=2,
         embedding=embedding,
@@ -237,3 +242,13 @@ def test_maf_round_trip(conditioning_indices, periodic_indices, degrees_in_order
     x_inv, log_det_J_inv = maf.inverse(y)
     assert torch.allclose(x, x_inv)
     assert torch.allclose(log_det_J + log_det_J_inv, torch.zeros(batch_size), atol=1e-04)
+
+    # Test the autoregressive property.
+    check_autoregressive_property(
+        model=maf,
+        x=x[0],
+        degrees_in=degrees_in,
+        # The transformed features depend on themselves through the transformer.
+        # We need to check that they don't affect the features with greater degree.
+        degrees_out=degrees_in+1,
+    )
