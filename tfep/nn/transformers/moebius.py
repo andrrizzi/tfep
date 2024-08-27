@@ -98,13 +98,21 @@ class MoebiusTransformer(MAFTransformer):
             determinant ``dy / dx``.
 
         """
-        return moebius_transformer(
+        # From shape (batch, n_vectors*dimension) to (batch, n_vectors, dimension)
+        batch_size, n_features = x.shape
+        x = x.reshape(batch_size, -1, self.dimension)
+        parameters = parameters.reshape(batch_size, -1, self.dimension)
+
+        y, log_det_J = moebius_transformer(
             x,
             parameters,
-            dimension=self.dimension,
             max_radius=self.max_radius,
             unit_sphere=self.unit_sphere
         )
+
+        # From shape (batch, n_vectors, dimension) to (batch, n_vectors*dimension)
+        y = y.reshape(batch_size, n_features)
+        return y, log_det_J
 
     def inverse(self, y: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Reverse the transformation.
@@ -128,13 +136,21 @@ class MoebiusTransformer(MAFTransformer):
             determinant ``dx / dy``.
 
         """
-        return moebius_transformer(
+        # From shape (batch, n_vectors*dimension) to (batch, n_vectors, dimension)
+        batch_size, n_features = y.shape
+        y = y.reshape(batch_size, -1, self.dimension)
+        parameters = parameters.reshape(batch_size, -1, self.dimension)
+
+        x, log_det_J = moebius_transformer(
             y,
             -parameters,
-            dimension=self.dimension,
             max_radius=self.max_radius,
             unit_sphere=self.unit_sphere
         )
+
+        # From shape (batch, n_vectors, dimension) to (batch, n_vectors*dimension)
+        x = x.reshape(batch_size, n_features)
+        return x, log_det_J
 
     def get_identity_parameters(self, n_features: int) -> torch.Tensor:
         """Return the value of the parameters that makes this the identity function.
@@ -244,12 +260,20 @@ class SymmetrizedMoebiusTransformer(MAFTransformer):
             determinant ``dy / dx``.
 
         """
-        return symmetrized_moebius_transformer(
+        # From shape (batch, n_vectors*dimension) to (batch, n_vectors, dimension)
+        batch_size, n_features = x.shape
+        x = x.reshape(batch_size, -1, self.dimension)
+        parameters = parameters.reshape(batch_size, -1, self.dimension)
+
+        y, log_det_J = symmetrized_moebius_transformer(
             x,
             parameters,
-            dimension=self.dimension,
             max_radius=self.max_radius,
         )
+
+        # From shape (batch, n_vectors, dimension) to (batch, n_vectors*dimension)
+        y = y.reshape(batch_size, n_features)
+        return y, log_det_J
 
     def inverse(self, y: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Reverse the transformation.
@@ -273,12 +297,20 @@ class SymmetrizedMoebiusTransformer(MAFTransformer):
             determinant ``dx / dy``.
 
         """
-        return symmetrized_moebius_transformer_inverse(
+        # From shape (batch, n_vectors*dimension) to (batch, n_vectors, dimension)
+        batch_size, n_features = y.shape
+        y = y.reshape(batch_size, -1, self.dimension)
+        parameters = parameters.reshape(batch_size, -1, self.dimension)
+
+        x, log_det_J = symmetrized_moebius_transformer_inverse(
             y,
             parameters,
-            dimension=self.dimension,
             max_radius=self.max_radius,
         )
+
+        # From shape (batch, n_vectors, dimension) to (batch, n_vectors*dimension)
+        x = x.reshape(batch_size, n_features)
+        return x, log_det_J
 
     def get_identity_parameters(self, n_features: int) -> torch.Tensor:
         """Return the value of the parameters that makes this the identity function.
@@ -324,7 +356,13 @@ class SymmetrizedMoebiusTransformer(MAFTransformer):
 # FUNCTIONAL API
 # =============================================================================
 
-def moebius_transformer(x, w, dimension, max_radius=0.99, unit_sphere=False):
+def moebius_transformer(
+        x: torch.Tensor,
+        w: torch.Tensor,
+        max_radius: float = 0.99,
+        unit_sphere: bool = False,
+        return_log_det_J: bool = True
+) -> tuple[torch.Tensor]:
     r"""Moebius transformer.
 
     This implements a generalization of the Moebius transformation proposed in
@@ -347,28 +385,27 @@ def moebius_transformer(x, w, dimension, max_radius=0.99, unit_sphere=False):
     Parameters
     ----------
     x : torch.Tensor
-        Shape ``(batch_size, n_vectors*dimension)``. Contiguous elements of ``x``
-        are interpreted as vectors (i.e., the first and second input vectors are
-        ``x[:dimension]`` and ``x[dimension:2*dimension]``.
+        Shape ``(batch_size, n_vectors, dimension)``. Input coordinates.
     w : torch.Tensor
-        Shape ``(batch_size, n_vectors*dimension)``. The transformation parameters.
+        Shape ``(batch_size, n_vectors, dimension)``. The transformation parameters.
         These parameter vectors are automatically rescaled so that ``|w| < |x|``.
-    dimension : int
-        The dimensionality of the ``x`` and ``w``.
     max_radius : float
-        Must be stringly less than 1. Rescaling of the ``w`` vectors will be
+        Must be strictly less than 1. Rescaling of the ``w`` vectors will be
         performed so that its maximum norm will be ``max_radius * |x|``.
     unit_sphere : bool
         If ``True``, the input vectors ``x`` are assumed to be on the unit sphere,
         which makes the implementation slightly faster.
+    return_log_det_J : bool, optional
+        Whether to return the ``log_det_J`` value. Default is ``True``.
 
     Returns
     -------
     y : torch.Tensor
-        Shape ``(batch_size, n_vectors*dimension)``. The transformed vectors.
-    log_det_J : torch.Tensor
+        Shape ``(batch_size, n_vectors, dimension)``. The transformed vectors.
+    log_det_J : torch.Tensor, optional
         Shape ``(batch_size,)``. The logarithm of the absolute value of the Jacobian
-        determinant ``dy / dx``.
+        determinant ``dy / dx``. This is returned only if ``return_log_det_J``
+        is ``True``.
 
     References
     ----------
@@ -379,165 +416,8 @@ def moebius_transformer(x, w, dimension, max_radius=0.99, unit_sphere=False):
         arXiv preprint arXiv:2002.02428. 2020 Feb 6.
 
     """
-    # From shape (batch, n_vectors*dimension) to (batch, n_vectors, dimension)
-    batch_size, n_features = x.shape
-    x = x.reshape(batch_size, -1, dimension)
-    w = w.reshape(batch_size, -1, dimension)
+    batch_size, n_vectors, dimension = x.shape
 
-    # Transform.
-    y, log_det_J = _moebius_transformer(x, w, dimension, max_radius, unit_sphere)
-
-    # Return in the correct shape.
-    y = y.reshape(batch_size, n_features)
-    return y, log_det_J
-
-
-def symmetrized_moebius_transformer(x, w, dimension, max_radius=0.99):
-    r"""Symmetrized Moebius transformer.
-
-    This implements a generalization of the symmetrized Moebius transformation
-    proposed in [1] to non-unit spheres. The transformer will expand/contract
-    the distribution on the sphere of radius :math:`r`, where :math:`r` is the
-    norm of the input vector.
-
-    The transformation has the form
-
-    :math:`y = ||f(x; w)|| \frac{f(x; w) + f(x; -w)}{||f(x; w) + f(x; -w)||}`
-
-    where :math:`f` is the Moebius transform (see :class:``.MoebiusTransformer``),
-    and :math:`y, x, w` are all ``dimension``-dimensional vectors with
-    :math:`||w|| < ||x||`. The function automatically rescales the ``w`` argument
-    following the same strategy as in [2] to satisfy the condition on the norm.
-    Consequently, ``w``s of any norm can be passed.
-
-    Parameters
-    ----------
-    x : torch.Tensor
-        Shape ``(batch_size, n_vectors*dimension)``. Contiguous elements of ``x``
-        are interpreted as vectors (i.e., the first and second input vectors are
-        ``x[:dimension]`` and ``x[dimension:2*dimension]``.
-    w : torch.Tensor
-        Shape ``(batch_size, n_vectors*dimension)``. The transformation parameters.
-        These parameter vectors are automatically rescaled so that ``|w| < |x|``.
-    dimension : int
-        The dimensionality of the ``x`` and ``w``.
-    max_radius : float
-        Must be stringly less than 1. Rescaling of the ``w`` vectors will be
-        performed so that its maximum norm will be ``max_radius * |x|``.
-
-    Returns
-    -------
-    y : torch.Tensor
-        Shape ``(batch_size, n_vectors*dimension)``. The transformed vectors.
-    log_det_J : torch.Tensor
-        Shape ``(batch_size,)``. The logarithm of the absolute value of the Jacobian
-        determinant ``dy / dx``.
-
-    References
-    ----------
-    [1] Köhler J, Invernizzi M, De Haan P, Noé F. Rigid body flows for sampling
-        molecular crystal structures. arXiv preprint arXiv:2301.11355. 2023 Jan 26.
-    [2] Rezende DJ, Papamakarios G, Racanière S, Albergo MS, Kanwar G,
-        Shanahan PE, Cranmer K. Normalizing Flows on Tori and Spheres.
-        arXiv preprint arXiv:2002.02428. 2020 Feb 6.
-
-    """
-    # From shape (batch, n_vectors*dimension) to (batch, n_vectors, dimension)
-    batch_size, n_features = x.shape
-    x = x.reshape(batch_size, -1, dimension)
-    w = w.reshape(batch_size, -1, dimension)
-
-    # Moebius transform.
-    f_w = _moebius_transformer(x, w, dimension, max_radius, unit_sphere=False, return_log_det_J=False)
-    f_iw = _moebius_transformer(x, -w, dimension, max_radius, unit_sphere=False, return_log_det_J=False)
-    f_symmetrized = f_w + f_iw
-
-    # Rescale to the sphere of radius ||x||
-    x_norm = torch.linalg.norm(x, dim=-1, keepdim=True)
-    f_symmetrized_norm = torch.linalg.norm(f_symmetrized, dim=-1, keepdim=True)
-    f_symmetrized_scaled = x_norm / f_symmetrized_norm * f_symmetrized
-
-    # Compute the Jacobian.
-    w = w.reshape(batch_size, -1, dimension)
-    w_norm = torch.linalg.norm(w, dim=-1, keepdim=True)
-    rescaling = max_radius / (1 + w_norm)
-    w = rescaling * w
-    w_norm = rescaling * w_norm
-    log_det_J = _symmetrized_moebius_transform_log_det_J(x / x_norm, w, w_norm**2)
-
-    # Return in the expected shape.
-    f_symmetrized_scaled = f_symmetrized_scaled.reshape(batch_size, n_features)
-    return f_symmetrized_scaled, log_det_J
-
-
-def symmetrized_moebius_transformer_inverse(x, w, dimension, max_radius=0.99):
-    r"""Inverse symmetrized Moebius transformer.
-
-    See :func:`.symmetrized_moebius_transformer_inverse` for documentation.
-
-    """
-    # From shape (batch, n_vectors*dimension) to (batch, n_vectors, dimension)
-    batch_size, n_features = x.shape
-    x = x.reshape(batch_size, -1, dimension)
-    w = w.reshape(batch_size, -1, dimension)
-
-    # We solve the inversion first on the unit sphere, and then project back.
-    x_norm = torch.linalg.norm(x, dim=-1, keepdim=True)
-    x_unit = x / x_norm
-
-    # Map parameter vector w to the solid unit sphere.
-    w_norm = torch.linalg.norm(w, dim=-1, keepdim=True)
-    rescaling = max_radius / (1 + w_norm)
-    w_unit = rescaling * w
-    w_unit_norm = rescaling * w_norm
-
-    # Change the coordinate system so that w = [r, 0, 0, ...] and x = [a, b, 0, ...] with b = -sqrt(1-a^2)
-    da = w_unit / w_unit_norm  # First basis of the new coordinate system: w
-    a = batchwise_dot(x_unit, da, keepdim=True)  # Project x on first basis.
-
-    db = x_unit - a * da  # Second orthogonal basis: p - proj(p, q)
-    b = torch.linalg.norm(db, dim=-1, keepdim=True)
-    db = db / b  # Normalize basis.
-
-    # Now the inversion is analytically solvable following Köhler J, Invernizzi M,
-    # De Haan P, Noé F. Rigid body flows for sampling molecular crystal structures.
-    # arXiv preprint arXiv:2301.11355. 2023 Jan 26.
-    r2 = w_unit_norm**2
-    numer = - a * (r2 + 1.0)
-    denom = torch.sqrt(1 + r2**2 + r2 * (4*a**2 - 2))
-    a_inv = numer / denom
-    b_inv = - torch.sqrt(1 - a_inv**2)
-
-    # Project back on the unit hyper-sphere.
-    x_unit_inv = - (a_inv*da + b_inv*db)
-
-    # Compute change of volume as the negative of the forward transformation.
-    # The contribution from dividing and multiplying by ||x|| cancel out.
-    log_det_J = - _symmetrized_moebius_transform_log_det_J(x_unit_inv, w_unit, r2)
-
-    # Project back on the hyper-sphere of radius ||x||.
-    x_inv = x_norm * x_unit_inv
-
-    # Return in the expected shape.
-    x_inv = x_inv.reshape(batch_size, n_features)
-    return x_inv, log_det_J
-
-
-# =============================================================================
-# INTERNAL USE
-# =============================================================================
-
-def _moebius_transformer(x, w, dimension, max_radius, unit_sphere, return_log_det_J=True):
-    r"""Moebius transformer.
-
-    This is the same as moebius_transformer(), but it returns the log_det_J only
-    optionally.
-
-    ``x`` and ``w`` must have shape (batch, n_vectors, dimension).
-
-    The returned value has also shape (batch, n_vectors, dimension)
-
-    """
     # Compute the radius of the vectors.
     w_norm = torch.linalg.norm(w, dim=-1, keepdim=True)
 
@@ -582,6 +462,133 @@ def _moebius_transformer(x, w, dimension, max_radius, unit_sphere, return_log_de
 
     return y, log_det_J
 
+
+def symmetrized_moebius_transformer(
+        x: torch.Tensor,
+        w: torch.Tensor,
+        max_radius: float = 0.99,
+) -> tuple[torch.Tensor]:
+    r"""Symmetrized Moebius transformer.
+
+    This implements a generalization of the symmetrized Moebius transformation
+    proposed in [1] to non-unit spheres. The transformer will expand/contract
+    the distribution on the sphere of radius :math:`r`, where :math:`r` is the
+    norm of the input vector.
+
+    The transformation has the form
+
+    :math:`y = ||f(x; w)|| \frac{f(x; w) + f(x; -w)}{||f(x; w) + f(x; -w)||}`
+
+    where :math:`f` is the Moebius transform (see :class:``.MoebiusTransformer``),
+    and :math:`y, x, w` are all ``dimension``-dimensional vectors with
+    :math:`||w|| < ||x||`. The function automatically rescales the ``w`` argument
+    following the same strategy as in [2] to satisfy the condition on the norm.
+    Consequently, ``w``s of any norm can be passed.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Shape ``(batch_size, n_vectors, dimension)``. The input coordinates.
+    w : torch.Tensor
+        Shape ``(batch_size, n_vectors, dimension)``. The transformation parameters.
+        These parameter vectors are automatically rescaled so that ``|w| < |x|``.
+    max_radius : float
+        Must be strictly less than 1. Rescaling of the ``w`` vectors will be
+        performed so that its maximum norm will be ``max_radius * |x|``.
+
+    Returns
+    -------
+    y : torch.Tensor
+        Shape ``(batch_size, n_vectors, dimension)``. The transformed vectors.
+    log_det_J : torch.Tensor
+        Shape ``(batch_size,)``. The logarithm of the absolute value of the Jacobian
+        determinant ``dy / dx``.
+
+    References
+    ----------
+    [1] Köhler J, Invernizzi M, De Haan P, Noé F. Rigid body flows for sampling
+        molecular crystal structures. arXiv preprint arXiv:2301.11355. 2023 Jan 26.
+    [2] Rezende DJ, Papamakarios G, Racanière S, Albergo MS, Kanwar G,
+        Shanahan PE, Cranmer K. Normalizing Flows on Tori and Spheres.
+        arXiv preprint arXiv:2002.02428. 2020 Feb 6.
+
+    """
+    batch_size, n_vectors, dimension = x.shape
+
+    # Moebius transform.
+    f_w = moebius_transformer(x, w, max_radius, unit_sphere=False, return_log_det_J=False)
+    f_iw = moebius_transformer(x, -w, max_radius, unit_sphere=False, return_log_det_J=False)
+    f_symmetrized = f_w + f_iw
+
+    # Rescale to the sphere of radius ||x||
+    x_norm = torch.linalg.norm(x, dim=-1, keepdim=True)
+    f_symmetrized_norm = torch.linalg.norm(f_symmetrized, dim=-1, keepdim=True)
+    f_symmetrized_scaled = x_norm / f_symmetrized_norm * f_symmetrized
+
+    # Compute the Jacobian.
+    w = w.reshape(batch_size, -1, dimension)
+    w_norm = torch.linalg.norm(w, dim=-1, keepdim=True)
+    rescaling = max_radius / (1 + w_norm)
+    w = rescaling * w
+    w_norm = rescaling * w_norm
+    log_det_J = _symmetrized_moebius_transform_log_det_J(x / x_norm, w, w_norm**2)
+
+    return f_symmetrized_scaled, log_det_J
+
+
+def symmetrized_moebius_transformer_inverse(
+        x: torch.Tensor,
+        w: torch.Tensor,
+        max_radius: float = 0.99,
+) -> tuple[torch.Tensor]:
+    r"""Inverse symmetrized Moebius transformer.
+
+    See :func:`.symmetrized_moebius_transformer_inverse` for documentation.
+
+    """
+    # We solve the inversion first on the unit sphere, and then project back.
+    x_norm = torch.linalg.norm(x, dim=-1, keepdim=True)
+    x_unit = x / x_norm
+
+    # Map parameter vector w to the solid unit sphere.
+    w_norm = torch.linalg.norm(w, dim=-1, keepdim=True)
+    rescaling = max_radius / (1 + w_norm)
+    w_unit = rescaling * w
+    w_unit_norm = rescaling * w_norm
+
+    # Change the coordinate system so that w = [r, 0, 0, ...] and x = [a, b, 0, ...] with b = -sqrt(1-a^2)
+    da = w_unit / w_unit_norm  # First basis of the new coordinate system: w
+    a = batchwise_dot(x_unit, da, keepdim=True)  # Project x on first basis.
+
+    db = x_unit - a * da  # Second orthogonal basis: p - proj(p, q)
+    b = torch.linalg.norm(db, dim=-1, keepdim=True)
+    db = db / b  # Normalize basis.
+
+    # Now the inversion is analytically solvable following Köhler J, Invernizzi M,
+    # De Haan P, Noé F. Rigid body flows for sampling molecular crystal structures.
+    # arXiv preprint arXiv:2301.11355. 2023 Jan 26.
+    r2 = w_unit_norm**2
+    numer = - a * (r2 + 1.0)
+    denom = torch.sqrt(1 + r2**2 + r2 * (4*a**2 - 2))
+    a_inv = numer / denom
+    b_inv = - torch.sqrt(1 - a_inv**2)
+
+    # Project back on the unit hyper-sphere.
+    x_unit_inv = - (a_inv*da + b_inv*db)
+
+    # Compute change of volume as the negative of the forward transformation.
+    # The contribution from dividing and multiplying by ||x|| cancel out.
+    log_det_J = - _symmetrized_moebius_transform_log_det_J(x_unit_inv, w_unit, r2)
+
+    # Project back on the hyper-sphere of radius ||x||.
+    x_inv = x_norm * x_unit_inv
+
+    return x_inv, log_det_J
+
+
+# =============================================================================
+# INTERNAL USE
+# =============================================================================
 
 def _symmetrized_moebius_transform_log_det_J(x, w, r2):
     """Compute the log_det_J of the symmetrized Moebius transform.
