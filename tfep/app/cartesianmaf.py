@@ -5,8 +5,7 @@
 # MODULE DOCSTRING
 # =============================================================================
 
-"""``LightningModule`` to implement a TFEP map using amasked autoregressive
-flow in Cartesian coordinates."""
+"""A TFEP map using a masked autoregressive flow in Cartesian coordinates."""
 
 
 # =============================================================================
