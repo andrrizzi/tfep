@@ -20,7 +20,7 @@ import torch
 
 import tfep.nn.conditioners.made
 from tfep.nn.flows import MAF, SequentialFlow, PartialFlow
-from ..utils import create_random_input
+from .. import create_random_input
 
 
 # =============================================================================

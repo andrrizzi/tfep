@@ -18,7 +18,7 @@ import pytest
 import torch
 
 from tfep.nn.embeddings.mafembed import PeriodicEmbedding
-from ..utils import create_random_input
+from .. import create_random_input
 
 
 # =============================================================================
@@ -41,7 +41,7 @@ def teardown_module(module):
 # UTILITY FUNCTIONS
 # =============================================================================
 
-def create_input(batch_size, dimension_in, limits=None, periodic_indices=None, seed=0):
+def create_input(batch_size, n_features_in, limits=None, periodic_indices=None, seed=0):
     """Create random input with correct boundaries.
 
     If limits=(x0, xf) are passed, the input is constrained to be within x0 and
@@ -52,12 +52,12 @@ def create_input(batch_size, dimension_in, limits=None, periodic_indices=None, s
 
     """
     # The non-periodic features do not need to be restrained between 0 and 1.
-    x = create_random_input(batch_size, dimension_in, x_func=torch.randn, seed=seed)
+    x = create_random_input(batch_size, n_features_in, x_func=torch.randn, seed=seed)
 
     if limits is not None:
         if periodic_indices is None:
             # All DOFs are periodic. Ignore previous random input.
-            periodic_indices = torch.tensor(list(range(dimension_in)))
+            periodic_indices = torch.tensor(list(range(n_features_in)))
 
         x_periodic = create_random_input(batch_size, len(periodic_indices), x_func=torch.rand, seed=seed)
         x_periodic = x_periodic * (limits[1] - limits[0]) + limits[0]
@@ -82,15 +82,15 @@ def create_input(batch_size, dimension_in, limits=None, periodic_indices=None, s
 def test_periodic_embedding(n_periodic, limits):
     """Test that PeriodicEmbedding lifts the correct degrees of freedom."""
     batch_size = 3
-    dimension_in = 5
+    n_features_in = 5
     limits = torch.tensor(limits)
 
     # Select a few random indices for sampling.
-    periodic_indices = torch.sort(torch.randperm(dimension_in)[:n_periodic]).values
-    lifter = PeriodicEmbedding(dimension_in=dimension_in, periodic_indices=periodic_indices, limits=limits)
+    periodic_indices = torch.sort(torch.randperm(n_features_in)[:n_periodic]).values
+    lifter = PeriodicEmbedding(n_features_in=n_features_in, periodic_indices=periodic_indices, limits=limits)
 
     # Create random input with the correct periodicity.
-    x = create_input(batch_size, dimension_in, limits=limits, periodic_indices=periodic_indices)
+    x = create_input(batch_size, n_features_in, limits=limits, periodic_indices=periodic_indices)
 
     # Lift periodic DOFs.
     x_lifted = lifter(x)
@@ -100,7 +100,7 @@ def test_periodic_embedding(n_periodic, limits):
 
     # The lifter leaves unaltered the non-periodic DOFs and duplicate the periodic ones.
     shift_idx = 0
-    for i in range(dimension_in):
+    for i in range(n_features_in):
         if i in periodic_indices:
             shift_idx += 1
         else:

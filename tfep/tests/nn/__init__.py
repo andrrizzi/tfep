@@ -11,6 +11,9 @@ Test objects and function of the ``tfep.nn`` package.
 # GLOBAL IMPORTS
 # =============================================================================
 
+from collections.abc import Callable, Sequence
+from typing import Optional, Union
+
 import numpy as np
 import torch
 
@@ -19,8 +22,16 @@ import torch
 # PACKAGE-WIDE TEST UTILITIES
 # =============================================================================
 
-def check_autoregressive_property(model, x, degrees_in, degrees_out):
+def check_autoregressive_property(
+        model: torch.nn.Module,
+        x: torch.Tensor,
+        degrees_in: Sequence[int],
+        degrees_out: Sequence[int],
+):
     """Raises an ``AssertionError`` if y = model(x) does not satisfy the autoregressive property.
+
+    The test will pass if all the outputs will depend on the inputs such that
+    ``degree_in < degree_out``.
 
     Parameters
     ----------
@@ -83,3 +94,53 @@ def check_autoregressive_property(model, x, degrees_in, degrees_out):
         # Reset gradients for next iteration.
         model.zero_grad()
         x.grad.data.zero_()
+
+
+def create_random_input(
+        batch_size: int,
+        n_features: int,
+        n_parameters: int = 0,
+        dtype: Optional[type] = None,
+        seed: Optional[int] = None,
+        x_func: Callable = torch.randn,
+        par_func: Callable = torch.randn,
+) -> Union[torch.Tensor, tuple[torch.Tensor]]:
+    """Create random input and parameters.
+
+    Parameters
+    ----------
+    x_func : Callable, optional
+        The random function used to generate ``x``. Default is ``torch.randn``.
+    par_func : Callable, optional
+        The random function used to generate ``parameters``. Default is
+        ``torch.randn``.
+
+    Returns
+    -------
+    x : torch.Tensor
+        Shape ``(batch_size, n_features)``. The random input.
+    parameters : torch.Tensor, optional
+        Shape ``(batch_size, n_parameters)``. The random parameters. This is
+        returned only if ``n_parameters > 0``.
+
+    """
+    # Make sure the input arguments are deterministic.
+    generator = torch.Generator()
+    if seed is not None:
+        generator.manual_seed(seed)
+
+    if dtype is None:
+        dtype = torch.get_default_dtype()
+
+    x = x_func(batch_size, n_features, generator=generator,
+               dtype=dtype, requires_grad=True)
+    returned_values = [x]
+
+    if n_parameters > 0:
+        parameters = par_func(batch_size, n_parameters, generator=generator,
+                              dtype=dtype, requires_grad=True)
+        returned_values.append(parameters)
+
+    if len(returned_values) == 1:
+        return returned_values[0]
+    return returned_values

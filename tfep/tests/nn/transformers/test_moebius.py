@@ -20,7 +20,7 @@ import torch
 import torch.autograd
 
 from tfep.nn.transformers.moebius import MoebiusTransformer, SymmetrizedMoebiusTransformer
-from ..utils import create_random_input
+from .. import create_random_input
 
 from tfep.utils.math import batch_autograd_log_abs_det_J
 
@@ -47,8 +47,12 @@ def teardown_module(module):
 
 def create_moebius_random_input(batch_size, n_features, dimension, unit_sphere):
     """Create random input and parameter for the Moebius transformation."""
-    x, w = create_random_input(batch_size, n_features, n_parameters=1, seed=0, par_func=torch.randn)
-    w = w.squeeze(1)
+    x, w = create_random_input(
+        batch_size,
+        n_features,
+        n_parameters=n_features,
+        seed=0,
+    )
 
     # Map the points on the unit sphere.
     if unit_sphere:

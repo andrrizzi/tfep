@@ -24,7 +24,7 @@ from tfep.nn.transformers.spline import (
     neural_spline_transformer, neural_spline_transformer_inverse,
 )
 from tfep.utils.math import batch_autograd_log_abs_det_J
-from ..utils import create_random_input
+from .. import create_random_input
 
 
 # =============================================================================
@@ -120,9 +120,14 @@ def test_neural_spline_transformer_reference(batch_size, n_features, x0, y0, n_b
     yf = y0 + xf - x0
 
     # Create widths, heights, and slopes of the bins.
-    x, parameters = create_random_input(batch_size, n_features,
-                                        n_parameters=3*n_bins+1, seed=0,
-                                        x_func=torch.rand)
+    x, parameters = create_random_input(
+        batch_size,
+        n_features,
+        n_parameters=(3*n_bins+1) * n_features,
+        seed=0,
+        x_func=torch.rand,
+    )
+    parameters = parameters.reshape(batch_size, -1, n_features)
 
     widths = torch.nn.functional.softmax(parameters[:, :n_bins], dim=1) * (xf - x0)
     heights = torch.nn.functional.softmax(parameters[:, n_bins:2*n_bins], dim=1) * (yf - y0)

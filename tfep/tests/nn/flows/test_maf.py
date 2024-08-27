@@ -26,7 +26,7 @@ from tfep.nn.embeddings.mafembed import PeriodicEmbedding
 from tfep.nn.flows.maf import MAF
 
 from .. import check_autoregressive_property
-from ..utils import create_random_input
+from .. import create_random_input
 
 
 # =============================================================================
