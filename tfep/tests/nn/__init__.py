@@ -49,10 +49,16 @@ def check_autoregressive_property(model, x, degrees_in, degrees_out):
     conditioning_indices = np.where(conditioning_mask)[0]
     mapped_indices = np.where(~conditioning_mask)[0]
 
-    # Add batch dimension and compute output.
-    x = x.unsqueeze(0)
+    # Add batch dimension and make output differentiable w.r.t. input.
+    x = x.unsqueeze(0).clone().detach()
     x.requires_grad = True
+
+    # If the model is a flow (not a conditioner), it returns a tuple y, log|det(J)|.
     y = model(x)
+    try:
+        y.shape
+    except AttributeError:
+        y, log_det_J = y
 
     # Check degree by degree.
     for degree_out in set(degrees_out):
