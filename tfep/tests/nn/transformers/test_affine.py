@@ -16,7 +16,6 @@ Test objects and function in tfep.nn.transformers.affine.
 
 import pytest
 import torch
-import torch.autograd
 
 from tfep.utils.math import batch_autograd_log_abs_det_J
 from tfep.nn.transformers.affine import (
