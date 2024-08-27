@@ -25,7 +25,7 @@ from tfep.utils.misc import ensure_tensor_sequence
 # BASE CLASS
 # =============================================================================
 
-class MAFEmbedding(torch.nn.Module):
+class MAFEmbedding(abc.ABC, torch.nn.Module):
     """An embedding layer for a masked autoregressive flow.
 
     This class documents the API of an embedding layer compatible with
@@ -59,7 +59,7 @@ class MAFEmbedding(torch.nn.Module):
 # PERIODIC EMBEDDING
 # =============================================================================
 
-class PeriodicEmbedding(torch.nn.Module):
+class PeriodicEmbedding(MAFEmbedding):
     """Lift periodic DOFs into a periodic representation (cos, sin).
 
     Parameters

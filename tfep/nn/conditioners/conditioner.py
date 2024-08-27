@@ -23,7 +23,7 @@ import torch
 # BASE CLASSES
 # =============================================================================
 
-class Conditioner(torch.nn.Module):
+class Conditioner(abc.ABC, torch.nn.Module):
     """A conditioner for an autoregressive flow.
 
     This class documents the API of a conditioner layer compatible with an

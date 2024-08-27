@@ -23,7 +23,7 @@ import torch
 # BASE CLASSES
 # =============================================================================
 
-class Transformer(torch.nn.Module):
+class Transformer(abc.ABC, torch.nn.Module):
     """A transformer for an autoregressive flow.
 
     This class documents the API of a transformer layer compatible with
@@ -95,7 +95,7 @@ class Transformer(torch.nn.Module):
         pass
 
 
-class MAFTransformer(Transformer):
+class MAFTransformer(abc.ABC, Transformer):
     """A transformer for a masked autoregressive flow (MAF).
 
     This class documents the API of a transformer layer compatible with
