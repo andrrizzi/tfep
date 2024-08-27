@@ -95,7 +95,7 @@ class Transformer(abc.ABC, torch.nn.Module):
         pass
 
 
-class MAFTransformer(abc.ABC, Transformer):
+class MAFTransformer(Transformer):
     """A transformer for a masked autoregressive flow (MAF).
 
     This class documents the API of a transformer layer compatible with
