@@ -315,7 +315,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
     @property
     def n_conditioning_dofs(self) -> int:
         """The number of conditioning degrees of freedom (excluding the constrained DOFs of the reference frame atoms)."""
-        n_conditioning_dofs = 3 * self.n_conditioning_dofs
+        n_conditioning_dofs = 3 * self.n_conditioning_atoms
 
         # Remove constrained DOFs of the origin atom which is always conditioning.
         if self._origin_atom_idx is not None:
