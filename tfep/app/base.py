@@ -694,42 +694,54 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         self._origin_atom_idx = origin_atom_idx
         self._axes_atoms_indices = axes_atoms_indices
 
-    def forward(self, batch: Dict) -> Tuple[torch.Tensor]:
+    def forward(self, batch: Dict) -> dict[str, torch.Tensor]:
         """Execute the normalizing flow in the forward direction.
 
         Parameters
         ----------
         batch : dict[str, torch.Tensor]
-            Batch data. Must have the key 'positions'.
+            Batch data. Must have the key ``'positions'``.
 
         Returns
         -------
-        y : torch.Tensor
-            Mapped coordinates for the flow.
-        log_det_J : torch.Tensor
-            Logarithm of the absolute value of the Jacobian determinant.
+        result : dict[str, torch.Tensor]
+            The output of the normalizing flow with at least the following keys:
+
+            - ``'positions'``: Shape ``(batch_size, n_atoms*3)``. The mapped
+              coordinates of the flow.
+            - ``'log_det_J'``: Shape ``(batch_size,)``. The log weight of the
+              transformation. This is usually the logarithm of the absolute value
+              of the Jacobian determinant for deterministic maps, but it can be
+              also the trace for continuous flows, or the log-ratio of the
+              forward and backward paths in stochastic flows.
+            - ``'regularization'``: Shape ``(batch_size,)``. Optional. Arbitrary
+              regularization terms. The mean across batches is added to the loss.
+
+            Any other tensor in this dictionary that is a scalar or of shape
+            ``(batch_size,)`` is automatically logged. Any other tensor is ignored.
 
         """
-        return self._flow(batch['positions'])
+        out = self._flow(batch['positions'])
+        result = dict(positions=out[0], log_det_J=out[1])
+        # Continuous flows also return a regularization term.
+        if len(out) > 2:
+            result['regularization'] = out[2]
+        return result
 
-    def inverse(self, batch: Dict) -> Tuple[torch.Tensor]:
+    def inverse(self, batch: Dict) -> dict[str, torch.Tensor]:
         """Execute the normalizing flow in the inverse direction.
 
-        Parameters
-        ----------
-        batch : dict[str, torch.Tensor]
-            Batch data. Must have the key 'positions'.
-
-        Returns
-        -------
-        x : torch.Tensor
-            Input coordinates for the flow.
-        log_det_J : torch.Tensor
-            Logarithm of the absolute value of the Jacobian determinant.
+        See :func:`.TFEPMapBase.forward` for the documentation on the input
+        parameters and returned value.
 
         """
         # Continuous flows return also the regularization, which is important only for training.
-        return self._flow.inverse(batch['positions'])
+        out = self._flow.inverse(batch['positions'])
+        result = dict(positions=out[0], log_det_J=out[1])
+        # Continuous flows also return a regularization term.
+        if len(out) > 2:
+            result['regularization'] = out[2]
+        return result
 
     def training_step(self, batch, batch_idx):
         """Lightning method.
@@ -740,22 +752,15 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         # Forward.
         result = self(batch)
 
-        # Continuous flows also return a regularization term.
-        try:
-            y, log_det_J = result
-            reg = None
-        except ValueError:
-            y, log_det_J, reg = result
-
         # Compute potentials and loss.
         try:
-            potential_y = self._potential_energy_func(y, batch['dimensions'])
+            potential = self._potential_energy_func(result['positions'], batch['dimensions'])
         except KeyError:
             # There are no box vectors.
-            potential_y = self._potential_energy_func(y)
+            potential = self._potential_energy_func(result['positions'])
 
         # Convert potentials to units of kT.
-        potential_y = potential_y / self._kT
+        potential = potential / self._kT
 
         # Convert bias to units of kT.
         try:
@@ -767,19 +772,24 @@ class TFEPMapBase(ABC, lightning.LightningModule):
                 log_weights = None
 
         # Compute loss.
-        loss = self._loss_func(target_potentials=potential_y, log_det_J=log_det_J, log_weights=log_weights)
+        loss = self._loss_func(
+            target_potentials=potential,
+            log_det_J=result['log_det_J'],
+            log_weights=log_weights,
+        )
 
         # Add regularization for continuous flows.
-        if reg is not None:
-            loss = loss + reg.mean()
+        if 'regularization' in result:
+            loss = loss + result['regularization'].mean()
 
         # Log potentials.
         self._tfep_logger.save_train_tensors(
             tensors={
                 'dataset_sample_index': batch['dataset_sample_index'],
                 'trajectory_sample_index': batch['trajectory_sample_index'],
-                'potential': potential_y,
-                'log_det_J': log_det_J,
+                'potential': potential,
+                # Save here any other tensor of shape (batch_size,).
+                **{k: v for k, v in result.items() if v.shape == result['log_det_J'].shape},
             },
             epoch_idx=self.trainer.current_epoch,
             batch_idx=batch_idx,
@@ -787,6 +797,11 @@ class TFEPMapBase(ABC, lightning.LightningModule):
 
         # Log loss.
         self.log('loss', loss)
+
+        # Log any other scalar tensor.
+        for k, v in result.items():
+            if len(v.shape) == 0:
+                self.log(k, v)
 
         return loss
 

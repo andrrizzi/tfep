@@ -115,8 +115,10 @@ def check_atom_groups(
     x.requires_grad = True
 
     # Test forward and inverse.
-    y, log_det_J = tfep_map({'positions': x})
-    x_inv, log_det_J_inv = tfep_map.inverse({'positions': y})
+    result = tfep_map({'positions': x})
+    y, log_det_J = result['positions'], result['log_det_J']
+    result = tfep_map.inverse({'positions': y})
+    x_inv, log_det_J_inv = result['positions'], result['log_det_J']
     assert torch.allclose(x, x_inv)
 
     # Compute gradients w.r.t. the input.

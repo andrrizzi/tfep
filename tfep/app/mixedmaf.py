@@ -697,7 +697,7 @@ class MixedMAFMap(TFEPMapBase):
         )
         for batch_data in data_loader:
             # Go through the partial flow.
-            batch_positions, _ = self(batch_data)
+            batch_positions = self(batch_data)['positions']
 
             # Test collinearity for the Z-matrix for these samples.
             batch_atom_positions = flattened_to_atom(batch_positions)
