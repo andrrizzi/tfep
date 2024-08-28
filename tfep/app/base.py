@@ -282,7 +282,7 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             The optimizer to use for the training.
 
         """
-        return torch.optim.AdamW(self._flow.parameters())
+        return torch.optim.AdamW(self.parameters())
 
     @property
     def n_mapped_atoms(self) -> int:
