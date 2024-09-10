@@ -217,7 +217,7 @@ class VolumePreservingShiftTransformer(MAFTransformer):
         y : torch.Tensor
             Shape ``(batch_size, n_features)``. The input features.
         parameters : torch.Tensor
-            Shape ``(batch_size, 2*n_features)``. The parameters for the volume-
+            Shape ``(batch_size, n_features)``. The parameters for the volume-
             preserving transformation, where ``parameters[:, i]`` is the shift
             parameter :math:`b_1` for the ``i``-th feature.
 
