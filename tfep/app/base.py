@@ -442,6 +442,44 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             return None
         return self._get_nonfixed_indices(self._conditioning_atom_indices, idx_type, remove_fixed)
 
+    def get_nonfixed_indices(
+            self,
+            idx_type: Literal['atom', 'dof'],
+            remove_fixed: bool,
+    ) -> torch.Tensor:
+        """Return the indices of the mapped and conditioning atom or degrees of freedom (DOF).
+
+        This is a more efficient way of obtaining all mapped and conditioning
+        indices tha concatenating and sorting the results of
+        :func:`.TFEPMapBase.get_mapped_indices` and
+        :func:`.TFEPMapBase.get_conditioning_indices`.
+
+        Parameters
+        ----------
+        idx_type : Literal['atom', 'dof']
+            Whether to return the indices of the atom or the degrees of freedom.
+        remove_fixed : bool
+            If ``True``, the returned tensor represent the indices after the
+            fixed atoms have been removed.
+
+        Returns
+        -------
+        indices : torch.Tensor
+            The conditioning atom/DOFs indices.
+
+        """
+        # Conditioning atoms might be None.
+        if self.n_conditioning_atoms == 0:
+            return self.get_mapped_indices(idx_type=idx_type, remove_fixed=remove_fixed)
+
+        # Merge and sort atom indices before removing the fixed ones (which
+        # requires the indices to be sorted).
+        nonfixed_atom_indices = torch.cat([
+            self._mapped_atom_indices,
+            self._conditioning_atom_indices
+        ]).sort().values
+        return self._get_nonfixed_indices(nonfixed_atom_indices, idx_type, remove_fixed)
+
     def get_reference_atoms_indices(
             self,
             remove_fixed: bool,
