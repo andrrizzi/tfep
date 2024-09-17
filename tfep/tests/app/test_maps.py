@@ -80,7 +80,7 @@ class ContinuousTFEPMap(TFEPMapBase):
             pytest.skip("ContinuousTFEPMap doesn't support conditioning atoms.")
 
         egnn_dynamics = tfep.nn.dynamics.EGNNDynamics(
-            particle_types=torch.tensor([0] * self.n_mapped_atoms),
+            node_types=torch.tensor([0] * self.n_mapped_atoms),
             r_cutoff=6.0,
             time_feat_dim=2,
             node_feat_dim=4,
