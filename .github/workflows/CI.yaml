@@ -79,6 +79,8 @@ jobs:
           pytest -v --doctest-modules --ignore=tfep/tests/
 
       - name: CodeCov
+        # There is no need to re-run codecov multiple times
+        if: contains(matrix.os, 'ubuntu')
         uses: codecov/codecov-action@v3
         with:
           file: ./coverage.xml
