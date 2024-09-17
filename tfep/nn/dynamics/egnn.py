@@ -17,7 +17,7 @@ E(n) equivariant graph neural network for continuous normalizing flows.
 import torch
 
 import tfep.nn.graph
-from tfep.nn.encoders import GaussianBasisExpansion, BehlerParrinelloRadialExpansion
+from tfep.nn.embeddings import GaussianBasisExpansion, BehlerParrinelloRadialExpansion
 from tfep.utils.misc import flattened_to_atom, atom_to_flattened
 
 
@@ -31,17 +31,17 @@ class EGNNDynamics(tfep.nn.graph.FixedGraph):
 
     This implements a variation of the E(n) equivariant graph neural network
     used in [1] as the dynamics in a continuous normalizing flow. First, messages
-    are passed only between particles whose distance is smaller than a user-provided
+    are passed only between nodes whose distance is smaller than a user-provided
     cutoff.
 
     Second, the message for each edge is built as an input of the two node features
-    (which is initialized as a function of the particle types), their distance,
+    (which is initialized as a function of the node types), their distance,
     and the integration time. Each of these inputs is first encoded into a vector
     of fixed dimension (see parameters ``node_feat_dim``, ``distance_feat_dim``,
     and ``time_feat_dim``), and then concatenated. Specifically:
 
     - Node features are initialized with a random vector as a function of the
-      particle type similarly to SchNet [2].
+      node type similarly to SchNet [2].
     - Particle distances are projected onto a Gaussian basis with a cutoff
       switching function using Behler-Parrinello symmetry functions [3].
     - Time is also projected onto a Gaussian basis similarly to a Kernel flow [4].
@@ -49,32 +49,6 @@ class EGNNDynamics(tfep.nn.graph.FixedGraph):
 
     For distances and time, the bandwidth (i.e., standard deviation) of each
     Gaussian is optimized during training.
-
-    Parameters
-    ----------
-    particle_types : torch.Tensor
-        A tensor of integers of shape ``(n_particles,)`` where ``particle_types[i]``
-        is the ID of the particle type for the i-th particle. The IDs must start
-        from 0 and be consecutive (i.e., ``0 <= particle_types[i] < n_particle_types``).
-    r_cutoff : float
-        The radial cutoff in the same units used for the coordinate positions
-        in the forward pass.
-    time_feat_dim : int, optional
-        The number of Gaussians used for expanding the time input, which is
-        assumed to be in the interval [0, 1].
-    node_feat_dim : int, optional
-        The dimension of the node feature.
-    distance_feat_dim : int, optional
-        The number of Gaussians used for expanding the distance input.
-    n_layers : int, optional
-        The number of message passing layers.
-    speed_factor : float, optional
-        The output of the dynamics is such that each neighbor contributes to the
-        particle velocity with an additive vector with magnitude in ``[-speed_factor,speed_factor]``.
-    initialize_identity : bool, optional
-        If ``True`` (default), the layers are initialized so that the dynamics
-        performs the identity function, which in this context means that outputs
-        zero velocities.
 
     References
     ----------
@@ -95,7 +69,7 @@ class EGNNDynamics(tfep.nn.graph.FixedGraph):
 
     def __init__(
         self,
-        particle_types,
+        node_types,
         r_cutoff,
         time_feat_dim=16,
         node_feat_dim=64,
@@ -104,19 +78,49 @@ class EGNNDynamics(tfep.nn.graph.FixedGraph):
         speed_factor=1.0,
         initialize_identity=True,
     ):
-        super().__init__(n_nodes=len(particle_types))
+        """Constructor.
 
-        # Store the random vectors associated to each particle type as the one-hot
-        # encoding h of the particle types and a matrix of parameters W so that
-        # the embedding can be computed as dot(W, [h, time]).
-        self.particle_types_one_hot = torch.nn.functional.one_hot(particle_types)
+        Parameters
+        ----------
+        node_types : Sequence[int]
+            Shape ``(n_nodes,)``. ``node_types[i]`` is the ID of the node type
+            for the i-th node. These are usually used to indicate an atom element.
+            These are encoded using ``torch.nn.functional.one_hot`` so they should
+            start from 0 and contain only consecutive numbers to limit the size
+            of the encoding (i.e., ``0 <= node_types[i] < n_node_types`` for all
+            ``i``).
+        r_cutoff : float
+            The radial cutoff in the same units used for the coordinate positions
+            in the forward pass.
+        time_feat_dim : int, optional
+            The number of Gaussians used for expanding the time input, which is
+            assumed to be in the interval [0, 1].
+        node_feat_dim : int, optional
+            The dimension of the node feature.
+        distance_feat_dim : int, optional
+            The number of Gaussians used for expanding the distance input.
+        n_layers : int, optional
+            The number of message passing layers.
+        speed_factor : float, optional
+            The output of the dynamics is such that each neighbor contributes to
+            the node velocity with an additive vector with magnitude in
+            ``[-speed_factor,speed_factor]``.
+        initialize_identity : bool, optional
+            If ``True`` (default), the layers are initialized so that the dynamics
+            performs the identity function, which in this context means that
+            outputs zero velocities.
+
+        """
+        super().__init__(node_types=node_types)
+
+        # Embedding is computed as dot(W, [h, time]).
         self.time_embedding = GaussianBasisExpansion.from_range(
             n_gaussians=time_feat_dim,
             max_mean=1.0,
             trainable_stds=True,
         )
         self.h_embedding = torch.nn.Linear(
-            in_features=len(self.particle_types_one_hot[1]) + time_feat_dim,
+            in_features=len(self._node_types_one_hot[1]) + time_feat_dim,
             out_features=node_feat_dim,
         )
 
@@ -136,10 +140,6 @@ class EGNNDynamics(tfep.nn.graph.FixedGraph):
 
             self.add_module('graph_layer_'+str(layer_idx), eg_layer)
 
-    @property
-    def n_particles(self):
-        return len(self.particle_types_one_hot)
-
     def forward(self, t, x):
         """Output the velocity in the continuous normalizing flow.
 
@@ -148,27 +148,27 @@ class EGNNDynamics(tfep.nn.graph.FixedGraph):
         t : torch.Tensor
             A tensor of shape ``(1,)`` with the time of the integration.
         x : torch.Tensor
-            A tensor of shape ``(batch_size, n_particles*3)`` where ``x[b, 3*a+i]``
+            A tensor of shape ``(batch_size, n_nodes*3)`` where ``x[b, 3*a+i]``
             is the ``i``-th component of the position vector of the ``a``-th
-            particle for batch ``b``.
+            node for batch ``b``.
 
         Returns
         -------
         v : torch.Tensor
-            A tensor of shape ``(batch_size, n_particles*3)`` where ``v[b, 3*a+i]``
+            A tensor of shape ``(batch_size, n_nodes*3)`` where ``v[b, 3*a+i]``
             is the ``i``-th component of the velocity vector of the ``a``-th
-            particle for batch ``b``.
+            node for batch ``b``.
 
         """
         batch_size = len(x)
 
-        # x from shape (batch_size, n_particles*3) to (batch_size*n_particles, 3).
-        # Internally, we cast everything to a single system of batch_size*n_particles
-        # particles and we don't draw edges between samples in the batch to
+        # x from shape (batch_size, n_nodes*3) to (batch_size*n_nodes, 3).
+        # Internally, we cast everything to a single system of batch_size*n_nodes
+        # nodes and we don't draw edges between samples in the batch to
         # simplify the code.
-        vel = x.view(batch_size*self.n_particles, 3)
+        vel = x.view(batch_size*self.n_nodes, 3)
 
-        # Node features of size (batch_size*n_particles, node_feat_dim).
+        # Node features of size (batch_size*n_nodes, node_feat_dim).
         h = self._create_node_embedding(t, batch_size)
 
         # Get the edges.
@@ -180,7 +180,7 @@ class EGNNDynamics(tfep.nn.graph.FixedGraph):
             h, vel = eg_layer(h, vel, edges)
 
         # Reshape the velocities back in batch format.
-        vel = vel.view(batch_size, self.n_particles*3)
+        vel = vel.view(batch_size, self.n_nodes*3)
 
         # To obtain a translational invariant velocity, we subtract the initial
         # positions.
@@ -199,21 +199,21 @@ class EGNNDynamics(tfep.nn.graph.FixedGraph):
         Returns
         -------
         h : torch.Tensor
-            A torch of shape ``(batch_size*n_particles, node_feature_dimension)``.
+            A torch of shape ``(batch_size*n_nodes, node_feature_dimension)``.
 
         """
         # Initialize node invariant features by concatenating the one-hot features
-        # encoding particle types with the soft one-hot encoding representing time.
+        # encoding node types with the soft one-hot encoding representing time.
         # GaussianBasisExpansion requires a tensor with at least 1 dimension.
         t_embedded = self.time_embedding(t.unsqueeze(0))
-        # t_embedded from shape (time_feat_dim,) to (n_particles, time_feat_dim).
-        t_embedded = t_embedded.expand(self.n_particles, -1)
-        # h has shape (n_particles, n_particle_types+time_feat_dim).
-        h = torch.cat([self.particle_types_one_hot, t_embedded], dim=-1)
+        # t_embedded from shape (time_feat_dim,) to (n_nodes, time_feat_dim).
+        t_embedded = t_embedded.expand(self.n_nodes, -1)
+        # h has shape (n_nodes, n_node_types+time_feat_dim).
+        h = torch.cat([self._node_types_one_hot, t_embedded], dim=-1)
 
         # Now assign to the one-hot representations the embedding parameters.
         h = self.h_embedding(h)
-        # h from shape (n_particles, node_feat_dim) to (batch_size*n_particles, node_feat_dim).
+        # h from shape (n_nodes, node_feat_dim) to (batch_size*n_nodes, node_feat_dim).
         h = h.repeat(batch_size, 1)
 
         return h
@@ -276,9 +276,9 @@ class _EGLayer(torch.nn.Module):
         Parameters
         ----------
         h : torch.Tensor
-            Scalar node features with shape ``(batch_size*n_particles, node_feat_dim)``.
+            Scalar node features with shape ``(batch_size*n_nodes, node_feat_dim)``.
         x : torch.Tensor
-            Vector node features with shape ``(batch_size*n_particles, 3)``.
+            Vector node features with shape ``(batch_size*n_nodes, 3)``.
         edges : List[torch.Tensor]
             A list of two tensors, both of shape ``(n_edges,)``. The i-th edge
             is created from node ``x[edges[0][i]]`` to ``x[edges[1][i]]``. The edge
@@ -286,7 +286,7 @@ class _EGLayer(torch.nn.Module):
             entries are needed.
 
         """
-        # Compute distances and unit diff vectors between particles positions.
+        # Compute distances and unit diff vectors between nodes positions.
         # distances has shape (n_edges,) and directions (n_edges, 3).
         # The original implementation in [1] normalized the directions by
         # distance + 1e-8 to avoid division by 0.0. In this application, it is
@@ -314,9 +314,9 @@ class _EGLayer(torch.nn.Module):
         Parameters
         ----------
         h : torch.Tensor
-            Node features of shape (batch_size*n_particles, node_feat_dim).
+            Node features of shape (batch_size*n_nodes, node_feat_dim).
         distances : torch.Tensor
-            Distances between particles of shape (n_edges,)
+            Distances between nodes of shape (n_edges,)
 
         Returns
         -------
@@ -338,12 +338,12 @@ class _EGLayer(torch.nn.Module):
 
     def _update_h(self, h, edge_messages, edges):
         # Aggregate all messages with destination edges[1]. Like h,
-        # node_messages has shape (batch_size*n_particles, node_feat_dim).
+        # node_messages has shape (batch_size*n_nodes, node_feat_dim).
         src, dest = edges
         node_messages = tfep.nn.graph.unsorted_segment_sum(edge_messages, dest, h.shape[0])
 
         # Concatenate the current h and the aggregated message and feed them
-        # to the node-update MLP. out has shape (batch_size*n_particles, node_feat_dim).
+        # to the node-update MLP. out has shape (batch_size*n_nodes, node_feat_dim).
         input = torch.cat([h, node_messages], dim=1)
         out = self.update_h_mlp(input)
 
@@ -361,7 +361,7 @@ class _EGLayer(torch.nn.Module):
         # Compute displacements. directions has shape (n_edges, 3).
         disp = self.speed_factor * directions * disp_magnitude
 
-        # Aggregate displacement. aggregate_disp has shape (batch_size*n_particles, 3).
+        # Aggregate displacement. aggregate_disp has shape (batch_size*n_nodes, 3).
         src, dest = edges
         aggregate_disp = tfep.nn.graph.unsorted_segment_sum(disp, dest, x.shape[0])
 

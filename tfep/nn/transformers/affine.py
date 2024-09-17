@@ -14,16 +14,18 @@ Affine transformer for autoregressive normalizing flows.
 # GLOBAL IMPORTS
 # =============================================================================
 
+from typing import Optional
+
 import torch
-import torch.autograd
-import torch.nn.functional
+
+from tfep.nn.transformers.transformer import MAFTransformer
 
 
 # =============================================================================
 # AFFINE
 # =============================================================================
 
-class AffineTransformer(torch.nn.Module):
+class AffineTransformer(MAFTransformer):
     r"""Affine transformer module for autoregressive normalizing flows.
 
     This is an implementation of the transformation
@@ -35,55 +37,64 @@ class AffineTransformer(torch.nn.Module):
 
     See Also
     --------
-    nets.functions.transformer.affine_transformer
+    :func:`.affine_transformer`
+        Functional API for the transformer.
 
     """
     # Number of parameters needed by the transformer for each input dimension.
     n_parameters_per_input = 2
 
-    def forward(self, x, parameters):
+    def forward(self, x: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Apply the affine transformation to the input.
 
         Parameters
         ----------
         x : torch.Tensor
-            Input tensor x of shape ``(batch_size, n_features)``.
+            Shape ``(batch_size, n_features)``. The input features.
         parameters : torch.Tensor
-            Parameters of the transformation with shape ``(batch_size, 2, n_features)``
-            where ``parameters[:, 0, i]`` is the shift parameter :math:`b_1`
-            and ``parameters[:, 1, i]`` is the log scale :math:`a_1`.
+            Shape ``(batch_size, 2*n_features)``. The parameters for the affine
+            transformation where ``parameters[:, i]`` is the shift parameter
+            :math:`b_1` and ``parameters[:, n_features+i]`` is the log scale
+            :math:`a_1` for the ``i``-th feature.
 
         Returns
         -------
         y : torch.Tensor
-            Output tensor of shape ``(batch_size, n_features)``.
+            Shape ``(batch_size, n_features)``. The transformed features.
+        log_det_J : torch.Tensor
+            Shape ``(batch_size,)``. The log absolute value of the Jacobian
+            determinant of the transformation.
 
         """
         shift, log_scale = self._split_parameters(parameters)
         return affine_transformer(x, shift, log_scale)
 
-    def inverse(self, y, parameters):
+    def inverse(self, y: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Reverse the affine transformation.
 
         Parameters
         ----------
         y : torch.Tensor
-            Input tensor x of shape ``(batch_size, n_features)``.
+            Shape ``(batch_size, n_features)``. The input features.
         parameters : torch.Tensor
-            Parameters of the transformation with shape ``(batch_size, 2, n_features)``
-            where ``parameters[:, 0, i]`` is the shift parameter :math:`b_1`
-            and ``parameters[:, 1, i]`` is the log scale :math:`a_1`.
+            Shape ``(batch_size, 2*n_features)``. The parameters for the affine
+            transformation where ``parameters[:, i]`` is the shift parameter
+            :math:`b_1` and ``parameters[:, n_features+i]`` is the log scale
+            :math:`a_1` for the ``i``-th feature.
 
         Returns
         -------
         x : torch.Tensor
-            Output tensor of shape ``(batch_size, n_features)``.
+            Shape ``(batch_size, n_features)``. The transformed features.
+        log_det_J : torch.Tensor
+            Shape ``(batch_size,)``. The log absolute value of the Jacobian
+            determinant of the transformation.
 
         """
         shift, log_scale = self._split_parameters(parameters)
         return affine_transformer_inverse(y, shift, log_scale)
 
-    def get_identity_parameters(self, n_features):
+    def get_identity_parameters(self, n_features: int) -> torch.Tensor:
         """Return the value of the parameters that makes this the identity function.
 
         This can be used to initialize the normalizing flow to perform the identity
@@ -98,13 +109,35 @@ class AffineTransformer(torch.nn.Module):
         Returns
         -------
         parameters : torch.Tensor
-            A tensor of shape ``(2, n_features)``.
+            Shape ``(2*n_features)``. The parameters for the identity.
 
         """
-        return torch.zeros(size=(self.n_parameters_per_input, n_features))
+        return torch.zeros(size=(self.n_parameters_per_input*n_features,))
+
+    def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
+        """Returns the degrees associated to the conditioner's output.
+
+        Parameters
+        ----------
+        degrees_in : torch.Tensor
+            Shape ``(n_transformed_features,)``. The autoregressive degrees
+            associated to the features provided as input to the transformer.
+
+        Returns
+        -------
+        degrees_out : torch.Tensor
+            Shape ``(n_parameters,)``. The autoregressive degrees associated
+            to each output of the conditioner that will be fed to the
+            transformer as parameters.
+
+        """
+        return degrees_in.tile((self.n_parameters_per_input,))
 
     def _split_parameters(self, parameters):
         """Divide shift from log scale."""
+        # From (batch, 2*n_features) to (batch, 2, n_features).
+        batch_size = parameters.shape[0]
+        parameters = parameters.reshape(batch_size, self.n_parameters_per_input, -1)
         return parameters[:, 0], parameters[:, 1]
 
 
@@ -112,7 +145,7 @@ class AffineTransformer(torch.nn.Module):
 # VOLUME PRESERVING TRANSFORMER
 # =============================================================================
 
-class VolumePreservingShiftTransformer(torch.nn.Module):
+class VolumePreservingShiftTransformer(MAFTransformer):
     r"""Implement a volume-preserving transformer for autoregressive normalizing flows.
 
     This is an implementation of the transformation
@@ -122,70 +155,86 @@ class VolumePreservingShiftTransformer(torch.nn.Module):
     where :math:`b_i` is the shift parameter of the transformation that are
     usually generated by a conditioner.
 
-    Parameters
-    ----------
-    periodic_indices : torch.Tensor, optional
-        If provided, the features indexed by ``periodic_indices`` will be treated
-        as periodic with period ``periodic_limits``.
-    periodic_limits : torch.Tensor, optional
-        The period of periodic features.
-
     See Also
     --------
-    nets.functions.transformer.volume_preserving_shift_transformer
+    :func:`.volume_preserving_shift_transformer`
+        Functional API for the transformer.
 
     """
     # Number of parameters needed by the transformer for each input dimension.
     n_parameters_per_input = 1
 
-    def __init__(self, periodic_indices=None, periodic_limits=None):
+    def __init__(
+            self,
+            periodic_indices: Optional[torch.Tensor] = None,
+            periodic_limits: Optional[torch.Tensor] = None,
+    ):
+        """Constructor.
+
+        Parameters
+        ----------
+        periodic_indices : torch.Tensor, optional
+            If provided, the features indexed by ``periodic_indices`` will be
+            treated as periodic with period ``periodic_limits``.
+        periodic_limits : torch.Tensor, optional
+            The period of periodic features.
+
+        """
         super().__init__()
         self.periodic_indices = periodic_indices
         self.periodic_limits = periodic_limits
 
-    def forward(self, x, parameters):
+    def forward(self, x: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Apply the affine transformation to the input.
 
         Parameters
         ----------
         x : torch.Tensor
-            Input tensor x of shape ``(batch_size, n_features)``.
+            Shape ``(batch_size, n_features)``. The input features.
         parameters : torch.Tensor
-            Parameters of the transformation with shape ``(batch_size, 1, n_features)``
-            where ``parameters[:, 0, i]`` is the shift parameter :math:`b_1`.
+            Shape ``(batch_size, n_features)``. The parameters for the volume-
+            preserving transformation, where ``parameters[:, i]`` is the shift
+            parameter :math:`b_1` for the ``i``-th feature.
 
         Returns
         -------
         y : torch.Tensor
-            Output tensor of shape ``(batch_size, n_features)``.
+            Shape ``(batch_size, n_features)``. The transformed features.
+        log_det_J : torch.Tensor
+            Shape ``(batch_size,)``. The log absolute value of the Jacobian
+            determinant of the transformation.
 
         """
         return volume_preserving_shift_transformer(
-            x, shift=parameters[:, 0], periodic_indices=self.periodic_indices,
+            x, shift=parameters, periodic_indices=self.periodic_indices,
             periodic_limits=self.periodic_limits)
 
-    def inverse(self, y, parameters):
+    def inverse(self, y: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Reverse the affine transformation.
 
         Parameters
         ----------
         y : torch.Tensor
-            Input tensor x of shape ``(batch_size, n_features)``.
+            Shape ``(batch_size, n_features)``. The input features.
         parameters : torch.Tensor
-            Parameters of the transformation with shape ``(batch_size, 1, n_features)``
-            where ``parameters[:, 0, i]`` is the shift parameter :math:`b_1`.
+            Shape ``(batch_size, n_features)``. The parameters for the volume-
+            preserving transformation, where ``parameters[:, i]`` is the shift
+            parameter :math:`b_1` for the ``i``-th feature.
 
         Returns
         -------
         x : torch.Tensor
-            Output tensor of shape ``(batch_size, n_features)``.
+            Shape ``(batch_size, n_features)``. The transformed features.
+        log_det_J : torch.Tensor
+            Shape ``(batch_size,)``. The log absolute value of the Jacobian
+            determinant of the transformation.
 
         """
         return volume_preserving_shift_transformer_inverse(
-            y, shift=parameters[:, 0], periodic_indices=self.periodic_indices,
+            y, shift=parameters, periodic_indices=self.periodic_indices,
             periodic_limits=self.periodic_limits)
 
-    def get_identity_parameters(self, n_features):
+    def get_identity_parameters(self, n_features: int) -> torch.Tensor:
         """Return the value of the parameters that makes this the identity function.
 
         This can be used to initialize the normalizing flow to perform the identity
@@ -200,10 +249,29 @@ class VolumePreservingShiftTransformer(torch.nn.Module):
         Returns
         -------
         parameters : torch.Tensor
-            A tensor of shape ``(1, n_features)``.
+            Shape ``(n_features)``. The parameters for the identity.
 
         """
-        return torch.zeros(size=(self.n_parameters_per_input, n_features))
+        return torch.zeros(size=(self.n_parameters_per_input*n_features,))
+
+    def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
+        """Returns the degrees associated to the conditioner's output.
+
+        Parameters
+        ----------
+        degrees_in : torch.Tensor
+            Shape ``(n_transformed_features,)``. The autoregressive degrees
+            associated to the features provided as input to the transformer.
+
+        Returns
+        -------
+        degrees_out : torch.Tensor
+            Shape ``(n_parameters,)``. The autoregressive degrees associated
+            to each output of the conditioner that will be fed to the
+            transformer as parameters.
+
+        """
+        return degrees_in.tile((self.n_parameters_per_input,))
 
 
 # =============================================================================
@@ -246,7 +314,8 @@ def affine_transformer(x, shift, log_scale):
 
     See Also
     --------
-    tfep.nn.transformers.AffineTransformer
+    :class:`.AffineTransformer`
+        Object-oriented API for the transformer.
 
     """
     y =  x * torch.exp(log_scale) + shift
@@ -332,7 +401,8 @@ def volume_preserving_shift_transformer(x, shift, periodic_indices=None, periodi
 
     See Also
     --------
-    tfep.nn.transformers.VolumePreservingShiftTransformer
+    :class:`.VolumePreservingShiftTransformer`
+        Object-oriented API for the transformer.
 
     """
     y = x + shift

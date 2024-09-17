@@ -6,7 +6,7 @@
 # =============================================================================
 
 """
-Test objects and function in tfep.nn.encoders.
+Test objects and function in tfep.nn.embeddings.radial.
 """
 
 
@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 import torch
 
-from tfep.nn.encoders import GaussianBasisExpansion, BehlerParrinelloRadialExpansion
+from tfep.nn.embeddings.radial import GaussianBasisExpansion, BehlerParrinelloRadialExpansion
 
 
 # =============================================================================

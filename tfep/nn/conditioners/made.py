@@ -15,82 +15,168 @@ Masked Autoregressive layer for Density Estimation (MADE) module for PyTorch.
 # =============================================================================
 
 from collections.abc import Sequence
-from typing import Optional, Tuple, Union
+from typing import Literal, Optional, Tuple, Union
 
 import numpy as np
 import torch
 
 from tfep.nn import masked
+from tfep.nn.conditioners.conditioner import Conditioner
 from tfep.utils.misc import ensure_tensor_sequence
 
 
 # =============================================================================
-# LAYERS
+# UTILS
 # =============================================================================
 
-def degrees_in_from_str(degrees_in: Union[str, Sequence], n_blocks: int) -> torch.Tensor:
-    """Helper function to create an array degrees_in from string representation.
+def generate_degrees(
+        n_features : int,
+        order : Literal['ascending', 'descending', 'random'] = 'ascending',
+        max_value : Optional[int] = None,
+        conditioning_indices : Optional[Sequence[int]] = None,
+        repeats : Union[int, Sequence[int]] = 1,
+) -> torch.Tensor:
+    """Generate node degrees for MADE layers.
+
+    This generates a tensor representing degrees from 0 to ``max_value``.
+    Conditioning degrees are set to -1.
 
     Parameters
     ----------
-    degrees_in : str or Sequence
-        Either ``'input'`` or ``'reversed'``, which assigns a increasing/decreasing
-        degree to the input nodes. If a ``Sequence``, this is returned as a
-        ``torch.Tensor``.
-    n_blocks : int
-        The number of blocks in the input. ``degrees_in`` is created to assign
-        all degrees from 0 to ``n_blocks-1``.
+    n_features : int
+        The length of the generated 1D tensor.
+    order : Literal['ascending', 'descending', 'random'], optional
+        In what order to generate the degrees. Default is ``'ascending'``.
+    max_value : int, optional
+        The maximum value to assign to the degree tensor. By default, this is
+        determined automatically to be consistent to the value of the other
+        parameters.
+    conditioning_indices : None or Sequence[int], optional
+        The indices of the output tensor whose degree must be set to -1. Default
+        is ``None``.
+    repeats : Union[int, Sequence[int]], optional
+        How many time to repeat a degree. This is similar to the ``repeats``
+        argument in ``torch.repeat_interleave()``. If this is a ``Sequence[int]``
+        and ``max_value`` is passed, this must have length ``max_value+1``.
 
     Returns
     -------
-    degrees_in : torch.Tensor
-        Return the input degrees for each block.
+    degrees : torch.Tensor
+        Shape ``(n_features,)``. The degrees.
+
+    Examples
+    --------
+
+    >>> generate_degrees(n_features=3).tolist()
+    [0, 1, 2]
+    >>> generate_degrees(7, order='descending').tolist()
+    [6, 5, 4, 3, 2, 1, 0]
+
+    If ``max_value`` is smaller than the requested number of elements, the
+    array of degrees is obtained by tiling
+
+    >>> generate_degrees(7, order='descending', max_value=2).tolist()
+    [2, 1, 0, 2, 1, 0, 2]
+
+    ``conditioning_indices`` can be used to set some elements as "conditioning"
+    (see the documentation of :class:`.MADE` for details).
+
+    >>> generate_degrees(7, max_value=2, conditioning_indices=[0, 2, 3]).tolist()
+    [-1, 0, -1, -1, 1, 2, 0]
+
+    ``repeats`` can be used to assign contiguous elements to the same
+    degree
+
+    >>> generate_degrees(6, repeats=2).tolist()
+    [0, 0, 1, 1, 2, 2]
+    >>> generate_degrees(7, repeats=[1, 3, 2], conditioning_indices=[2]).tolist()
+    [0, 1, -1, 1, 1, 2, 2]
 
     """
-    if isinstance(degrees_in, str):
-        if degrees_in == 'input':
-            degrees_in = torch.tensor(range(n_blocks))
-        elif degrees_in == 'reversed':
-            degrees_in = torch.tensor(range(n_blocks-1, -1, -1))
-        else:
-            raise ValueError("Accepted string values for 'degrees_in' "
-                             "are 'input' and 'reversed'.")
+    # Determine the number of nonconditioning features.
+    n_nonconditioning_features = n_features
+    if conditioning_indices is not None:
+        n_nonconditioning_features -= len(conditioning_indices)
+
+    # Determine the maximum value.
+    if max_value is None:
+        try:
+            # repeats is a Sequence[int].
+            max_value = len(repeats) - 1
+        except TypeError:
+            # repeats is an integer.
+            max_value = int(np.ceil(n_nonconditioning_features / repeats)) - 1
+
+    # Generate the sequence of degrees to tile.
+    if order == 'ascending':
+        degrees = torch.arange(max_value+1)
+    elif order == 'descending':
+        degrees = torch.arange(max_value, -1, -1)
+    elif order == 'random':
+        degrees = torch.randperm(max_value+1)
     else:
-        degrees_in = torch.as_tensor(degrees_in)
-    return degrees_in
+        raise ValueError("Accepted string values for 'order' "
+                         "are 'ascending', 'descending', and 'random'.")
+
+    # Now expand by repeats.
+    repeats = ensure_tensor_sequence(repeats, dtype=int)
+    degrees = torch.repeat_interleave(degrees, repeats)[:n_nonconditioning_features]
+
+    # Tile until we generate the correct length.
+    degrees = _round_robin(degrees, length=n_nonconditioning_features)
+
+    # Now insert conditioning indices.
+    if conditioning_indices is not None:
+        # Make sure conditioning indices is not an array/tensor.
+        try:
+            conditioning_indices = conditioning_indices.tolist()
+        except AttributeError:
+            pass
+        conditioning_indices_set = set(conditioning_indices)
+        nonconditioning_indices = [i for i in range(n_features) if i not in conditioning_indices_set]
+        assert len(nonconditioning_indices) == n_nonconditioning_features
+
+        # Create final tensor.
+        nonconditioning_degrees = degrees
+        degrees = torch.empty(n_features).to(nonconditioning_degrees)
+        degrees[conditioning_indices] = -1
+        degrees[nonconditioning_indices] = nonconditioning_degrees
+
+    return degrees
 
 
-class MADE(torch.nn.Module):
+# =============================================================================
+# MADE
+# =============================================================================
+
+class MADE(Conditioner):
     """
     An autoregressive layer implemented through masked affine layers.
 
-    The current implementation supports arbitrary dependencies between
-    input features, while the degrees of the hidden layers are assigned
-    in a round-robin fashion until the number of requested nodes in that
-    layer has been generated. Each layer is a :class:`MaskedLinear`,
-    which, in hidden layers, is followed an ``ELU`` nonlinearity. Inputs
-    and outputs have the same dimension.
-
-    The module supports a number of "conditioning features" which affect
-    the output but are not modified. This can be used, for example, to
-    implement the coupling layers flow. Currently, only the initial
-    features of the input vector can be used as conditioning features.
-
-    It is possible to divide the input into contiguous "blocks" which
-    are assigned the same degree. In practice, this enables to implement
-    architectures in between coupling layers and a fully autoregressive
-    flow.
-
-    The original paper used this as a Masked Autoregressive network for
-    Distribution Estimation (MADE) [1], while the Inverse/Masked Autoregressive
-    Flow (IAF/MAF) [2]/[3] used this as a layer to stack to create normalizing
-    flows with the autoregressive property.
+    This implements the Masked Autoregressive network for Distribution Estimation
+    (MADE) [1], which is used in the Inverse/Masked Autoregressive Flow (IAF/MAF)
+    [2]/[3] as a conditioner network. MADE is a dense layer, where the connections
+    between nodes are partially masked to satisfy the autoregressive property.
+    The mask is built based on the values of the degrees assigned to each node
+    in the network (see [1]). Very briefly, an output node with degree ``i`` will
+    depend only on the inputs assigned to a degree strictly less than ``i``.
 
     An advantage of using masks over the naive implementation of an
     autoregressive layer, which use a different neural network for each
     parameter of the affine transformation, is that it generates all the
     affine parameters in a single pass, with much less parameters to train,
     and can be parallelized trivially.
+
+    The current implementation supports arbitrary dependencies between input
+    features so that this can be used as a conditioner to implement the full
+    range between fully autoregressive and coupling layers flows.
+
+    Each layer is a :class:`MaskedLinear`, which, in hidden layers, is followed
+    by an ``ELU`` nonlinearity.
+
+    See Also
+    --------
+    :func:`.generate_degrees` : Utility to generate sequences of degrees.
 
     References
     ----------
@@ -104,157 +190,118 @@ class MADE(torch.nn.Module):
         density estimation. In Advances in Neural Information Processing
         Systems 2017 (pp. 2338-2347).
 
+    Examples
+    --------
+
+    A fully autoregressive MADE layer with 4 inputs and 8 outputs. Note that, in
+    this example, because of how MADE masks are built from the degrees (see [1]),
+    the first 2 outputs will not depend on any input (i.e., they will be trainable
+    constant numbers). Similarly, the last input will not affect any output, and
+    may be omitted from the model with no effect.
+
+    >>> made = MADE(
+    ...     degrees_in=[0, 1, 2, 3],
+    ...     degrees_out=[0, 0, 1, 1, 2, 2, 3, 3],
+    ... )
+
+    The degrees do not have to be in any particular order, and multiple inputs
+    can be assigned the same degree.
+
+    >>> made = MADE(
+    ...     degrees_in=[1, 1, 0, 2],
+    ...     degrees_out=[0, 1, 2, 3, 3, 2, 1, 0],
+    ... )
+
+    It is possible to define "conditioning" inputs (in this case, the first 3).
+    These are defined as features that affect all outputs and (consequently) for
+    which no output is generated.
+
+    >>> made = MADE(
+    ...     degrees_in=[-1, -1, -1, 0, 1, 2,],
+    ...     degrees_out=[0, 1, 2, 3, 0, 1, 2, 3],
+    ... )
+
+    The :func:`.generate_degrees` utility function can be used to generate the
+    degrees for several common scenarios. You can also control, the hidden layers.
+
+    >>> made = MADE(
+    ...     degrees_in=generate_degrees(n_features=3, order='descending'),
+    ...     degrees_out=generate_degrees(n_features=8, order='descending'),
+    ...     hidden_layers=[
+    ...         generate_degrees(n_features=6, max_value=2),
+    ...         generate_degrees(n_features=8, max_value=2),
+    ...     ],
+    ... )
+
+    A coupling flow layer with 2 inputs, 4 outputs, and 3 hidden layers.
+
+    >>> made = MADE(
+    ...     degrees_in=[-1, -1],
+    ...     degrees_out=[0, 0, 0, 0],
+    ...     hidden_layers=3,
+    ... )
+
     """
 
     def __init__(
         self,
-        dimension_in: int,
-        dimensions_hidden: Union[int, Sequence[int]] = 1,
-        out_per_dimension: int = 1,
-        conditioning_indices: Optional[Sequence[int]] = None,
-        degrees_in: Union[str, Sequence[int]] = 'input',
-        degrees_hidden_motif: Optional[Sequence[int]] = None,
-        degrees_per_out: Optional[Sequence[int]] = None,
-        weight_norm: bool = False,
-        blocks: Union[int, Sequence[int]] = 1,
-        shorten_last_block: bool = False,
+        degrees_in: Sequence[int],
+        degrees_out: Sequence[int],
+        hidden_layers: Union[int, Sequence[int], Sequence[Sequence[int]]] = 2,
+        weight_norm: bool = True,
     ):
         """Constructor.
 
         Parameters
         ----------
-        dimension_in : int
-            The number of features of a single input vector. This includes
-            the number of conditioning features.
-        dimensions_hidden : int or Sequence[int], optional
-            If an int, this is the number of hidden layers, and the number
-            of nodes in each hidden layer will be set to
-            ``(dimension_in - len(last_block)) * floor(out_per_dimension**(1/2))``
-            where ``len(last_block)`` is the dimension of the block with the
-            highest assigned degree (which depends on the values of ``blocks``
-            and ``shorten_last_block``).  This means that the number of trainable
-            parameters will roughly depend quadratically on the conditioner input
-            and linearly on the conditioner output.
+        degrees_in : Sequence[int]
+            Shape: ``(n_inputs,)``. ``degrees_in[i]`` is the degree assigned to
+            the ``i``-th input.
+        degrees_out : Sequence[int]
+            Shape: ``(n_outputs,)``. ``degrees_out[i]`` is the degree assigned to
+            the ``i``-th output.
+        hidden_layers : Union[int, Sequence[int], Sequence[Sequence[int]]], optional
+            If an integer, this is the number of hidden layers. In this case,
+            the number of nodes in each layer is set to
+            ``max(n_inputs, ceil((n_inputs * n_outputs)**0.5))``
+            where ``n_inputs`` is the number of input features that affect the
+            output, and ``n_outputs`` is the number of output features.
 
-            If a ``Sequence``, ``dimensions_hidden[l]`` must be the number of
-            nodes in the l-th hidden layer.
-        out_per_dimension : int, optional
-            The dimension of the output layer in terms of a multiple of the
-            number of non-conditioning input features. Since MADE is typically
-            used for the conditioner, this usually correspond to the number of
-            parameters per degree of freedom used in the transformer. Default
-            is 1.
-        conditioning_indices : None or Sequence[int], optional
-            The indices of the input features corresponding to the conditioning
-            features. These features affect the output, but they are not mapped
-            by the flow.
-        degrees_in : str or Sequence[int], optional
-            The degrees to assign to the input/output nodes. Effectively this
-            controls the dependencies between variables in the autoregressive
-            model. If ``'input'``/``'reversed'``, the degrees are assigned in
-            the same/reversed order they are passed. If a ``Sequence``, this must
-            be a permutation of ``range(0, n_blocks)``, where ``n_blocks`` is the
-            number of blocks passed to the constructor. If blocks are not used,
-            this corresponds to the number of non-conditioning features (i.e.,
-            ``dimension_in - len(conditioning_indices)``).
-        degrees_hidden_motif : Sequence[int], optional
-            The degrees of the hidden nodes are assigned using this array in
-            a round-robin fashion. If not given, they are assigned in the
-            same order used for the input nodes. This must be at least as
-            large as the dimension of the smallest hidden layer.
-        degrees_per_out : Sequence[int], optional
-            The degrees of the output nodes for each ``out_per_dimension``. Note
-            that this can be different from ``degrees_in``. For example, if
-            ``degrees_per_out=[1, 2, 0]`` and ``out_per_dimension=2`` will result
-            in an output of dimension 6 using a scrambled order of degrees even
-            if ``degrees_in=[0, 0, 1, 2]``. By default this is set equal to
-            ``self.degrees_in``, which automatically accounts for block sizes.
+            If a sequence of integers, ``hidden_layers[l]`` is the number of
+            nodes in the l-th hidden layer. The degrees of each node are assigned
+            in a round-robin fashion by tiling ``degrees_in`` until the requested
+            number of nodes is covered.
+
+            Otherwise, ``degrees_hidden[l][i]`` is the degree assigned to the
+            ``i``-th node of the ``l``-th hidden layer.
+
+            Default is 2.
         weight_norm : bool, optional
             If ``True``, weight normalization is applied to the masked linear
-            modules.
-        blocks : int or Sequence[int], optional
-            If an integer, the non-conditioning input features are divided
-            into contiguous blocks of size ``blocks`` that are assigned the
-            same degree. If a list, ``blocks[i]`` must represent the size
-            of the i-th block. The default, ``1``, correspond to a fully
-            autoregressive network.
-        shorten_last_block : bool, optional
-            If ``blocks`` is an integer that is not a divisor of the number
-            of non-conditioning  features, this option controls whether the
-            last block is shortened (``True``) or an exception is raised (``False``).
-            Default is ``False``.
+            modules. Default is ``True``.
 
         """
         super().__init__()
 
-        # Mutable defaults.
-        if conditioning_indices is None:
-            conditioning_indices = torch.tensor([], dtype=int)
-
-        # Validate values.
-        if isinstance(degrees_in, str) and not degrees_in in ('input', 'reversed'):
-            raise ValueError('degrees_in must be one between "input" and "reversed"')
-
         # Convert all list of indices to tensors (without copying memory if possible).
-        dimensions_hidden = ensure_tensor_sequence(dimensions_hidden, dtype=int)
-        conditioning_indices = ensure_tensor_sequence(conditioning_indices, dtype=int)
         degrees_in = ensure_tensor_sequence(degrees_in, dtype=int)
-        degrees_hidden_motif = ensure_tensor_sequence(degrees_hidden_motif, dtype=int)
-        degrees_per_out = ensure_tensor_sequence(degrees_per_out, dtype=int)
-        blocks = ensure_tensor_sequence(blocks, dtype=int)
+        degrees_out = ensure_tensor_sequence(degrees_out, dtype=int)
 
-        # Store variabless.
-        self._out_per_dimension = out_per_dimension
-        self.register_buffer('_conditioning_indices', conditioning_indices)
-
-        # Get the number of dimensions in array format.
-        n_hidden_layers, dimensions_hidden, expanded_blocks = self._get_dimensions(
-            dimension_in, dimensions_hidden, out_per_dimension, conditioning_indices,
-            degrees_in, blocks, shorten_last_block)
-
-        # Store the verified/expanded blocks size.
-        self.register_buffer('_blocks', expanded_blocks)
-
-        # Determine the degrees of all input nodes.
-        self.register_buffer('_degrees_in', None)
-        self._assign_degrees_in(dimension_in, conditioning_indices, degrees_in)
-
-        # Generate the degrees to assign to the hidden nodes in a round-robin fashion.
-        self._assign_degrees_hidden_motif(degrees_hidden_motif)
-
-        # Find the mapped indices.
-        conditioning_indices_set = set(conditioning_indices.tolist())
-        mapped_indices = [i for i in range(dimension_in) if i not in conditioning_indices_set]
-
-        # Verify output layer configuration.
-        if degrees_per_out is None:
-            degrees_per_out = self.degrees_in[mapped_indices]
-        else:
-            self._check_degrees(degrees_per_out, name='degrees_per_out')
+        # Create the degrees to assign to the hidden layers.
+        degrees_hidden = self._get_degrees_hidden(degrees_in, degrees_out, hidden_layers)
+        n_hidden_layers = len(degrees_hidden)
 
         # Create a sequence of MaskedLinear + nonlinearity layers.
         layers = []
-        degrees_previous = self.degrees_in
+        degrees_previous = degrees_in
         for layer_idx in range(n_hidden_layers+1):
             is_output_layer = layer_idx == n_hidden_layers
 
             # Determine the degrees of the layer's nodes.
             if is_output_layer:
-                # The output layer doesn't have the conditioning features.
-                degrees_current = torch.tile(degrees_per_out, (out_per_dimension,))
+                degrees_current = degrees_out
             else:
-                # TODO: torch doesn't support divmod at the moment (see #90820)
-                n_round_robin, n_remaining = divmod(dimensions_hidden[layer_idx].tolist(), len(self.degrees_hidden_motif))
-                if n_round_robin == 0:
-                    err_msg = (f'Hidden layer {layer_idx} is too small '
-                               f'to fit the motif {self.degrees_hidden_motif}.'
-                               ' Increase the size of the layer or explicitly '
-                               'pass a different motif for its degrees.')
-                    raise ValueError(err_msg)
-
-                degrees_current = torch.tile(self.degrees_hidden_motif, (n_round_robin,))
-                if n_remaining != 0:
-                    degrees_current = torch.cat([degrees_current, self.degrees_hidden_motif[:n_remaining]])
+                degrees_current = degrees_hidden[layer_idx]
 
             # We transpose the mask from shape (in, out) to (out, in) because
             # the mask must have the same shape of the weights in MaskedLinear.
@@ -283,54 +330,23 @@ class MADE(torch.nn.Module):
 
     @property
     def dimension_in(self) -> int:
-        "Dimension of the input vector."
+        """Dimension of the input tensor."""
         return self.layers[0].in_features
 
     @property
     def dimension_out(self) -> int:
-        "Dimension of the output vector (excluding the conditioning dimensions)."
+        """Dimension of the output tensor."""
         return self.layers[-1].out_features
 
     @property
-    def n_layers(self) -> int:
-        "Total number of layers (hidden layers + output)."
-        # Each layer is a masked linear + activation function, except the output layer.
-        return (len(self.layers) + 1) // 2
-
-    @property
     def dimensions_hidden(self) -> torch.Tensor:
-        """dimensions_hidden[i] is the number of nodes in the i-th hidden layer."""
+        """Shape: ``(n_hidden_layers,)``. ``dimensions_hidden[i]`` is the number of nodes in the ``i``-th hidden layer."""
         return torch.tensor([l.out_features for l in self.layers[:-1:2]])
 
     @property
-    def out_per_dimension(self) -> int:
-        """Multiple of non-conditioning features determining the output dimension."""
-        return self._out_per_dimension
-
-    @property
-    def dimension_conditioning(self) -> int:
-        """Number of conditioning features."""
-        return len(self._conditioning_indices)
-
-    @property
-    def conditioning_indices(self) -> torch.Tensor:
-        """conditioning_indices[i] is the index of the input feature corresponding to the i-th conditioning degree of freedom."""
-        return self._conditioning_indices
-
-    @property
-    def degrees_in(self) -> torch.Tensor:
-        """degrees_in[i] is the MADE degree assigned to the i-th input feature."""
-        return self._degrees_in
-
-    @property
-    def degrees_hidden_motif(self) -> torch.Tensor:
-        """degrees_hidden_motif[i] is the degrees assigned to i-th hidden node."""
-        return self._degrees_hidden_motif
-
-    @property
-    def blocks(self) -> torch.Tensor:
-        """blocks[i] is the size of the i-th block."""
-        return self._blocks
+    def weight_norm(self):
+        """bool: ```True``` if weight norm is used, ```False``` otherwise."""
+        return hasattr(self.layers[-1], 'weight_g')
 
     def n_parameters(self) -> int:
         """The total number of (unmasked) parameters."""
@@ -339,201 +355,107 @@ class MADE(torch.nn.Module):
     def forward(self, x):
         return self.layers(x)
 
-    @staticmethod
-    def _get_dimensions(
-            dimension_in: int,
-            dimensions_hidden: torch.Tensor,
-            out_per_dimension: int,
-            conditioning_indices: torch.Tensor,
-            degrees_in: Union[str, torch.Tensor],
-            blocks: Union[int, torch.Tensor],
-            shorten_last_block: bool,
-    ) -> Tuple[int, torch.Tensor, torch.Tensor]:
-        """Process the input arguments and return the dimensions of all layers in list format.
+    def set_output(self, output: torch.Tensor):
+        """Implement :func:`tfep.nn.flows.autoregressive.Conditioner.set_output`."""
+        if self.weight_norm:
+            self.layers[-1].weight_g.data.fill_(0.0)
+        else:
+            self.layers[-1].weight.data.fill_(0.0)
+        self.layers[-1].bias.data = output
 
-        By default, when only the depth of the hidden layers is specified,
-        the number of nodes in each hidden layer is assigned so that there
-        is one node for each output connected to the network (i.e., ignoring
-        the last output/block).
+    @classmethod
+    def _get_degrees_hidden(
+            cls,
+            degrees_in : torch.Tensor,
+            degrees_out : torch.Tensor,
+            hidden_layers: Union[int, Sequence[int], Sequence[Sequence[int]]],
+    ) -> list[torch.Tensor]:
+        """Return the degrees of the hidden layers.
 
         Returns
         -------
-        n_hidden_layers : int
-            The number of hidden layers.
-        dimensions_hidden : torch.Tensor[int]
-            ``dimensions_hidden[i]`` is the dimension of the i-th hidden layer.
-        expanded_blocks : torch.Tensor[int]
-            ``expanded_blocks[i]`` is the size of the i-th block of features.
+        degrees_hidden : list[torch.Tensor]
+            ``degrees_hidden[l][i]`` is the degree assigned to the ``i``-th node
+            of the ``l``-th hidden layer.
 
         """
-        n_conditioning_dofs = len(conditioning_indices)
+        # Make sure hidden_layers is not a numpy/torch type.
+        try:
+            hidden_layers = hidden_layers.tolist()
+        except AttributeError:
+            pass
 
-        # Validate/expand block sizes.
-        expanded_blocks = _generate_block_sizes(dimension_in-n_conditioning_dofs, blocks,
-                                                shorten_last_block=shorten_last_block)
+        # Mask selecting the input features that affect the output.
+        max_degree_out = degrees_out.max()
+        relevant_in_features_mask = degrees_in < max_degree_out
 
-        # Find the dimension of the last block.
-        if isinstance(blocks, int) and (blocks == 1):
-            len_last_block = 1
-        elif isinstance(degrees_in, str):
-            if degrees_in == 'input':
-                len_last_block = expanded_blocks[-1]
-            else:  # == 'reversed'. degrees_in has been validated in __init__().
-                len_last_block = expanded_blocks[0]
+        # Convert integer to a list of layer widths (Sequence[int]) which will be
+        # handled in the next if block.
+        if isinstance(hidden_layers, int):
+            # Compute default number of nodes per layer.
+            n_relevant_in_features = relevant_in_features_mask.sum().tolist()
+            n_outputs = len(degrees_out)
+            n_nodes_per_layer = int(np.ceil((n_relevant_in_features * n_outputs)**0.5))
+            n_nodes_per_layer = max(n_nodes_per_layer, n_relevant_in_features)
+
+            hidden_layers = [n_nodes_per_layer for _ in range(hidden_layers)]
+
+        # Convert list of layer widths (Sequence[int]) to a list of degrees
+        # for each layer (Sequence[Sequence[int]]).
+        if isinstance(hidden_layers[0], int):
+            degrees_hidden = []
+
+            for layer_idx, width in enumerate(hidden_layers):
+                # There is no need to add degrees that won't be connected to the output layer.
+                degrees_hidden_motif = degrees_in[relevant_in_features_mask]
+
+                # Create the degrees.
+                layer_degrees = _round_robin(
+                    x=degrees_hidden_motif,
+                    length=hidden_layers[layer_idx],
+                    err_msg=(f'Hidden layer {layer_idx} is too small for the number'
+                             ' of input features. Increase the size of the layer or'
+                             ' explicitly pass the degrees for the hidden layers.')
+                )
+
+                # Append new layer.
+                degrees_hidden.append(layer_degrees)
         else:
-            # Search for the block assigned to the last degree.
-            last_block_idx = torch.argmax(degrees_in)
-            len_last_block = expanded_blocks[last_block_idx]
+            # Convert from list[list[int]] to list[Tensor[int]].
+            degrees_hidden = [ensure_tensor_sequence(x) for x in hidden_layers]
 
-        if isinstance(dimensions_hidden, int):
-            dimensions_hidden = torch.tensor([(dimension_in - len_last_block) * int(np.floor(out_per_dimension**(1/2)))
-                                              for _ in range(dimensions_hidden)])
+            # Check that the user-provided degrees are sound.
+            for layer_idx, degrees in enumerate(degrees_hidden):
+                if torch.any(degrees >= max_degree_out):
+                    raise ValueError(f'The {layer_idx}-th hidden layer contain '
+                                     'nodes with degrees that will be ignored '
+                                     'by the output layer.')
 
-        return len(dimensions_hidden), dimensions_hidden, expanded_blocks
-
-    def _check_degrees(self, degrees: torch.Tensor, name: str):
-        """Check that degrees_in/degrees_per_out are configured correctly.
-
-        Parameters
-        ----------
-        degrees : torch.Tensor[int]
-            Array of indices.
-        name : str
-            Name of the array for logging purposes.
-
-        Raises
-        ------
-        ValueError
-            If the checks don't pass.
-        """
-        n_blocks = len(self.blocks)
-
-        err_msg = (" When 'blocks' is not explicitly passed. The number of "
-                   "blocks corresponds to the number of non-conditioning "
-                   "dimensions (dimension_in - len(conditioning_indices))")
-        if len(degrees) != n_blocks:
-            raise ValueError('len('+name+') must be equal to the number '
-                             'of blocks.' + err_msg)
-        if set(degrees.tolist()) != set(range(n_blocks)):
-            raise ValueError(name + ' must contain all degrees between '
-                             '0 and the number of blocks minus 1.' + err_msg)
-
-    def _assign_degrees_in(
-            self,
-            dimension_in: int,
-            conditioning_indices: torch.Tensor,
-            degrees_in: Union[str, torch.Tensor],
-    ):
-        """Assign the degrees of all input nodes to self._degrees_in.
-
-        self._degrees_in[i] is the degree assigned to the i-th input node.
-
-        The self._blocks variable must be assigned before calling this function.
-
-        """
-        # Shortcut for the number of (non-conditioning) blocks.
-        n_blocks = len(self.blocks)
-
-        # Eventually convert "input/reversed" to an array of degrees.
-        degrees_in = degrees_in_from_str(degrees_in, n_blocks)
-
-        # Verify that the parameters are consistent.
-        self._check_degrees(degrees_in, name='degrees_in')
-
-        # Initialize the degrees_in tensor.
-        self._degrees_in = torch.empty(dimension_in, dtype=int)
-
-        # The conditioning features are always assigned the lowest
-        # degree regardless of the value of degrees_in so that
-        # all output features depends on them.
-        self._degrees_in[conditioning_indices] = -1
-
-        # Now assign the degrees to each input node.
-        conditioning_indices_set = set(conditioning_indices.tolist())
-        dof_idx_pointer = 0
-        for block_idx, block_size in enumerate(self.blocks):
-            for block_dof_idx in range(block_size):
-                # Skip to the next non-conditioning block.
-                while dof_idx_pointer in conditioning_indices_set:
-                    dof_idx_pointer += 1
-
-                # Add the degree of this block to this DOF.
-                self._degrees_in[dof_idx_pointer] = degrees_in[block_idx]
-                dof_idx_pointer += 1
-
-    def _assign_degrees_hidden_motif(self, degrees_hidden_motif: Optional[torch.Tensor]):
-        """Assign the degrees of the hidden nodes to self._degrees_hidden_motif.
-
-        self._degrees_hidden_motif[i] is the degree assigned to the i-th hidden node.
-        If len(_degrees_hidden_motif) < n_hidden_nodes, the degrees will be assigned
-        in a round-robin fashion.
-
-        The self.blocks and self.degrees_in attributes must be initialized.
-        """
-        if degrees_hidden_motif is None:
-            # There is no need to add the degree of the last block since
-            # it won't be connected to the output layer anyway.
-            last_degree = len(self.blocks)-1
-            degrees_hidden_motif = self.degrees_in[self.degrees_in != last_degree]
-        elif np.any(degrees_hidden_motif >= len(self.blocks)-1):
-            raise ValueError('degrees_hidden_motif cannot contain degrees '
-                             'greater than the number of blocks minus 1 '
-                             'as they would be ignored by the output layer.')
-        self._degrees_hidden_motif = degrees_hidden_motif
+        return degrees_hidden
 
 
 # =============================================================================
-# INTERNAL-USAGE-ONLY UTILS
+# PRIVATE UTILS
 # =============================================================================
 
-def _generate_block_sizes(
-        n_features: int,
-        blocks: Union[int, torch.Tensor],
-        shorten_last_block: bool = False,
-) -> torch.Tensor:
-    """Divides the features into blocks.
+def _round_robin(x: torch.Tensor, length: int, err_msg: Optional[str] = None) -> torch.Tensor:
+    """Tile x in a round-robin fashion until a tensor of size ``length`` is created.
 
-    In case a constant block size is requested, the function can automatically
-    make the last block smaller if the number of features is not divisible
-    by the block size. The function also raises errors if it detects inconsistencies
-    between the number of features and the blocks parameters.
+    ``x`` is a 1D tensor.
 
-    Parameters
-    ----------
-    n_features : int
-        The number of features to be divided into blocks.
-    blocks : int or torch.Tensor[int]
-        The size of the blocks. If an integer, the features are divided
-        into blocks of equal size (except eventually for the last block).
-        If a list, it is interpreted as the return value, and the function
-        simply checks that the block sizes divide exactly the number of
-        features.
-    shorten_last_block : bool, optional
-        If ``blocks`` is an integer that is not a divisor of the number
-        of features, this option controls whether the last block is
-        shortened (``True``) or an exception is raised (``False``).
-        Default is ``False``.
-
-    Returns
-    -------
-    blocks : torch.Tensor[int]
-        The features can be divided into ``len(blocks)`` blocks, with
-        the i-th block having size ``blocks[i]``.
+    Returns a 1D tensor of shape (length,).
 
     """
-    # If blocks is an int, divide in blocks of equal size.
-    if isinstance(blocks, int):
-        if n_features % blocks != 0 and not shorten_last_block:
-            raise ValueError('The parameter "n_features" must be '
-                             f'divisible by "blocks" ({blocks})')
+    # TODO: torch doesn't support divmod at the moment (see #90820)
+    n_round_robin, n_remaining = divmod(length, len(x))
+    if n_round_robin == 0:
+        if err_msg is None:
+            err_msg = f'Length {length} is smaller than the array (len={len(x)}).'
+        raise ValueError(err_msg)
 
-        div, mod = divmod(n_features, blocks)
-        blocks = [blocks] * div
-        if mod != 0:
-            blocks += [mod]
-        blocks = torch.tensor(blocks)
-    elif n_features != sum(blocks):
-        raise ValueError('The sum of the block sizes must be equal to '
-                         f'"n_features" ({n_features}).')
+    # Create hidden layer degrees by tiling degrees_in.
+    out = torch.tile(x, (n_round_robin,))
+    if n_remaining != 0:
+        out = torch.cat([out, x[:n_remaining]])
 
-    return blocks
+    return out

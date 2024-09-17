@@ -47,12 +47,12 @@ def teardown_module(module):
 @pytest.mark.parametrize('batch_size', [1, 2])
 def test_egnn_dynamics_node_embedding(batch_size):
     """Test the embedding of the atom types and time into the node features."""
-    particle_types = torch.tensor([0, 0, 1])  # Three particles.
+    node_types = torch.tensor([0, 0, 1])  # Three nodes.
     time_feat_dim = 2
     node_feat_dim = 4
 
     egnn_dynamics = EGNNDynamics(
-        particle_types=particle_types,
+        node_types=node_types,
         r_cutoff=6.0,
         time_feat_dim=time_feat_dim,
         node_feat_dim=node_feat_dim,
@@ -61,7 +61,7 @@ def test_egnn_dynamics_node_embedding(batch_size):
     h = egnn_dynamics._create_node_embedding(t=torch.tensor(1.0), batch_size=batch_size)
 
     # The features result from the concatenation of the atom type and time expansions.
-    assert h.shape == (batch_size*len(particle_types), node_feat_dim)
+    assert h.shape == (batch_size*len(node_types), node_feat_dim)
 
     # Identical atom types must have identical embeddings.
     if batch_size == 1:
@@ -83,12 +83,12 @@ def test_egnn_dynamics_node_embedding(batch_size):
 @pytest.mark.parametrize('seed', [0, 5, 10])
 def test_egnn_dynamics_equivariance_property(batch_size, r_cutoff, seed):
     """Test that the output of the EGNN has the correct equivariance properties."""
-    particle_types = torch.tensor([0, 0, 1])
-    n_particles = len(particle_types)
+    node_types = torch.tensor([0, 0, 1])
+    n_nodes = len(node_types)
 
     # Create the equivariant graph.
     egnn_dynamics = EGNNDynamics(
-        particle_types=particle_types,
+        node_types=node_types,
         r_cutoff=r_cutoff,
         time_feat_dim=2,
         node_feat_dim=5,
@@ -101,7 +101,7 @@ def test_egnn_dynamics_equivariance_property(batch_size, r_cutoff, seed):
     generator = torch.Generator()
     generator.manual_seed(seed)
     t = torch.rand(1, generator=generator)
-    x = torch.randn(batch_size, n_particles*3, generator=generator)
+    x = torch.randn(batch_size, n_nodes*3, generator=generator)
 
     # Run the dynamics.
     vel = egnn_dynamics(t, x)
@@ -121,16 +121,16 @@ def test_egnn_dynamics_equivariance_property(batch_size, r_cutoff, seed):
     ref_vel = atom_to_flattened(batchwise_rotate(flattened_to_atom(vel), rotation_matrices))
     assert torch.allclose(ref_vel, vel_rotated)
 
-    # Translate the input with shape (batch_size, n_particles*3).
+    # Translate the input with shape (batch_size, n_nodes*3).
     translation = torch.randn(batch_size, 3)
-    translation = translation.repeat(1, n_particles)
+    translation = translation.repeat(1, n_nodes)
     x_translated = x + translation
 
     # The velocity should be left invariant.
     vel_translated = egnn_dynamics(t, x_translated)
     assert torch.allclose(vel, vel_translated)
 
-    # Velocity is equivariant w.r.t. permuting two particles of the same type.
+    # Velocity is equivariant w.r.t. permuting two nodes of the same type.
     def permute(_x, idx1, idx2):
         _x_permuted = _x.clone()
         _x_permuted[:,idx1*3:(idx1+1)*3] = _x[:,idx2*3:(idx2+1)*3]
@@ -141,7 +141,7 @@ def test_egnn_dynamics_equivariance_property(batch_size, r_cutoff, seed):
     vel_permuted = egnn_dynamics(t, x_permuted)
     assert torch.allclose(permute(vel, 0, 1), vel_permuted)
 
-    # Permuting two particles with different type changes the velocity.
+    # Permuting two nodes with different type changes the velocity.
     x_permuted = permute(x, 0, 2)
     vel_permuted = egnn_dynamics(t, x_permuted)
     assert not torch.allclose(permute(vel, 0, 2), vel_permuted)
@@ -150,12 +150,12 @@ def test_egnn_dynamics_equivariance_property(batch_size, r_cutoff, seed):
 def test_egnn_dynamics_identity():
     """Test that EGNNDynamics can be initialized to output zero velocity."""
     batch_size = 10
-    particle_types = torch.tensor([0, 0, 1])
-    n_particles = len(particle_types)
+    node_types = torch.tensor([0, 0, 1])
+    n_nodes = len(node_types)
 
     # Create the equivariant graph.
     egnn_dynamics = EGNNDynamics(
-        particle_types=particle_types,
+        node_types=node_types,
         r_cutoff=10.0,
         time_feat_dim=2,
         node_feat_dim=5,
@@ -168,7 +168,7 @@ def test_egnn_dynamics_identity():
     generator = torch.Generator()
     generator.manual_seed(0)
     t = torch.rand(1, generator=generator)
-    x = torch.randn(batch_size, n_particles*3, generator=generator)
+    x = torch.randn(batch_size, n_nodes*3, generator=generator)
 
     # Run the dynamics.
     vel = egnn_dynamics(t, x)

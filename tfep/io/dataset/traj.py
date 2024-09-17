@@ -390,7 +390,7 @@ class TrajectorySubset:
 
     The class exposes the same interface as :class:`.TrajectoryDataset`, with
     the exception of :func:`.TrajectoryDataset.subsample`. The reason for this
-    exception is to avoid users to inadvertantly leave an object in an undersired
+    exception is to avoid users to inadvertently leave an object in an undesired
     state since the indices of ``TrajectorySubset`` might be meaningless after
     the subsampling.
 

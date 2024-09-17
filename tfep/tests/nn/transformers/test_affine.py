@@ -16,7 +16,6 @@ Test objects and function in tfep.nn.transformers.affine.
 
 import pytest
 import torch
-import torch.autograd
 
 from tfep.utils.math import batch_autograd_log_abs_det_J
 from tfep.nn.transformers.affine import (
@@ -25,7 +24,7 @@ from tfep.nn.transformers.affine import (
     volume_preserving_shift_transformer,
     volume_preserving_shift_transformer_inverse,
 )
-from ..utils import create_random_input
+from .. import create_random_input
 
 
 # =============================================================================
@@ -50,11 +49,19 @@ def teardown_module(module):
 
 def get_random_input(batch_size, n_features, scale):
     """Create random input and parameters."""
-    n_parameters = 2 if scale else 1
-    x, coefficients = create_random_input(batch_size, n_features, seed=0,
-                                          n_parameters=n_parameters)
-    shift = coefficients[:, 0]
+    n_parameters_per_input = 2 if scale else 1
+    x, coefficients = create_random_input(
+        batch_size,
+        n_features,
+        n_parameters=n_parameters_per_input*n_features,
+        seed=0,
+    )
 
+    # From (batch, n_parameters_per_input*n_features) to (batch, n_parameters_per_input, n_features).
+    coefficients = coefficients.reshape(batch_size, n_parameters_per_input, n_features)
+
+    # Divide features.
+    shift = coefficients[:, 0]
     if scale:
         log_scale = coefficients[:, 1]
         return x, [shift, log_scale]

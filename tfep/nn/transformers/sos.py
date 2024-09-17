@@ -18,12 +18,14 @@ import numpy as np
 import torch
 import torch.autograd
 
+from tfep.nn.transformers.transformer import MAFTransformer
+
 
 # =============================================================================
 # SUM-OF-SQUARES POLYNOMIAL TRANSFORMER
 # =============================================================================
 
-class SOSPolynomialTransformer(torch.nn.Module):
+class SOSPolynomialTransformer(MAFTransformer):
     """Sum-of-squares polynomial transformer module for autoregressive normalizing flows.
 
     This is an implementation of the polynomial transformer proposed in [1].
@@ -37,13 +39,6 @@ class SOSPolynomialTransformer(torch.nn.Module):
     supported as they are the only one with an analytic inverse and sum of
     zeroth degree polynomials (i.e., L=0) are equivalent to affine transformer.
 
-    Parameters
-    ----------
-    n_polynomials : int
-        The functional form of this transformer is a sum of squared polynomials.
-        This is the number of such polynomials, which must be greater than 1.
-        The more polynomials, the greater the number of parameters. Default is 2.
-
     See Also
     --------
     nets.functions.transformer.sos_polynomial_transformer
@@ -55,6 +50,17 @@ class SOSPolynomialTransformer(torch.nn.Module):
 
     """
     def __init__(self, n_polynomials=2):
+        """Constructor.
+
+        Parameters
+        ----------
+        n_polynomials : int
+            The functional form of this transformer is a sum of squared polynomials.
+            This is the number of such polynomials, which must be greater than
+            1. The more polynomials, the greater the number of parameters. Default
+            is 2.
+
+        """
         super().__init__()
         if n_polynomials < 2:
             raise ValueError('n_polynomials must be strictly greater than 1.')
@@ -75,21 +81,39 @@ class SOSPolynomialTransformer(torch.nn.Module):
         """Number of parameters needed by the transformer for each input dimension."""
         return self.parameters_per_polynomial * self.n_polynomials + 1
 
-    def forward(self, x, parameters):
+    def forward(self, x: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Apply the transformation to the input.
 
-        See the documentation of :func:`~tfep.nn.transformers.sos_polynomial_transformer`
-        for details.
+        Parameters
+        ----------
+        x : torch.Tensor
+            Shape ``(batch_size, n_features)``. Input tensor.
+        parameters : torch.Tensor
+            Shape ``(batch_size, (1 + K*L)*n_features)``. The coefficients of the
+            squared polynomials obtained from the conditioner. The coefficients
+            are ordered by polynomial so that ``parameters[:,0]`` is :math:`a_0`
+            followed by :math:`a_{10}, a_{11}, ..., a_{K0}, a_{K1}`.
+
+        Returns
+        -------
+        y : torch.Tensor
+            Shape ``(batch_size, n_vectors*dimension)``. The transformed vectors.
+        log_det_J : torch.Tensor
+            Shape ``(batch_size,)``. The logarithm of the absolute value of the Jacobian
+            determinant ``dy / dx``.
 
         """
+        # From (batch, n_parameters*n_features) to (batch, n_parameters, n_features).
+        batch_size = parameters.shape[0]
+        parameters = parameters.reshape(batch_size, self.n_parameters_per_input, -1)
         return sos_polynomial_transformer(x, parameters)
 
-    def inverse(self, y, parameters):
+    def inverse(self, y: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Currently not implemented."""
         raise NotImplementedError(
             'Inversion of SOS polynomial transformer has not been implemented yet.')
 
-    def get_identity_parameters(self, n_features):
+    def get_identity_parameters(self, n_features: int) -> torch.Tensor:
         """Return the value of the parameters that makes this the identity function.
 
         This can be used to initialize the normalizing flow to perform the identity
@@ -103,14 +127,33 @@ class SOSPolynomialTransformer(torch.nn.Module):
         Returns
         -------
         parameters : torch.Tensor
-            A tensor of shape ``(1+K*L, n_features)`` where ``K`` and ``L`` are
-            the number and degree of the polynomials.
+            Shape ``(1+K*L, n_features)`` where ``K`` and ``L`` are the number
+            and degree of the polynomials.
 
         """
         id_conditioner = torch.zeros(size=(self.n_parameters_per_input, n_features))
         # The sum of the squared linear parameters must be 1.
         id_conditioner[1::self.parameters_per_polynomial].fill_(np.sqrt(1 / self.n_polynomials))
-        return id_conditioner
+        return id_conditioner.flatten()
+
+    def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
+        """Returns the degrees associated to the conditioner's output.
+
+        Parameters
+        ----------
+        degrees_in : torch.Tensor
+            Shape ``(n_transformed_features,)``. The autoregressive degrees
+            associated to the features provided as input to the transformer.
+
+        Returns
+        -------
+        degrees_out : torch.Tensor
+            Shape ``(n_parameters,)``. The autoregressive degrees associated
+            to each output of the conditioner that will be fed to the
+            transformer as parameters.
+
+        """
+        return degrees_in.tile((self.n_parameters_per_input,))
 
 
 # =============================================================================
@@ -139,12 +182,12 @@ class SOSPolynomialTransformerFunc(torch.autograd.Function):
     Parameters
     ----------
     x : torch.Tensor
-        Input tensor x of shape ``(batch_size, n_features)``.
+        Shape ``(batch_size, n_features)``. Input tensor x.
     parameters : torch.Tensor
-        The coefficients of the squared polynomials obtained from the
-        conditioner. Each ``Tensor`` has shape ``(batch_size, 1+K*L, n_features)``.
-        The coefficients are ordered by polynomial so that ``parameters[:,0]``
-        is :math:`a_0` followed by :math:`a_{10}, a_{11}, ..., a_{K0}, a_{K1}`.
+        Shape ``(batch_size, 1+K*L, n_features)``. The coefficients of the squared
+        polynomials obtained from the conditioner. The coefficients are ordered
+        by polynomial so that ``parameters[:,0]`` is :math:`a_0` followed by
+        :math:`a_{10}, a_{11}, ..., a_{K0}, a_{K1}`.
 
     Returns
     -------

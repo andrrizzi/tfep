@@ -65,7 +65,7 @@ class IdentityFlow:
 class MyMAF:
 
     def __init__(self, dimension_in):
-        self.maf = tfep.nn.flows.MAF(dimension_in, initialize_identity=False)
+        self.maf = tfep.nn.flows.MAF(degrees_in=list(range(dimension_in)), initialize_identity=False)
 
     def __call__(self, x):
         return self.maf(x)

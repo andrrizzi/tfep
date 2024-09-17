@@ -14,16 +14,20 @@ Circular spline transformer for autoregressive normalizing flows.
 # GLOBAL IMPORTS
 # =============================================================================
 
+from typing import Optional
+
 import numpy as np
 import torch
 import torch.autograd
+
+from tfep.nn.transformers.transformer import MAFTransformer
 
 
 # =============================================================================
 # NEURAL SPLINE
 # =============================================================================
 
-class NeuralSplineTransformer(torch.nn.Module):
+class NeuralSplineTransformer(MAFTransformer):
     r"""Neural spline transformer module for autoregressive normalizing flows.
 
     This is an implementation of the neural spline transformer proposed
@@ -40,27 +44,6 @@ class NeuralSplineTransformer(torch.nn.Module):
     where :math:`x_0` correspond to the ``x0`` parameter for that DOF, :math:`p`
     is the period, and :math:`\phi` is the shift.
 
-    Parameters
-    ----------
-    x0 : torch.Tensor
-        Shape ``(n_features,)``. Position of the first of the K+1 knots determining
-        the positions of the K bins for the input.
-    xf : torch.Tensor
-        Shape ``(n_features,)``. Position of the last of the K+1 knots determining
-        the positions of the K bins for the input.
-    n_bins : int
-        Total number of bins (i.e., K).
-    y0 : torch.Tensor, optional
-        Shape ``(n_features,)``. Position of the first of the K+1 knots determining
-        the positions of the K bins for the output. If not passed, ``x0`` is taken.
-    yf : torch.Tensor, optional
-        Shape ``(n_features,)``. Position of the last of the K+1 knots determining
-        the positions of the K bins for the output. If not passed, ``xf`` is taken.
-    circular : bool or torch.Tensor, optional
-        If ``True``, all degrees of freedom are treated as periodic. If a list of
-        integers, only the features at these indices are periodic. For the periodic
-        DOFs, ``y0`` and ``yf`` must correspond to ``x0`` and ``xf``.
-
     See Also
     --------
     nets.functions.transformer.neural_spline_transformer
@@ -73,7 +56,42 @@ class NeuralSplineTransformer(torch.nn.Module):
         arXiv:2002.02428. 2020 Feb 6.
 
     """
-    def __init__(self, x0, xf, n_bins, y0=None, yf=None, circular=False):
+    def __init__(
+            self,
+            x0: torch.Tensor,
+            xf: torch.Tensor,
+            n_bins: int,
+            y0: Optional[torch.Tensor] = None,
+            yf: Optional[torch.Tensor] = None,
+            circular: bool = False
+    ):
+        """Constructor.
+
+        Parameters
+        ----------
+        x0 : torch.Tensor
+            Shape ``(n_features,)``. Position of the first of the K+1 knots
+            determining the positions of the K bins for the input.
+        xf : torch.Tensor
+            Shape ``(n_features,)``. Position of the last of the K+1 knots
+            determining the positions of the K bins for the input.
+        n_bins : int
+            Total number of bins (i.e., K).
+        y0 : torch.Tensor, optional
+            Shape ``(n_features,)``. Position of the first of the K+1 knots
+            determining the positions of the K bins for the output. If not passed,
+            ``x0`` is taken.
+        yf : torch.Tensor, optional
+            Shape ``(n_features,)``. Position of the last of the K+1 knots
+            determining the positions of the K bins for the output. If not
+            passed, ``xf`` is taken.
+        circular : bool or torch.Tensor, optional
+            If ``True``, all degrees of freedom are treated as periodic. If a
+            list of integers, only the features at these indices are periodic.
+            For the periodic DOFs, ``y0`` and ``yf`` must correspond to ``x0``
+            and ``xf``.
+
+        """
         super().__init__()
 
         # Handle mutable default arguments y_0 and y_final.
@@ -103,7 +121,7 @@ class NeuralSplineTransformer(torch.nn.Module):
         # for periodic DOFs.
         return 3*self.n_bins + 1
 
-    def forward(self, x, parameters):
+    def forward(self, x: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Apply the transformation to the input.
 
         Parameters
@@ -111,15 +129,14 @@ class NeuralSplineTransformer(torch.nn.Module):
         x : torch.Tensor
             Shape ``(batch_size, n_features)``. Input features.
         parameters : torch.Tensor
-            Shape: ``(batch_size, 3*n_bins+1, n_features)``. Parameters of the
-            transformation, where ``parameters[b, 0:n_bins, i]`` determine the
-            widths, ``parameters[b, n_bins:2*n_bins, i]`` determine the heights,
-            and ``parameters[b, 2*n_bins:3*n_bins, i]`` determine the slopes of
-            the bins for feature ``x[b, i]``. ``parameters[b, 3*n_bins:, i]``
-            instead depend on wheter the i-th feature is periodic. If not periodic,
-            they are interpreted the slopes of the last knot. Otherwise, the slope
-            of the last knot is set equal to the first and the parameters are
-            used as shifts.
+            Shape: ``(batch_size, 3*n_bins+1*n_features)``. Parameters of the
+            transformation, where ``parameters[b, i+j*n_features]`` with ``0<=j<n_bins``
+            determine the ``j``-th width, ``n_bins<=j<2*n_bins`` the ``j``-th height,
+            and ``2*n_bins<=j<3*n_bins`` the ``j``-th slop of the bins for feature
+            ``x[b, i]``. For ``j = 3*n_bins`` instead depend on whether the i-th
+            feature is periodic. If not periodic, they are interpreted the slopes
+            of the last knot. Otherwise, the slope of the last knot is set equal
+            to the first and the parameters are used as shifts.
 
             As in the original paper, the passed widths and heights go through
             a ``softmax`` function and the slopes through a ``softplus`` function
@@ -130,6 +147,9 @@ class NeuralSplineTransformer(torch.nn.Module):
         -------
         y : torch.Tensor
             Shape ``(batch_size, n_features)``. Output.
+        log_det_J : torch.Tensor
+            Shape ``(batch_size,)``. The logarithm of the absolute value of the
+            Jacobian determinant ``dy / dx``.
 
         """
         # Divide the parameters in widths, heights and slopes (and shifts).
@@ -145,7 +165,7 @@ class NeuralSplineTransformer(torch.nn.Module):
         # Run rational quadratic spline.
         return neural_spline_transformer(x, self.x0, self._y0, widths, heights, slopes)
 
-    def inverse(self, y, parameters):
+    def inverse(self, y: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Inverse function.
 
         See ``forward`` for the parameters description.
@@ -164,7 +184,7 @@ class NeuralSplineTransformer(torch.nn.Module):
 
         return x, log_det_J
 
-    def get_identity_parameters(self, n_features):
+    def get_identity_parameters(self, n_features: int) -> torch.Tensor:
         """Return the value of the parameters that makes this the identity function.
 
         Note that if ``x0 != y0`` or ``y0 != y1`` it is
@@ -183,7 +203,7 @@ class NeuralSplineTransformer(torch.nn.Module):
         Returns
         -------
         parameters : torch.Tensor
-            A tensor of shape ``(K, n_features)``  where ``K`` equals ``3*n_bins``
+            A tensor of shape ``(K*n_features)``  where ``K`` equals ``3*n_bins``
             if circular or ``3*n_bins+1`` if not.
 
         """
@@ -207,9 +227,32 @@ class NeuralSplineTransformer(torch.nn.Module):
         elif self._circular is not False:
             id_conditioner[3*self.n_bins, self._circular] = 0
 
-        return id_conditioner
+        return id_conditioner.reshape(-1)
+
+    def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
+        """Returns the degrees associated to the conditioner's output.
+
+        Parameters
+        ----------
+        degrees_in : torch.Tensor
+            Shape ``(n_transformed_features,)``. The autoregressive degrees
+            associated to the features provided as input to the transformer.
+
+        Returns
+        -------
+        degrees_out : torch.Tensor
+            Shape ``(n_parameters,)``. The autoregressive degrees associated
+            to each output of the conditioner that will be fed to the
+            transformer as parameters.
+
+        """
+        return degrees_in.tile((self.n_parameters_per_input,))
 
     def _get_parameters(self, parameters):
+        # From (batch_size, 3*n_bins+1*n_features) to (batch_size, 3*n_bins+1, n_features).
+        batch_size = parameters.shape[0]
+        parameters = parameters.reshape(batch_size, self.n_parameters_per_input, -1)
+
         # Handle slopes and shifts for periodic DOFs.
         slopes = parameters[:, 2*self.n_bins:]
         if self._circular is False:

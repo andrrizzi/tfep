@@ -22,7 +22,7 @@ import torch.autograd
 from tfep.nn.transformers.affine import AffineTransformer
 from tfep.nn.transformers.sos import sos_polynomial_transformer, SOSPolynomialTransformer
 from tfep.utils.math import batch_autograd_log_abs_det_J
-from ..utils import create_random_input
+from .. import create_random_input
 
 
 # =============================================================================
@@ -78,8 +78,13 @@ def reference_sos_polynomial_transformer(x, coefficients):
 @pytest.mark.parametrize('n_polynomials', [2, 3, 5])
 def test_sos_polynomial_transformer_reference(batch_size, n_features, n_polynomials):
     """Compare PyTorch and reference implementation of sum-of-squares transformer."""
-    x, coefficients = create_random_input(batch_size, n_features,
-                                          n_parameters=1+2*n_polynomials, seed=0)
+    x, coefficients = create_random_input(
+        batch_size,
+        n_features,
+        n_parameters=(1+2*n_polynomials) * n_features,
+        seed=0,
+    )
+    coefficients = coefficients.reshape(batch_size, -1, n_features)
 
     ref_y, ref_log_det_J = reference_sos_polynomial_transformer(x, coefficients)
     torch_y, torch_log_det_J = sos_polynomial_transformer(x, coefficients)
@@ -97,8 +102,14 @@ def test_sos_polynomial_transformer_reference(batch_size, n_features, n_polynomi
 @pytest.mark.parametrize('n_polynomials', [2, 3, 5])
 def test_sos_polynomial_transformer_gradcheck(batch_size, n_features, n_polynomials):
     """Run autograd.gradcheck on the SOS polynomial transformer."""
-    x, coefficients = create_random_input(batch_size, n_features, dtype=torch.double,
-                                          n_parameters=1+2*n_polynomials, seed=0)
+    x, coefficients = create_random_input(
+        batch_size,
+        n_features,
+        n_parameters=(1+2*n_polynomials)*n_features,
+        dtype=torch.double,
+        seed=0,
+    )
+    coefficients = coefficients.reshape(batch_size, -1, n_features)
 
     # With a None mask, the module should fall back to the native implementation.
     result = torch.autograd.gradcheck(
@@ -119,7 +130,13 @@ def test_sos_affine_transformer_equivalence(n_polynomials):
     generator.manual_seed(0)
 
     # Create random input.
-    x, affine_parameters = create_random_input(batch_size, dimension, n_parameters=2, dtype=torch.double)
+    x, affine_parameters = create_random_input(
+        batch_size,
+        dimension,
+        n_parameters=2 * dimension,
+        dtype=torch.double,
+    )
+    affine_parameters = affine_parameters.reshape(batch_size, -1, dimension)
 
     # Create coefficients for an SOS polynomial that translate into an affine transformer.
     sos_coefficients = torch.zeros(
@@ -134,7 +151,8 @@ def test_sos_affine_transformer_equivalence(n_polynomials):
 
     # Check that they are equivalent.
     affine_y, affine_log_det_J = AffineTransformer()(x, affine_parameters)
-    sos_y, sos_log_det_J = SOSPolynomialTransformer(n_polynomials=n_polynomials)(x, sos_coefficients)
+    sos_transformer = SOSPolynomialTransformer(n_polynomials=n_polynomials)
+    sos_y, sos_log_det_J = sos_transformer(x, sos_coefficients.reshape(batch_size, -1))
 
     assert torch.allclose(affine_y, sos_y)
     assert torch.allclose(affine_log_det_J, sos_log_det_J)

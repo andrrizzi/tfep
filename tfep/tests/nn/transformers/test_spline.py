@@ -24,7 +24,7 @@ from tfep.nn.transformers.spline import (
     neural_spline_transformer, neural_spline_transformer_inverse,
 )
 from tfep.utils.math import batch_autograd_log_abs_det_J
-from ..utils import create_random_input
+from .. import create_random_input
 
 
 # =============================================================================
@@ -120,9 +120,14 @@ def test_neural_spline_transformer_reference(batch_size, n_features, x0, y0, n_b
     yf = y0 + xf - x0
 
     # Create widths, heights, and slopes of the bins.
-    x, parameters = create_random_input(batch_size, n_features,
-                                        n_parameters=3*n_bins+1, seed=0,
-                                        x_func=torch.rand)
+    x, parameters = create_random_input(
+        batch_size,
+        n_features,
+        n_parameters=(3*n_bins+1) * n_features,
+        seed=0,
+        x_func=torch.rand,
+    )
+    parameters = parameters.reshape(batch_size, -1, n_features)
 
     widths = torch.nn.functional.softmax(parameters[:, :n_bins], dim=1) * (xf - x0)
     heights = torch.nn.functional.softmax(parameters[:, n_bins:2*n_bins], dim=1) * (yf - y0)
@@ -191,7 +196,7 @@ def test_circular_spline_transformer_periodic(circular):
     ])
 
     # Create random parameters.
-    parameters = torch.randn((batch_size, 3*n_bins+1, n_features))
+    parameters = torch.randn((batch_size, (3*n_bins+1) * n_features))
 
     # Create and run the transformer.
     transformer = NeuralSplineTransformer(x0=x0, xf=xf, n_bins=n_bins, circular=circular)
@@ -211,8 +216,8 @@ def test_circular_spline_transformer_periodic(circular):
     assert torch.allclose(log_det_J+log_det_J_inv, torch.zeros_like(log_det_J))
 
     # If the shifts are 0.0, the boundaries must be mapped to themselves.
-    parameters[:, 3*n_bins, circular_indices] = 0.0
-    y, log_det_J = transformer(x, parameters)
+    parameters.reshape(batch_size, -1, n_features)[:, 3*n_bins, circular_indices] = 0.0
+    y, log_det_J = transformer(x, parameters.reshape(batch_size, -1))
     assert torch.allclose(x[:2], y[:2], atol=10*epsilon)
 
 
@@ -240,7 +245,7 @@ def test_identity_neural_spline(circular):
     parameters = transformer.get_identity_parameters(n_features)
     # We need to clone to actually allocate the memory or sliced
     # assignment operations on parameters won't work.
-    parameters = parameters.unsqueeze(0).expand(batch_size, -1, -1).clone()
+    parameters = parameters.unsqueeze(0).expand(batch_size, -1).clone()
 
     # Check that the parameters give the identity functions.
     y, log_det_J = transformer(x, parameters)

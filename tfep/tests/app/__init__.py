@@ -28,9 +28,23 @@ def check_atom_groups(
         expected_fixed: Optional[List[int]],
         expected_mapped_fixed_removed: Optional[List[int]],
         expected_conditioning_fixed_removed: Optional[List[int]],
+        is_deterministic_flow: bool = True,
         **kwargs,
 ):
-    """Test selection of mapped, conditioning, fixed, and reference frame atoms."""
+    """Test selection of mapped, conditioning, fixed, and reference frame atoms.
+
+    This also tests:
+    - That a forward-inverse round trip yields the original input.
+    - That the conditioning atoms are not changed but affect the output.
+    - That the fixed atoms are not changed and do not affect the output.
+
+    Parameters
+    ----------
+    is_deterministic_flow : bool, optional
+        If ``False``, this will not check that a forward-inverse round trip yields
+        the original input.
+
+    """
     import lightning
     import numpy as np
     import pytest
@@ -49,19 +63,17 @@ def check_atom_groups(
                 if expected_conditioning is None:
                     pytest.skip('fixing the translational DOFs require the presence of a conditioning atom')
                 origin_atom = np.random.choice(expected_conditioning)
-            else:
-                origin_atom = None
+                kwargs['origin_atom'] = origin_atom
 
             # Select axis and plane atoms among the remaining atoms.
             if fix_orientation:
                 remaining = []
                 [remaining.extend(l) for l in (expected_mapped, expected_conditioning) if l is not None]
-                remaining = sorted([i for i in remaining if i != origin_atom])
+                remaining = sorted([i for i in remaining if i != kwargs.get('origin_atom', None)])
                 if len(remaining) < 2:
                     pytest.skip('fixing the orientation of the reference frame requires at least 2 mapped or conditioning atoms.')
                 axes_atoms = np.random.choice(remaining, size=2, replace=False).tolist()
-            else:
-                axes_atoms = None
+                kwargs['axes_atoms'] = axes_atoms
 
             with tempfile.TemporaryDirectory() as tmp_dir_path:
                 with temporary_cd(tmp_dir_path):
@@ -69,8 +81,6 @@ def check_atom_groups(
                     tfep_map = tfep_map_cls(
                         mapped_atoms=mapped_atoms,
                         conditioning_atoms=conditioning_atoms,
-                        origin_atom=origin_atom,
-                        axes_atoms=axes_atoms,
                         **kwargs,
                     )
 
@@ -115,9 +125,12 @@ def check_atom_groups(
     x.requires_grad = True
 
     # Test forward and inverse.
-    y, log_det_J = tfep_map({'positions': x})
-    x_inv, log_det_J_inv = tfep_map.inverse({'positions': y})
-    assert torch.allclose(x, x_inv)
+    result = tfep_map({'positions': x})
+    y, log_det_J = result['positions'], result['log_det_J']
+    result = tfep_map.inverse({'positions': y})
+    if is_deterministic_flow:
+        x_inv, log_det_J_inv = result['positions'], result['log_det_J']
+        assert torch.allclose(x, x_inv)
 
     # Compute gradients w.r.t. the input.
     loss = y.sum()

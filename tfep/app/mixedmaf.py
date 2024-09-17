@@ -22,6 +22,8 @@ import numpy as np
 import pint
 import torch
 
+import tfep.nn.conditioners.made
+import tfep.nn.embeddings
 import tfep.nn.flows
 from tfep.app.base import TFEPMapBase
 from tfep.utils.geometry import (
@@ -296,9 +298,10 @@ class MixedMAFMap(TFEPMapBase):
         maf_conditioning_dof_indices = cartesian_to_mixed_flow.get_maf_conditioning_dof_indices(
             conditioning_atom_indices=conditioning_atom_indices)
 
-        # Determine the periodic degrees of freedom (i.e., angles and torsions)
-        # to pass to the MAF layer.
-        maf_periodic_dof_indices = cartesian_to_mixed_flow.get_maf_periodic_dof_indices()
+        # Determine the angles degrees of freedom (i.e., angles and torsions)
+        # to pass to the MAF layer. Only torsions are periodic as angles are
+        # in [0, pi].
+        maf_angles_dof_indices, maf_periodic_dof_indices = cartesian_to_mixed_flow.get_maf_angles_dof_indices()
 
         # Create the transformer.
         transformer = self._get_transformer(
@@ -306,6 +309,7 @@ class MixedMAFMap(TFEPMapBase):
             min_dof_vals=min_dof_vals,
             max_dof_vals=max_dof_vals,
             maf_conditioning_dof_indices=maf_conditioning_dof_indices,
+            maf_angles_dof_indices=maf_angles_dof_indices,
             maf_periodic_dof_indices=maf_periodic_dof_indices,
             are_axes_atoms_bonded=are_axes_atoms_bonded,
         )
@@ -314,13 +318,18 @@ class MixedMAFMap(TFEPMapBase):
         maf_layers = []
         for layer_idx in range(self.hparams.n_maf_layers):
             maf_layers.append(tfep.nn.flows.MAF(
-                dimension_in=self.n_nonfixed_dofs,
-                conditioning_indices=maf_conditioning_dof_indices,
-                periodic_indices=maf_periodic_dof_indices,
-                # The periodic limits are 0 to 1 if normalize_angles=True in _CartesianToMixedFlow
-                periodic_limits=[0, 1],
-                degrees_in='input' if (layer_idx%2 == 0) else 'reversed',
+                degrees_in=tfep.nn.conditioners.made.generate_degrees(
+                    n_features=self.n_nonfixed_dofs,
+                    conditioning_indices=maf_conditioning_dof_indices,
+                    order='ascending' if (layer_idx%2 == 0) else 'descending',
+                ),
                 transformer=transformer,
+                embedding=tfep.nn.embeddings.PeriodicEmbedding(
+                    n_features_in=self.n_nonfixed_dofs,
+                    periodic_indices=maf_periodic_dof_indices,
+                    # The periodic limits are 0 to 1 if normalize_angles=True in _CartesianToMixedFlow
+                    limits=[0, 1],
+                ),
                 **self._kwargs,
             ))
         flow = tfep.nn.flows.SequentialFlow(*maf_layers)
@@ -690,7 +699,7 @@ class MixedMAFMap(TFEPMapBase):
         )
         for batch_data in data_loader:
             # Go through the partial flow.
-            batch_positions, _ = self(batch_data)
+            batch_positions = self(batch_data)['positions']
 
             # Test collinearity for the Z-matrix for these samples.
             batch_atom_positions = flattened_to_atom(batch_positions)
@@ -729,6 +738,7 @@ class MixedMAFMap(TFEPMapBase):
             min_dof_vals: torch.Tensor,
             max_dof_vals: torch.Tensor,
             maf_conditioning_dof_indices: Optional[torch.Tensor],
+            maf_angles_dof_indices: torch.Tensor,
             maf_periodic_dof_indices: torch.Tensor,
             are_axes_atoms_bonded: Optional[Tuple[bool]],
     ) -> torch.nn.Module:
@@ -745,9 +755,12 @@ class MixedMAFMap(TFEPMapBase):
         maf_conditioning_dof_indices : torch.Tensor or None
             The indices of the conditioning DOFs after the conversion to mixed
             coordinates.
+        maf_angles_dof_indices : torch.Tensor
+            The indices of all the angles (i.e., bond angles and torsions) DOFs
+            after the conversion to mixed coordinates.
         maf_periodic_dof_indices : torch.Tensor
-            The indices of the periodic DOFs after the conversion to mixed
-            coordinates.
+            The indices of the periodic DOFs (i.e., torsions since bond angles
+            are defined in [0, pi]) after the conversion to mixed coordinates.
         are_axes_atoms_bonded : Tuple[bool] or None
             Whether the first and second axes atoms are bonded to the origin atom..
 
@@ -762,8 +775,8 @@ class MixedMAFMap(TFEPMapBase):
 
         # Set the limits for the angles.
         assert cartesian_to_mixed_flow._rel_ic.normalize_angles
-        x0[maf_periodic_dof_indices] = 0.0
-        xf[maf_periodic_dof_indices] = 1.0
+        x0[maf_angles_dof_indices] = 0.0
+        xf[maf_angles_dof_indices] = 1.0
 
         # Set the limits for the bonds. The distances DOFs of the axes atoms
         # might not be bonds so we treat them separately.
@@ -795,7 +808,8 @@ class MixedMAFMap(TFEPMapBase):
 
             # The indices of circular refer to the indices of x0/xf. We need to
             # shift them to account for the removal of the conditioning DOFs.
-            maf_periodic_dof_indices = maf_periodic_dof_indices - torch.searchsorted(maf_conditioning_dof_indices, maf_periodic_dof_indices)
+            maf_periodic_dof_indices = maf_periodic_dof_indices - torch.searchsorted(
+                maf_conditioning_dof_indices, maf_periodic_dof_indices)
 
         return tfep.nn.transformers.NeuralSplineTransformer(
             x0=x0.detach(),
@@ -1054,19 +1068,26 @@ class _CartesianToMixedFlow(torch.nn.Module):
 
         return maf_conditioning_dof_indices
 
-    def get_maf_periodic_dof_indices(self) -> torch.Tensor:
-        """Return the indices of the periodic DOF (angles and torsions) after the conversion from Cartesian to mixed."""
+    def get_maf_angles_dof_indices(self) -> Tuple[torch.Tensor]:
+        """
+        Return the indices of all angles (i.e., bond angles and torsions) and
+        periodic angles (i.e., only torsions since bond angles are in [0, pi])
+        after the conversion from Cartesian to mixed.
+        """
         # Except for the single angle defining the reference frame atoms, all
         # angles and torsions are placed right after the bonds.
-        maf_periodic_dof_indices = list(range(self.n_ic_atoms, 3*self.n_ic_atoms))
+        maf_angles_dof_indices = list(range(self.n_ic_atoms, 3*self.n_ic_atoms))
+
+        # Only torsions are periodic since bond angles are defined in [0, pi].
+        maf_periodic_dof_indices = list(range(2*self.n_ic_atoms, 3*self.n_ic_atoms))
 
         # Check if there are axes atoms, whose DOFs are placed between the
         # internal and Cartesian coordinates after the conversion.
         if self.has_axes_atoms:
             # The axes atoms are defined by two distances and 1 angle.
-            maf_periodic_dof_indices.append(3*self.n_ic_atoms+2)
+            maf_angles_dof_indices.append(3*self.n_ic_atoms+2)
 
-        return torch.tensor(maf_periodic_dof_indices)
+        return torch.tensor(maf_angles_dof_indices), torch.tensor(maf_periodic_dof_indices)
 
     def get_maf_distance_dof_indices(self, return_bonds: bool = True, return_axes: bool = True) -> torch.Tensor:
         """Return the indices of the bond DOFs after the conversion from Cartesian to mixed.
