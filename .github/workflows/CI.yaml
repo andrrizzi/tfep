@@ -49,6 +49,9 @@ jobs:
 
       # More info on options: https://github.com/mamba-org/setup-micromamba
       - uses: mamba-org/setup-micromamba@v1
+        env:
+          # Without this I get "Download error (28) Timeout was reached"
+          MAMBA_NO_LOW_SPEED_LIMIT: 1
         with:
           # conda-forge is the default channel so we don't specify channels
           environment-file: devtools/conda-envs/test_env.yaml
