@@ -153,12 +153,13 @@ def test_cartesian_to_mixed_flow_get_maf_conditioning_dof_indices(origin, axes, 
 
 
 @pytest.mark.parametrize('axes', [None, [1, 0], [3, 5]])
-def test_cartesian_to_mixed_flow_get_maf_periodic_dof_indices(axes):
-    """Test method _CartesianToMixedFlow.get_maf_periodic_dof_indices()."""
-    expected = torch.tensor([2, 3, 4, 5])
+def test_cartesian_to_mixed_flow_get_maf_angles_dof_indices(axes):
+    """Test method _CartesianToMixedFlow.get_maf_angles_dof_indices()."""
+    expected_angles = torch.tensor([2, 3, 4, 5])
+    expected_periodic = torch.tensor([4, 5])
     if axes is not None:
         axes = torch.tensor(axes)
-        expected = torch.cat([expected, torch.tensor([8])])
+        expected_angles = torch.cat([expected_angles, torch.tensor([8])])
 
     flow = _CartesianToMixedFlow(
         flow=None,
@@ -167,9 +168,10 @@ def test_cartesian_to_mixed_flow_get_maf_periodic_dof_indices(axes):
         origin_atom_idx=None,
         axes_atoms_indices=axes,
     )
-    periodic_indices = flow.get_maf_periodic_dof_indices()
+    angles_indices, periodic_indices = flow.get_maf_angles_dof_indices()
 
-    assert torch.all(periodic_indices == expected)
+    assert torch.all(angles_indices == expected_angles)
+    assert torch.all(periodic_indices == expected_periodic)
 
 
 @pytest.mark.parametrize('axes', [None, torch.tensor([1, 0])])
@@ -216,9 +218,9 @@ def test_cartesian_to_mixed_flow_conversion(origin, axes):
     assert torch.all(y[:, distance_dofs] >= 0)
 
     # Periodic indices are normalized angles within 0 and 1.
-    periodic_dofs = flow.get_maf_periodic_dof_indices()
-    assert torch.all(y[:, periodic_dofs] >= 0)
-    assert torch.all(y[:, periodic_dofs] <= 1)
+    angles_dofs, periodic_dofs = flow.get_maf_angles_dof_indices()
+    assert torch.all(y[:, angles_dofs] >= 0)
+    assert torch.all(y[:, angles_dofs] <= 1)
 
     # With origin and/or axes atoms the total number of DOFs is reduced.
     expected_n_dofs = x.shape[1]
@@ -491,9 +493,9 @@ def test_mixed_maf_flow_get_transformer(origin_atom, axes_atoms, are_bonded):
     assert torch.allclose(transformer.x0[n_ic:3*n_ic], torch.zeros(2*n_ic))
     assert torch.allclose(transformer.xf[n_ic:3*n_ic], torch.ones(2*n_ic))
 
-    # Angles and torsions must be flagged as circular. Wait to test them all
-    # in case there are axes atom.
-    expected_circular_indices = list(range(n_ic, 3*n_ic))
+    # Torsions must be flagged as circular (but not bond angles which are in [0, pi]).
+    expected_circular_indices = list(range(2*n_ic, 3*n_ic))
+    assert torch.all(transformer._circular == torch.tensor(expected_circular_indices))
 
     # Check if there are the axes atoms DOFs after the internal coordinates.
     if axes_atoms is not None:
@@ -520,7 +522,6 @@ def test_mixed_maf_flow_get_transformer(origin_atom, axes_atoms, are_bonded):
         idx = 3 * n_ic + 2
         assert np.isclose(transformer.x0[idx].tolist(), 0.0)
         assert np.isclose(transformer.xf[idx].tolist(), 1.0)
-        expected_circular_indices.append(idx)
 
         # First index treated as a Cartesian coordinate.
         start_cartesian_idx = idx + 1
@@ -536,9 +537,6 @@ def test_mixed_maf_flow_get_transformer(origin_atom, axes_atoms, are_bonded):
     expected_diff = 2 * max_cartesian_displacement
     diff = transformer.xf[start_cartesian_idx:] - transformer.x0[start_cartesian_idx:]
     assert torch.all(torch.isclose(diff, torch.tensor(expected_diff)))
-
-    # Test DOFs flagged as circular.
-    assert torch.all(transformer._circular == torch.tensor(expected_circular_indices))
 
 
 def test_error_empty_z_matrix():
