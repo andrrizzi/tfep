@@ -289,17 +289,7 @@ class MixedMAFMap(TFEPMapBase):
         # (i.e., no collinear atoms determining angles) and compute the min/max values
         # of the DOFs (after going through _CartesianToMixedFlow) to configure the
         # neural splines correctly.
-        # TODO: REMOVE ME
-        import os
-        cache_dir_path = os.path.realpath(os.path.join(self._tfep_logger_dir_path, '..', 'cache'))
-        if os.path.isfile(os.path.join(cache_dir_path, 'cached_min_vals.pt')):
-            min_dof_vals = torch.load(os.path.join(cache_dir_path, 'cached_min_vals.pt'))
-            max_dof_vals = torch.load(os.path.join(cache_dir_path, 'cached_max_vals.pt'))
-        else:
-            min_dof_vals, max_dof_vals = self._analyze_dataset(z_matrix, cartesian_to_mixed_flow)
-            os.makedirs(cache_dir_path)
-            torch.save(min_dof_vals, os.path.join(cache_dir_path, 'cached_min_vals.pt'))
-            torch.save(max_dof_vals, os.path.join(cache_dir_path, 'cached_max_vals.pt'))
+        min_dof_vals, max_dof_vals = self._analyze_dataset(z_matrix, cartesian_to_mixed_flow)
 
         # Determine the conditioning DOFs after going through _CartesianToMixedFlow.
         # conditioning_atom_indices must have the indices after the fixed atoms are removed.
