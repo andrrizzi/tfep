@@ -13,6 +13,7 @@ from tfep.nn.transformers.affine import (
     AffineTransformer, affine_transformer, affine_transformer_inverse,
     VolumePreservingShiftTransformer, volume_preserving_shift_transformer, volume_preserving_shift_transformer_inverse,
 )
+from tfep.nn.transformers.mixed import MixedTransformer
 from tfep.nn.transformers.moebius import (
     MoebiusTransformer, moebius_transformer)
 from tfep.nn.transformers.sos import (
