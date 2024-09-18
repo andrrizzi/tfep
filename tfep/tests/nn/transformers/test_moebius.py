@@ -17,7 +17,6 @@ Test objects and function in tfep.nn.transformers.moebius.
 import numpy as np
 import pytest
 import torch
-import torch.autograd
 
 from tfep.nn.transformers.moebius import MoebiusTransformer, SymmetrizedMoebiusTransformer
 from .. import create_random_input
