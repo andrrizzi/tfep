@@ -59,7 +59,7 @@ class MixedTransformer(MAFTransformer):
 
         # Save the indices into buffers.
         for idx, ind in enumerate(indices):
-            self.register_buffer(f'indices{idx}', ensure_tensor_sequence(ind))
+            self.register_buffer(f'_indices{idx}', ensure_tensor_sequence(ind))
 
         # Cache the starting and ending indices to split the parameters.
         par_lengths = [len(transformer.get_identity_parameters(len(ind)))
@@ -162,7 +162,7 @@ class MixedTransformer(MAFTransformer):
         """Construct a list of buffers."""
         indices = []
         for idx, transformer in enumerate(self._transformers):
-            indices.append(getattr(self, f'indices{idx}'))
+            indices.append(getattr(self, f'_indices{idx}'))
         return indices
 
     def _run(self, x, parameters, inverse):
@@ -176,7 +176,7 @@ class MixedTransformer(MAFTransformer):
 
         # Run transformers.
         for idx, (transformer, par) in enumerate(zip(self._transformers, parameters)):
-            indices = getattr(self, f'indices{idx}')
+            indices = getattr(self, f'_indices{idx}')
             if inverse:
                 y[:, indices], log_det_J = transformer.inverse(x[:, indices], par)
             else:
