@@ -19,10 +19,7 @@ import pytest
 import torch
 import torch.autograd
 
-from tfep.nn.transformers.spline import (
-    NeuralSplineTransformer,
-    neural_spline_transformer, neural_spline_transformer_inverse,
-)
+from tfep.nn.transformers.spline import NeuralSplineTransformer
 from tfep.utils.math import batch_autograd_log_abs_det_J
 from .. import create_random_input
 
@@ -48,7 +45,7 @@ def teardown_module(module):
 # =============================================================================
 
 def reference_neural_spline(x, x0, y0, widths, heights, slopes):
-    """Reference implementation of neural_spline_transformer for testing."""
+    """A slow but simple implementation of neural_spline_transformer for testing."""
     x = x.detach().cpu().numpy()
     x0 = x0.detach().cpu().numpy()
     y0 = y0.detach().cpu().numpy()
@@ -138,8 +135,10 @@ def test_neural_spline_transformer_reference(batch_size, n_features, x0, y0, n_b
     x = x.detach() * (xf - x0) + x0
     x.requires_grad = True
 
+    # Run the transformer.
+    transformer = NeuralSplineTransformer(x0, xf, n_bins, y0, yf)
+    torch_y, torch_log_det_J = transformer(x, parameters)
     ref_y, ref_log_det_J = reference_neural_spline(x, x0, y0, widths, heights, slopes)
-    torch_y, torch_log_det_J = neural_spline_transformer(x, x0, y0, widths, heights, slopes)
 
     assert np.allclose(ref_y, torch_y.detach().cpu().numpy())
     assert np.allclose(ref_log_det_J, torch_log_det_J.detach().cpu().numpy())
@@ -155,7 +154,7 @@ def test_neural_spline_transformer_reference(batch_size, n_features, x0, y0, n_b
     # Check that inverting returns the original input.
     y = torch_y.detach()
     y.requires_grad = True
-    x_inv, log_det_J_inv = neural_spline_transformer_inverse(y, x0, y0, widths, heights, slopes)
+    x_inv, log_det_J_inv = transformer.inverse(y, parameters)
     assert torch.allclose(x, x_inv)
     assert torch.allclose(torch_log_det_J+log_det_J_inv, torch.zeros_like(torch_log_det_J))
 
