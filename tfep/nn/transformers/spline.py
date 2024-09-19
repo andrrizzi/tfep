@@ -129,14 +129,16 @@ class NeuralSplineTransformer(MAFTransformer):
         x : torch.Tensor
             Shape ``(batch_size, n_features)``. Input features.
         parameters : torch.Tensor
-            Shape: ``(batch_size, 3*n_bins+1*n_features)``. Parameters of the
-            transformation, where ``parameters[b, i+j*n_features]`` with ``0<=j<n_bins``
-            determine the ``j``-th width, ``n_bins<=j<2*n_bins`` the ``j``-th height,
-            and ``2*n_bins<=j<3*n_bins`` the ``j``-th slop of the bins for feature
-            ``x[b, i]``. For ``j = 3*n_bins`` instead depend on whether the i-th
-            feature is periodic. If not periodic, they are interpreted the slopes
-            of the last knot. Otherwise, the slope of the last knot is set equal
-            to the first and the parameters are used as shifts.
+            Shape: ``(batch_size, (3*n_bins+1)*n_features)``. The order of the
+            parameters should allow reshaping the array to
+            ``(batch_size, 3*n_bins+1, n_features)``, where
+            ``parameters[b, :n_bins, i]``, ``parameters[b, n_bins:2*n_bins, i]``,
+            and ``parameters[b, 2*n_bins:3*n_bins, i]`` are the widths, heights,
+            and slopes for feature ``x[b, i]``. ``parameters[b, 3*n_bins, i]``
+            instead depends on whether the ``x[b, i]`` is periodic. If not
+            periodic, they are interpreted the slopes of the last knot. Otherwise,
+            the slope of the last knot is set equal to the first and the
+            parameters are used as shifts.
 
             As in the original paper, the passed widths and heights go through
             a ``softmax`` function and the slopes through a ``softplus`` function
@@ -187,13 +189,13 @@ class NeuralSplineTransformer(MAFTransformer):
     def get_identity_parameters(self, n_features: int) -> torch.Tensor:
         """Return the value of the parameters that makes this the identity function.
 
-        Note that if ``x0 != y0`` or ``y0 != y1`` it is
-        impossible to implement the identity using this transformer, and the
-        returned parameters will be those to map linearly the input domain of
-        ``x`` to the output of ``y``.
+        Note that if ``x0 != y0`` or ``y0 != y1`` it is impossible to implement
+        the identity using this transformer, and the returned parameters will
+        be those to map linearly the input domain of ``x`` to the output of
+        ``y``.
 
-        This can be used to initialize the normalizing flow to perform the identity
-        transformation.
+        This can be used to initialize the normalizing flow to perform the
+        identity transformation.
 
         Parameters
         ----------
@@ -203,8 +205,8 @@ class NeuralSplineTransformer(MAFTransformer):
         Returns
         -------
         parameters : torch.Tensor
-            A tensor of shape ``(K*n_features)``  where ``K`` equals ``3*n_bins``
-            if circular or ``3*n_bins+1`` if not.
+            Shape ``((3*n_bins+1)*n_features,)``. The parameters for the
+            identity function.
 
         """
         if not (torch.allclose(self.x0, self._y0) and torch.allclose(self.xf, self._yf)):
