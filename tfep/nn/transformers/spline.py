@@ -223,11 +223,8 @@ class NeuralSplineTransformer(MAFTransformer):
         # go through the softplus function.
         id_conditioner[2*self.n_bins:].fill_(np.log(np.e - 1))
 
-        # Finally we set the shift to 0.0.
-        if self._circular is True:
-            id_conditioner[3*self.n_bins] = 0
-        elif self._circular is not False:
-            id_conditioner[3*self.n_bins, self._circular] = 0
+        # Set the shift to 0.0. If self._circular is False, nothing is set.
+        id_conditioner[3*self.n_bins, self._circular] = 0
 
         return id_conditioner.reshape(-1)
 
@@ -257,23 +254,15 @@ class NeuralSplineTransformer(MAFTransformer):
 
         # Handle slopes and shifts for periodic DOFs.
         slopes = parameters[:, 2*self.n_bins:]
-        if self._circular is False:
+        if (len(self._circular.shape) == 0) and (self._circular == False):
             shifts = None
-        else:
+        else:  # self._circular is either True or an array of indices.
             # Do not modify the original parameters.
             slopes = slopes.clone()
-
-            if self._circular is True:
-                # Divide slopes from shifts. We clone or the next step will modify shifts as well.
-                shifts = slopes[:, self.n_bins].clone()
-                # Set the slope of the last knot to the first.
-                slopes[:, self.n_bins] = slopes[:, 0]
-            else:
-                # Fix shifts and slopes only for the specific DOFs.
-                batch_size, _, n_features = slopes.shape
-                shifts = torch.zeros((batch_size, n_features)).to(slopes)
-                shifts[:, self._circular] = slopes[:, self.n_bins, self._circular]
-                slopes[:, self.n_bins, self._circular] = slopes[:, 0, self._circular]
+            batch_size, _, n_features = slopes.shape
+            shifts = torch.zeros((batch_size, n_features)).to(slopes)
+            shifts[:, self._circular] = slopes[:, self.n_bins, self._circular]
+            slopes[:, self.n_bins, self._circular] = slopes[:, 0, self._circular]
 
         # Normalize widths/heights to boundaries and slopes positive.
         widths = torch.nn.functional.softmax(parameters[:, :self.n_bins], dim=1) * (self.xf - self.x0)
