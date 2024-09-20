@@ -137,7 +137,8 @@ def test_neural_spline_transformer_reference(batch_size, n_features, x0, y0, n_b
     # The parameters for the reference function.
     widths = torch.nn.functional.softmax(parameters[:, :n_bins], dim=1) * (xf - x0)
     heights = torch.nn.functional.softmax(parameters[:, n_bins:2*n_bins], dim=1) * (yf - y0)
-    slopes = torch.nn.functional.softplus(parameters[:, 2*n_bins:])
+    offset = torch.log(torch.tensor(np.e) - 1.)
+    slopes = torch.nn.functional.softplus(parameters[:, 2*n_bins:] + offset)
 
     # x is now distributed around 0. We center it and scale it so that the most
     # of the values are between x0 and xf. We detach to make the new x a leaf
@@ -145,8 +146,10 @@ def test_neural_spline_transformer_reference(batch_size, n_features, x0, y0, n_b
     x = (x * (xf - x0) + (x0 + xf) / 2).detach()
     x.requires_grad = True
 
-    # Run the transformer.
-    transformer = NeuralSplineTransformer(x0, xf, n_bins, y0, yf)
+    # Run the transformer. Deactivate minimum bin size/slope which are not
+    # implemented in the reference.
+    transformer = NeuralSplineTransformer(x0, xf, n_bins, y0, yf,
+                                          min_bin_size=1e-12, min_slope=1e-12)
     torch_y, torch_log_det_J = transformer(x, parameters)
     ref_y, ref_log_det_J = reference_neural_spline(x, x0, y0, widths, heights, slopes)
     assert np.allclose(ref_y, torch_y.detach().cpu().numpy())
@@ -271,3 +274,43 @@ def test_identity_neural_spline(circular):
     x_inv, log_det_J_inv = transformer.inverse(y, parameters)
     assert torch.allclose(x, x_inv)
     assert torch.allclose(log_det_J_inv, torch.zeros_like(log_det_J))
+
+
+def test_min_bin_and_slopes():
+    """NeuralSplineTransformer sets a minimum bin size and slope."""
+    batch_size = 5
+    n_bins = 3
+    n_features = 3
+    x0 = -2.
+    xf = 2.
+    min_bin_size = 1e-2
+    min_slope = 1e-2
+
+    # Create the spline.
+    transformer = NeuralSplineTransformer(
+        x0=torch.tensor([x0]*n_features),
+        xf=torch.tensor([xf]*n_features),
+        n_bins=n_bins,
+        min_bin_size=min_bin_size,
+        min_slope=min_slope,
+    )
+
+    # Create random parameters.
+    parameters = torch.randn((batch_size, (3*n_bins+1), n_features))
+    parameters[:, 0] = parameters[:, n_bins] = parameters[:, 2*n_bins] = -1e3
+
+    # Verify that there are bins/slopes smaller than the threshold.
+    widths = torch.nn.functional.softmax(parameters[:, :n_bins], dim=1) * (xf - x0)
+    heights = torch.nn.functional.softmax(parameters[:, n_bins:2*n_bins], dim=1) * (xf - x0)
+    offset = torch.log(torch.tensor(np.e) - 1.)
+    slopes = torch.nn.functional.softplus(parameters[:, 2*n_bins:] + offset)
+    assert torch.any(widths < min_bin_size)
+    assert torch.any(heights < min_bin_size)
+    assert torch.any(slopes < min_slope)
+
+    # The bins/slopes smaller than the threshold has been increased.
+    parameters = parameters.reshape(batch_size, -1)
+    widths, heights, slopes, shifts = transformer._get_parameters(parameters)
+    assert torch.all(widths >= min_bin_size)
+    assert torch.all(heights >= min_bin_size)
+    assert torch.all(slopes >= min_slope)

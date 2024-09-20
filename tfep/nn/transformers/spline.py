@@ -67,7 +67,9 @@ class NeuralSplineTransformer(MAFTransformer):
             n_bins: int,
             y0: Optional[torch.Tensor] = None,
             yf: Optional[torch.Tensor] = None,
-            circular: bool = False
+            circular: bool = False,
+            min_bin_size: float = 1e-4,
+            min_slope: float = 1e-4,
     ):
         """Constructor.
 
@@ -94,6 +96,11 @@ class NeuralSplineTransformer(MAFTransformer):
             list of integers, only the features at these indices are periodic.
             For the periodic DOFs, ``y0`` and ``yf`` must correspond to ``x0``
             and ``xf``.
+        min_bin_size : float, optional
+            The minimum possible bin size (i.e., width and height) for
+            numerical stability.
+        min_slope : float, optional
+            The minimum possible slope for numerical stability.
 
         """
         super().__init__()
@@ -110,12 +117,20 @@ class NeuralSplineTransformer(MAFTransformer):
                     torch.allclose(xf[circular], yf[circular])):
             raise ValueError('x0==y0 and xf==yf must hold for all periodic degrees of freedom.')
 
+        # Check values for minimum bin size/slope.
+        if min_bin_size <= 0.:
+            raise ValueError('The minimum bin size should be positive.')
+        if (min_slope <= 0.) or (min_slope >= 1.):
+            raise ValueError('The minimum slope should be between 0 and 1.')
+
         self.register_buffer('x0', x0)
         self.register_buffer('xf', xf)
         self.register_buffer('n_bins', torch.as_tensor(n_bins))
         self.register_buffer('_y0', y0)
         self.register_buffer('_yf', yf)
         self.register_buffer('_circular', torch.as_tensor(circular))
+        self.register_buffer('_min_bin_size', torch.as_tensor(min_bin_size))
+        self.register_buffer('_min_slope', torch.as_tensor(min_slope))
 
     @property
     def n_parameters_per_input(self):
@@ -232,18 +247,15 @@ class NeuralSplineTransformer(MAFTransformer):
             raise ValueError('The identity neural spline transformer can be '
                              'implemented only if x0=y0 and xf=yf.')
 
+        # The slopes parameters in _get_parameters are offset so that the final
+        # slope will be 1 when zeros are passed. This also sets the shifts to 0
+        # for periodic features.
+        id_conditioner = torch.zeros(size=(self.n_parameters_per_input, n_features)).to(self.x0)
+
         # Both the width and the height of each bin must be constant.
         # Remember that the parameters go through the softmax function.
-        id_conditioner = torch.empty(size=(self.n_parameters_per_input, n_features)).to(self.x0)
         id_conditioner[:self.n_bins].fill_(1 / self.n_bins)
         id_conditioner[self.n_bins:2*self.n_bins].fill_(1 / self.n_bins)
-
-        # The slope must be one in each knot. Remember that the parameters
-        # go through the softplus function.
-        id_conditioner[2*self.n_bins:].fill_(np.log(np.e - 1))
-
-        # Set the shift to 0.0. If self._circular is False, nothing is set.
-        id_conditioner[3*self.n_bins, self._circular] = 0
 
         return id_conditioner.reshape(-1)
 
@@ -283,10 +295,20 @@ class NeuralSplineTransformer(MAFTransformer):
             shifts[:, self._circular] = slopes[:, self.n_bins, self._circular]
             slopes[:, self.n_bins, self._circular] = slopes[:, 0, self._circular]
 
-        # Normalize widths/heights to boundaries and slopes positive.
-        widths = torch.nn.functional.softmax(parameters[:, :self.n_bins], dim=1) * (self.xf - self.x0)
-        heights = torch.nn.functional.softmax(parameters[:, self.n_bins:2*self.n_bins], dim=1) * (self._yf - self._y0)
-        slopes = torch.nn.functional.softplus(slopes)
+        # Normalize widths/heights.
+        tot_width = self.xf - self.x0
+        tot_height = self._yf - self._y0
+        size_shift = self.n_bins * self._min_bin_size
+        widths = torch.nn.functional.softmax(parameters[:, :self.n_bins], dim=1)
+        widths = widths * (tot_width - size_shift) + self._min_bin_size
+        heights = torch.nn.functional.softmax(parameters[:, self.n_bins:2*self.n_bins], dim=1)
+        heights = heights * (tot_height - size_shift) + self._min_bin_size
+
+        # Normalize slopes. The offset is such that the slope will 1 when the
+        # parameters passed will be 0.
+        offset = torch.log(torch.exp(1. - self._min_slope) - 1.)
+        slopes = torch.nn.functional.softplus(slopes + offset) + self._min_slope
+
         return widths, heights, slopes, shifts
 
 
@@ -302,13 +324,19 @@ def neural_spline_transformer(x, x0, y0, widths, heights, slopes):
     knots (x, y) that delimit K bins. The domain of the spline for feature ``i``
     is in the interval ``x0[i] <= x[i] <= x0[i] + cumsum(widths)``. All values
     outside this interval are transformed linearly following the slopes of the
-    first and last knot. Note that periodic features must be passed within
-    their domain or they will be transformed linearly.
+    first and last knot.
 
-    The difference with :class:`~tfep.nn.transformers.spline.NeuralSplineTransformer`
-    is that it takes as parameters directly widths, heights, and slopes of the
-    K+1 knots used for interpolation rather than parameters that are then
-    passed to ``softmax`` and ``softplus`` functions.
+    Note that this function implements only the neural spline function.
+    Compared, to :class:`~tfep.nn.transformers.spline.NeuralSplineTransformer`,
+    it has several differences:
+    - It takes as parameters directly widths, heights, and slopes of the
+      K+1 knots used for interpolation rather than parameters that are then
+      passed to ``softmax`` and ``softplus`` functions.
+    - Periodic features are not shifted nor mapped to their domain. These are
+      expected to be passed in their domain or they will be transformed
+      linearly.
+    - It does not guarantee a minimum bin size and slope for numerical
+      stability.
 
     Parameters
     ----------
