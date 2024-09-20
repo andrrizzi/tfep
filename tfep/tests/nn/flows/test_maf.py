@@ -64,11 +64,7 @@ def create_input(batch_size, dimension_in, limits=None, periodic_indices=None, s
     # The non-periodic features do not need to be restrained between 0 and 1.
     x = create_random_input(batch_size, dimension_in, x_func=torch.randn, seed=seed)
 
-    if limits is not None:
-        if periodic_indices is None:
-            # All DOFs are periodic. Ignore previous random input.
-            periodic_indices = torch.tensor(list(range(dimension_in)))
-
+    if (limits is not None) and (periodic_indices is not None):
         x_periodic = create_random_input(batch_size, len(periodic_indices), x_func=torch.rand, seed=seed)
         x_periodic = x_periodic * (limits[1] - limits[0]) + limits[0]
         x = x.clone()
@@ -104,12 +100,16 @@ def create_input(batch_size, dimension_in, limits=None, periodic_indices=None, s
     AffineTransformer(),
     SOSPolynomialTransformer(2),
     SOSPolynomialTransformer(3),
-    NeuralSplineTransformer(x0=torch.tensor(-2., dtype=torch.double), xf=torch.tensor(2., dtype=torch.double), n_bins=3),
+    NeuralSplineTransformer(
+        x0=torch.tensor(-2., dtype=torch.double),
+        xf=torch.tensor(2., dtype=torch.double),
+        n_bins=3
+    ),
     MoebiusTransformer(dimension=3),
     MixedTransformer(
         transformers=[AffineTransformer(), SOSPolynomialTransformer(3)],
         indices=[[0, 2], [1, 3, 4]],
-    )
+    ),
 ])
 def test_identity_initialization_MAF(hidden_layers, conditioning_indices, periodic_indices,
                                      degrees_in_order, weight_norm, transformer):
@@ -121,7 +121,6 @@ def test_identity_initialization_MAF(hidden_layers, conditioning_indices, period
     """
     n_features = 5
     batch_size = 2
-    # Must be equal to the NeuralSplineTransformer limits.
     limits = [-2., 2.]
 
     # Periodic indices with MoebiusTransformer doesn't make sense.
@@ -173,7 +172,12 @@ def test_identity_initialization_MAF(hidden_layers, conditioning_indices, period
 
     # Create random input.
     if isinstance(transformer, NeuralSplineTransformer):
-        x = create_input(batch_size, n_features, limits=(transformer.x0, transformer.xf))
+        x = create_input(
+            batch_size,
+            n_features,
+            limits=(transformer.x0, transformer.xf),
+            periodic_indices=periodic_indices,
+        )
     else:
         x = create_input(batch_size, n_features)
 
@@ -207,8 +211,8 @@ def test_identity_initialization_MAF(hidden_layers, conditioning_indices, period
         transformers=[
             AffineTransformer(),
             NeuralSplineTransformer(
-                x0=torch.tensor(-10., dtype=torch.double),
-                xf=torch.tensor(10., dtype=torch.double),
+                x0=torch.tensor(0., dtype=torch.double),
+                xf=torch.tensor(2., dtype=torch.double),
                 n_bins=3,
             ),
         ],
@@ -273,7 +277,12 @@ def test_maf_autoregressive_round_trip(conditioning_indices, periodic_indices, d
     )
 
     # Create random input.
-    x = create_input(batch_size, n_features, limits=limits, periodic_indices=periodic_indices)
+    x = create_input(
+        batch_size,
+        n_features,
+        limits=limits,
+        periodic_indices=periodic_indices,
+    )
 
     # The conditioning features are always left unchanged.
     y, log_det_J = maf.forward(x)
