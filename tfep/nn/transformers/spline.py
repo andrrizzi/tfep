@@ -32,7 +32,11 @@ class NeuralSplineTransformer(MAFTransformer):
 
     This is an implementation of the neural spline transformer proposed
     in [1]. Using the therminology in [1], the spline function is defined
-    from K+1 knots (x, y) that give rise to K bins.
+    from K+1 knots (x, y) that give rise to K bins. The domain of the spline
+    for feature ``i`` is in the interval
+    ``x0[i] <= x[i] <= x0[i] + cumsum(widths)``. All values outside this
+    interval are transformed linearly following the slopes of the first and
+    last knot.
 
     This class can also implement circular splines [2] for (optionally a subset
     of) the degrees of freedom that are periodic. The periodic DOFs do not take
@@ -127,7 +131,10 @@ class NeuralSplineTransformer(MAFTransformer):
         Parameters
         ----------
         x : torch.Tensor
-            Shape ``(batch_size, n_features)``. Input features.
+            Shape ``(batch_size, n_features)``. Input features. Periodic
+            features will be mapped within their domain before being
+            transformed. Non-periodic features outside their domain will be
+            transformed linearly.
         parameters : torch.Tensor
             Shape: ``(batch_size, (3*n_bins+1)*n_features)``. The order of the
             parameters should allow reshaping the array to
@@ -278,9 +285,13 @@ class NeuralSplineTransformer(MAFTransformer):
 def neural_spline_transformer(x, x0, y0, widths, heights, slopes):
     r"""Implement the neural spline transformer.
 
-    This is an implementation of the neural spline transformer proposed
-    in [1]. Using the therminology in [1], the spline function is defined
-    from K+1 knots (x, y) that give rise to K bins.
+    This is an implementation of the neural spline transformer proposed in [1].
+    Using the therminology in [1], the spline function is defined from K+1
+    knots (x, y) that delimit K bins. The domain of the spline for feature ``i``
+    is in the interval ``x0[i] <= x[i] <= x0[i] + cumsum(widths)``. All values
+    outside this interval are transformed linearly following the slopes of the
+    first and last knot. Note that periodic features must be passed within
+    their domain or they will be transformed linearly.
 
     The difference with :class:`~tfep.nn.transformers.spline.NeuralSplineTransformer`
     is that it takes as parameters directly widths, heights, and slopes of the
@@ -290,8 +301,9 @@ def neural_spline_transformer(x, x0, y0, widths, heights, slopes):
     Parameters
     ----------
     x : torch.Tensor
-        Shape ``(batch_size, n_features)``. Input features. Currently, this
-        must hold: ``x0[i] <= x[i] <= x0[i] + cumsum(widths)`` for all ``i``.
+        Shape ``(batch_size, n_features)``. Input features. Periodic features
+        must be within their domain. Non-periodic features outside their domain
+        will be transformed linearly.
     x0 : torch.Tensor
         Shape ``(n_features,)``. Position of the first of the K+1 knots determining
         the positions of the K bins for the input.
@@ -408,15 +420,43 @@ def _compute_log_det_J(
 def _assign_bins(x, x0, y0, widths, heights, slopes, inverse):
     """Assign the input to the bins and return the values of knots, widths, heights, and slopes."""
     batch_size, n_bins, n_features = widths.shape
-    n_knots = n_bins + 1
 
-    # knots_x has shape (batch, K+1, n_features).
+    # Compute cumulative width and height.
+    cum_width = torch.cumsum(widths, dim=1)
+    cum_height = torch.cumsum(heights, dim=1)
+
+    # The knots at the start and end of the array are there to enable the
+    # definition (as a linear function) outside the domain of the spline
+    # (x0, xf).
+    n_knots = n_bins + 3
+
+    # knots_x has shape (batch, K+1+2, n_features).
     knots_x = torch.empty(batch_size, n_knots, n_features).to(x0)
-    knots_x[:, 0] = x0
-    knots_x[:, 1:] = x0 + torch.cumsum(widths, dim=1)
+    knots_x[:, 1] = x0
+    knots_x[:, 2:-1] = x0 + cum_width
     knots_y = torch.empty(batch_size, n_knots, n_features).to(x0)
-    knots_y[:, 0] = y0
-    knots_y[:, 1:] = y0 + torch.cumsum(heights, dim=1)
+    knots_y[:, 1] = y0
+    knots_y[:, 2:-1] = y0 + cum_height
+
+    # The extreme knots defining the linear layers must be large. We set them
+    # to 2 orders of magnitude larger than the spline domain. cum_width[-1] is
+    # the total width of the domain.
+    dx = cum_width[:, -1] * 100.
+    knots_x[:, 0] = x0 - dx
+    knots_x[:, -1] = knots_x[:, -2] + dx
+
+    # The extreme knots in y must be placed along the linear function.
+    dy0 = slopes[:, 0] * dx
+    knots_y[:, 0] = y0 - dy0
+    dyf = slopes[:, -1] * dx
+    knots_y[:, -1] = knots_y[:, -2] + dyf
+
+    # Set the slopes of the extreme knots to make the function be linear outside
+    # the spline domain.
+    slopes = torch.cat([slopes[:, 0:1], slopes, slopes[:, -1:]], dim=1)
+    dx = dx.unsqueeze(1)
+    widths = torch.cat([dx, widths, dx], dim=1)
+    heights = torch.cat([dy0.unsqueeze(1), heights, dyf.unsqueeze(1)], dim=1)
 
     # For an idea about how the indexing is working in this function, see
     # https://stackoverflow.com/questions/55628014/indexing-a-3d-tensor-using-a-2d-tensor.

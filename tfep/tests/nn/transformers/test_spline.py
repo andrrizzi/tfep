@@ -74,24 +74,32 @@ def reference_neural_spline(x, x0, y0, widths, heights, slopes):
         for feat_idx in range(n_features):
             bin_idx = np.digitize(x[batch_idx, feat_idx], knots_x[batch_idx, :, feat_idx], right=False) - 1
 
-            xk = knots_x[batch_idx, bin_idx, feat_idx]
-            xk1 = knots_x[batch_idx, bin_idx+1, feat_idx]
-            yk = knots_y[batch_idx, bin_idx, feat_idx]
-            yk1 = knots_y[batch_idx, bin_idx+1, feat_idx]
+            # If the value falls outside the limits, we transform linearly.
+            if (bin_idx < 0) or (bin_idx == n_bins):
+                i = 0 if bin_idx < 0 else -1
+                dx = x[batch_idx, feat_idx] - knots_x[batch_idx, i, feat_idx]
+                y[batch_idx, feat_idx] = knots_y[batch_idx, i, feat_idx] + slopes[batch_idx, i, feat_idx] * dx
+                log_det_J[batch_idx] += np.log(slopes[batch_idx, i, feat_idx])
+            else:
+                # Neural spline.
+                xk = knots_x[batch_idx, bin_idx, feat_idx]
+                xk1 = knots_x[batch_idx, bin_idx+1, feat_idx]
+                yk = knots_y[batch_idx, bin_idx, feat_idx]
+                yk1 = knots_y[batch_idx, bin_idx+1, feat_idx]
 
-            deltak = slopes[batch_idx, bin_idx, feat_idx]
-            deltak1 = slopes[batch_idx, bin_idx+1, feat_idx]
+                deltak = slopes[batch_idx, bin_idx, feat_idx]
+                deltak1 = slopes[batch_idx, bin_idx+1, feat_idx]
 
-            sk = (yk1 - yk) / (xk1 - xk)
-            epsilon = (x[batch_idx, feat_idx] - xk) / (xk1 - xk)
+                sk = (yk1 - yk) / (xk1 - xk)
+                epsilon = (x[batch_idx, feat_idx] - xk) / (xk1 - xk)
 
-            numerator = (yk1 - yk) * (sk * epsilon**2 + deltak * epsilon * (1 - epsilon))
-            denominator = sk + (deltak1 + deltak - 2*sk) * epsilon * (1 - epsilon)
-            y[batch_idx, feat_idx] = yk + numerator / denominator
+                numerator = (yk1 - yk) * (sk * epsilon**2 + deltak * epsilon * (1 - epsilon))
+                denominator = sk + (deltak1 + deltak - 2*sk) * epsilon * (1 - epsilon)
+                y[batch_idx, feat_idx] = yk + numerator / denominator
 
-            numerator = sk**2 * (deltak1 * epsilon**2 + 2*sk*epsilon*(1 - epsilon) + deltak*(1 - epsilon)**2)
-            denominator = (sk + (deltak1 + deltak + - 2*sk) * epsilon * (1 - epsilon))**2
-            log_det_J[batch_idx] += np.log(numerator / denominator)
+                numerator = sk**2 * (deltak1 * epsilon**2 + 2*sk*epsilon*(1 - epsilon) + deltak*(1 - epsilon)**2)
+                denominator = (sk + (deltak1 + deltak + - 2*sk) * epsilon * (1 - epsilon))**2
+                log_det_J[batch_idx] += np.log(numerator / denominator)
 
     return y, log_det_J
 
@@ -122,30 +130,31 @@ def test_neural_spline_transformer_reference(batch_size, n_features, x0, y0, n_b
         n_features,
         n_parameters=(3*n_bins+1) * n_features,
         seed=0,
-        x_func=torch.rand,
+        x_func=torch.randn,
     )
     parameters = parameters.reshape(batch_size, -1, n_features)
 
+    # The parameters for the reference function.
     widths = torch.nn.functional.softmax(parameters[:, :n_bins], dim=1) * (xf - x0)
     heights = torch.nn.functional.softmax(parameters[:, n_bins:2*n_bins], dim=1) * (yf - y0)
     slopes = torch.nn.functional.softplus(parameters[:, 2*n_bins:])
 
-    # x is now between 0 and 1 but it must be between x0 and xf. We detach
-    # to make the new x a leaf variable and reset requires_grad.
-    x = x.detach() * (xf - x0) + x0
+    # x is now distributed around 0. We center it and scale it so that the most
+    # of the values are between x0 and xf. We detach to make the new x a leaf
+    # variable and reset requires_grad.
+    x = (x * (xf - x0) + (x0 + xf) / 2).detach()
     x.requires_grad = True
 
     # Run the transformer.
     transformer = NeuralSplineTransformer(x0, xf, n_bins, y0, yf)
     torch_y, torch_log_det_J = transformer(x, parameters)
     ref_y, ref_log_det_J = reference_neural_spline(x, x0, y0, widths, heights, slopes)
-
     assert np.allclose(ref_y, torch_y.detach().cpu().numpy())
     assert np.allclose(ref_log_det_J, torch_log_det_J.detach().cpu().numpy())
 
-    # Check y0, yf boundaries are satisfied
-    assert torch.all(y0 < torch_y)
-    assert torch.all(torch_y < yf)
+    # Check y0, yf boundaries are satisfied for inputs within the spline domain.
+    assert torch.all((x0 < x) == (y0 < torch_y))
+    assert torch.all((x < xf) == (torch_y < yf))
 
     # Compute the reference log_det_J also with autograd and numpy.
     ref_log_det_J2 = batch_autograd_log_abs_det_J(x, torch_y)
