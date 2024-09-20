@@ -246,7 +246,14 @@ def test_identity_neural_spline(circular):
     # Create random input.
     x0 = torch.randn(n_features)
     xf = x0 + torch.abs(torch.randn(n_features))
-    x = torch.rand((batch_size, n_features)) * (xf - x0) + x0
+    x = torch.randn((batch_size, n_features)) * (xf - x0) + (x0 + xf) / 2
+
+    # Set the periodic features within their limits.
+    if circular is not False:
+        if circular is True:
+            x[:, :] = torch.rand((batch_size, n_features)) * (xf - x0) + x0
+        else:
+            x[:, circular] = torch.rand(x[:, circular].shape) * (xf - x0)[circular] + x0[circular]
 
     # Obtain identity parameters.
     transformer = NeuralSplineTransformer(x0=x0, xf=xf, n_bins=n_bins, circular=circular)

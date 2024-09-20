@@ -169,7 +169,13 @@ class NeuralSplineTransformer(MAFTransformer):
         # of the neural spline transformation. Shifting is volume preserving
         # (i.e., log_det_J = 0).
         if shifts is not None:
-            x = (x - self.x0 + shifts) % (self.xf - self.x0) + self.x0
+            # Shift is 0.0 for nonperiodic features.
+            x = (x - self.x0 + shifts)
+            # neural_spline_transformer expects periodic features to be within
+            # their domain.
+            x[:, self._circular] = x[:, self._circular] % (self.xf - self.x0)[self._circular]
+            # Re-shift to x0.
+            x = x + self.x0
 
         # Run rational quadratic spline.
         return neural_spline_transformer(x, self.x0, self._y0, widths, heights, slopes)
@@ -189,7 +195,13 @@ class NeuralSplineTransformer(MAFTransformer):
 
         # Shifts the periodic DOFs. Shifting is volume preserving.
         if shifts is not None:
-            x = (x - self.x0 - shifts) % (self.xf - self.x0) + self.x0
+            # Shift is 0.0 for nonperiodic features.
+            x = (x - self.x0 - shifts)
+            # neural_spline_transformer expects periodic features to be within
+            # their domain.
+            x[:, self._circular] = x[:, self._circular] % (self.xf - self.x0)[self._circular]
+            # Re-shift to x0.
+            x = x + self.x0
 
         return x, log_det_J
 
