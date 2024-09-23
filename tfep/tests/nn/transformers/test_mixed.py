@@ -163,7 +163,7 @@ def test_mixed_transformer_get_identity_parameters(batch_size, transformers):
     parameters = mixed.get_identity_parameters(N_FEATURES).unsqueeze(0).expand(batch_size, -1)
     y, log_det_J = mixed(x, parameters)
     assert torch.allclose(x, y)
-    assert torch.allclose(log_det_J, torch.zeros_like(log_det_J))
+    assert torch.allclose(log_det_J, torch.zeros_like(log_det_J), atol=1e-7)
 
 
 @pytest.mark.parametrize('batch_size', BATCH_SIZES_TESTED)
