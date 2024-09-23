@@ -16,7 +16,6 @@ Circular spline transformer for autoregressive normalizing flows.
 
 from typing import Optional
 
-import numpy as np
 import torch
 import torch.autograd
 
@@ -38,10 +37,10 @@ class NeuralSplineTransformer(MAFTransformer):
     interval are transformed linearly following the slopes of the first and
     last knot.
 
-    This class can also implement circular splines [2] for (optionally a subset
-    of) the degrees of freedom that are periodic. The periodic DOFs do not take
-    slopes for the last knot (which is set to be equal to that of the first),
-    but take instead a shift parameter so that the final transformation is
+    This class can also implement circular splines [2] for periodic degrees of
+    freedom. The periodic DOFs do not take slopes for the last knot (which is
+    set to be equal to that of the first), but take instead a shift parameter
+    so that the final transformation is
 
     :math:`y = \mathrm{spline}((x - x_0 + \phi) % p + x_0)
 
@@ -68,6 +67,7 @@ class NeuralSplineTransformer(MAFTransformer):
             y0: Optional[torch.Tensor] = None,
             yf: Optional[torch.Tensor] = None,
             circular: bool = False,
+            identity_boundary_slopes: bool = False,
             min_bin_size: float = 1e-4,
             min_slope: float = 1e-4,
     ):
@@ -91,11 +91,14 @@ class NeuralSplineTransformer(MAFTransformer):
             Shape ``(n_features,)``. Position of the last of the K+1 knots
             determining the positions of the K bins for the output. If not
             passed, ``xf`` is taken.
-        circular : bool or torch.Tensor, optional
-            If ``True``, all degrees of freedom are treated as periodic. If a
-            list of integers, only the features at these indices are periodic.
-            For the periodic DOFs, ``y0`` and ``yf`` must correspond to ``x0``
-            and ``xf``.
+        circular : bool, optional
+            If ``True``, the features are treated as periodic. In this case,
+            ``y0`` and ``yf`` must correspond to ``x0`` and ``xf``.
+        identity_boundary_slopes : bool, optional
+            If ``True``, the slopes at the boundaries of the domain are forced
+            to 1 so that the spline can implement the identity function outside
+            its domain. Note that this will be true only if ``x0 == y0`` and
+            ``xf == yf``.
         min_bin_size : float, optional
             The minimum possible bin size (i.e., width and height) for
             numerical stability.
@@ -112,7 +115,7 @@ class NeuralSplineTransformer(MAFTransformer):
             yf = xf.detach()
 
         # Check consistent configuration of circular.
-        if (circular is not False) and not (
+        if circular and not (
                     torch.allclose(x0[circular], y0[circular]) and
                     torch.allclose(xf[circular], yf[circular])):
             raise ValueError('x0==y0 and xf==yf must hold for all periodic degrees of freedom.')
@@ -129,15 +132,18 @@ class NeuralSplineTransformer(MAFTransformer):
         self.register_buffer('_y0', y0)
         self.register_buffer('_yf', yf)
         self.register_buffer('_circular', torch.as_tensor(circular))
+        self.register_buffer('_identity_boundary_slopes', torch.as_tensor(identity_boundary_slopes))
         self.register_buffer('_min_bin_size', torch.as_tensor(min_bin_size))
         self.register_buffer('_min_slope', torch.as_tensor(min_slope))
 
     @property
-    def n_parameters_per_input(self):
-        """Number of parameters needed by the transformer for each input dimension."""
-        # n_bins widths, n_bins heights, and n_bins slopes. The +1 can be
-        # either the slope of the last knot for not circular DOFs or the shift
-        # for periodic DOFs.
+    def n_parameters_per_input(self) -> int:
+        """int: Number of parameters needed by the transformer for each feature."""
+        if self._identity_boundary_slopes:
+            if self._circular:
+                return 3*self.n_bins
+            else:
+                return 3*self.n_bins - 1
         return 3*self.n_bins + 1
 
     def forward(self, x: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
@@ -151,16 +157,20 @@ class NeuralSplineTransformer(MAFTransformer):
             transformed. Non-periodic features outside their domain will be
             transformed linearly.
         parameters : torch.Tensor
-            Shape: ``(batch_size, (3*n_bins+1)*n_features)``. The order of the
-            parameters should allow reshaping the array to
-            ``(batch_size, 3*n_bins+1, n_features)``, where
-            ``parameters[b, :n_bins, i]``, ``parameters[b, n_bins:2*n_bins, i]``,
-            and ``parameters[b, 2*n_bins:3*n_bins, i]`` are the widths, heights,
-            and slopes for feature ``x[b, i]``. ``parameters[b, 3*n_bins, i]``
-            instead depends on whether the ``x[b, i]`` is periodic. If not
-            periodic, they are interpreted the slopes of the last knot. Otherwise,
-            the slope of the last knot is set equal to the first and the
-            parameters are used as shifts.
+            Shape: ``(batch_size, n_parameters_per_feat*n_features)``, where
+            ``n_parameters_per_feat`` is ``3*n_bins + 1`` for standard splines.
+            If ``identity_boundary_slopes=True``, ``n_parameters_per_feat`` is
+            instead ``3*n_bins`` for circular splines and ``3*n_bins - 1`` for
+            standard ones since the slopes of the boundary knots are fixed.
+
+            The order of the parameters should allow reshaping the array to
+            ``(batch_size, n_parameters_per_feat, n_features)``, where
+            ``parameters[b, :n_bins, i]`` and ``parameters[b, n_bins:2*n_bins, i]``
+            are the widths and heights of the bins for feature ``x[b, i]``.
+            ``parameters[b, 2*n_bins:3*n_bins +- 1, i]`` are the slopes (the
+            ``+- 1`` is due to the values of ``identity_boundary_slopes`` and
+            ``circular``). For circular splines, ``parameters[b, -1, i]`` is
+            the shift parameter.
 
             As in the original paper, the passed widths and heights go through
             a ``softmax`` function and the slopes through a ``softplus`` function
@@ -184,13 +194,7 @@ class NeuralSplineTransformer(MAFTransformer):
         # of the neural spline transformation. Shifting is volume preserving
         # (i.e., log_det_J = 0).
         if shifts is not None:
-            # Shift is 0.0 for nonperiodic features.
-            x = (x - self.x0 + shifts)
-            # neural_spline_transformer expects periodic features to be within
-            # their domain.
-            x[:, self._circular] = x[:, self._circular] % (self.xf - self.x0)[self._circular]
-            # Re-shift to x0.
-            x = x + self.x0
+            x = (x - self.x0 + shifts) % (self.xf - self.x0) + self.x0
 
         # Run rational quadratic spline.
         return neural_spline_transformer(x, self.x0, self._y0, widths, heights, slopes)
@@ -210,13 +214,7 @@ class NeuralSplineTransformer(MAFTransformer):
 
         # Shifts the periodic DOFs. Shifting is volume preserving.
         if shifts is not None:
-            # Shift is 0.0 for nonperiodic features.
-            x = (x - self.x0 - shifts)
-            # neural_spline_transformer expects periodic features to be within
-            # their domain.
-            x[:, self._circular] = x[:, self._circular] % (self.xf - self.x0)[self._circular]
-            # Re-shift to x0.
-            x = x + self.x0
+            x = (x - self.x0 - shifts) % (self.xf - self.x0) + self.x0
 
         return x, log_det_J
 
@@ -239,8 +237,7 @@ class NeuralSplineTransformer(MAFTransformer):
         Returns
         -------
         parameters : torch.Tensor
-            Shape ``((3*n_bins+1)*n_features,)``. The parameters for the
-            identity function.
+            Shape ``(n_parameters,)``. The parameters for the identity function.
 
         """
         if not (torch.allclose(self.x0, self._y0) and torch.allclose(self.xf, self._yf)):
@@ -278,31 +275,68 @@ class NeuralSplineTransformer(MAFTransformer):
         """
         return degrees_in.tile((self.n_parameters_per_input,))
 
-    def _get_parameters(self, parameters):
-        # From (batch_size, 3*n_bins+1*n_features) to (batch_size, 3*n_bins+1, n_features).
+    def _get_parameters(self, parameters: torch.Tensor) -> tuple[torch.Tensor]:
+        """Return the parameters for the functional API.
+
+        The function normalizes widths, heights, and slopes so that they are in
+        their correct domain and to enforce ``min_bin_size`` and ``min_slope``.
+        It also offsets the slopes parameters so that 0 equals the identity.
+
+        Parameters
+        ----------
+        parameters : torch.Tensor
+            Shape ``(batch_size, n_parameters)``. The spline parameters.
+
+        Returns
+        -------
+        widths : torch.Tensor
+            Shape ``(batch_size, 3*n_bins, n_features)``.
+        heights : torch.Tensor
+            Shape ``(batch_size, 3*n_bins, n_features)``.
+        slopes : torch.Tensor
+            Shape ``(batch_size, 3*n_bins+1, n_features)``. The boundary slopes
+            are automatically set to 1 if ``identity_boundary_slopes is True``
+            or set to be identical for circular splines.
+        shifts : torch.Tensor or None
+            Shape ``(batch_size, n_features)``. Only returned for circular
+            splines.
+
+        """
+        # From (batch_size, n_par_per_feat*n_features) to (batch_size, n_par_per_feat, n_features).
         batch_size = parameters.shape[0]
         parameters = parameters.reshape(batch_size, self.n_parameters_per_input, -1)
 
-        # Handle slopes and shifts for periodic DOFs.
+        # Extract parameters.
+        widths = parameters[:, :self.n_bins]
+        heights = parameters[:, self.n_bins:2*self.n_bins]
         slopes = parameters[:, 2*self.n_bins:]
-        if (len(self._circular.shape) == 0) and (self._circular == False):
+
+        # Init identity slopes.
+        if self._identity_boundary_slopes:
+            zeros = torch.zeros_like(widths[:, :1])
+
+        # Handle slopes and shifts for periodic DOFs.
+        if self._circular:
+            # The last parameter is the shift.
+            shifts = slopes[:, -1]
+
+            # Check if we the slope of the boundary knots are fixed.
+            if self._identity_boundary_slopes:
+                slopes = torch.cat([zeros, slopes], dim=1)
+            else: # Do not modify the original parameters.
+                slopes = slopes.clone()
+            # We set the slope of the last knot equal to the first.
+            slopes[:, -1] = slopes[:, 0]
+        else:
             shifts = None
-        else:  # self._circular is either True or an array of indices.
-            # Do not modify the original parameters.
-            slopes = slopes.clone()
-            batch_size, _, n_features = slopes.shape
-            shifts = torch.zeros((batch_size, n_features)).to(slopes)
-            shifts[:, self._circular] = slopes[:, self.n_bins, self._circular]
-            slopes[:, self.n_bins, self._circular] = slopes[:, 0, self._circular]
+            if self._identity_boundary_slopes:
+                slopes = torch.cat([zeros, slopes, zeros], dim=1)
 
         # Normalize widths/heights.
-        tot_width = self.xf - self.x0
-        tot_height = self._yf - self._y0
-        size_shift = self.n_bins * self._min_bin_size
-        widths = torch.nn.functional.softmax(parameters[:, :self.n_bins], dim=1)
-        widths = widths * (tot_width - size_shift) + self._min_bin_size
-        heights = torch.nn.functional.softmax(parameters[:, self.n_bins:2*self.n_bins], dim=1)
-        heights = heights * (tot_height - size_shift) + self._min_bin_size
+        tot_width = self.xf - self.x0 - self.n_bins*self._min_bin_size
+        tot_height = self._yf - self._y0 - self.n_bins*self._min_bin_size
+        widths = torch.nn.functional.softmax(widths, dim=1) * tot_width + self._min_bin_size
+        heights = torch.nn.functional.softmax(heights, dim=1) * tot_height + self._min_bin_size
 
         # Normalize slopes. The offset is such that the slope will 1 when the
         # parameters passed will be 0.
