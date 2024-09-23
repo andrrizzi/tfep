@@ -811,11 +811,30 @@ class MixedMAFMap(TFEPMapBase):
             maf_periodic_dof_indices = maf_periodic_dof_indices - torch.searchsorted(
                 maf_conditioning_dof_indices, maf_periodic_dof_indices)
 
-        return tfep.nn.transformers.NeuralSplineTransformer(
-            x0=x0.detach(),
-            xf=xf.detach(),
+        # Find all non-periodic DOFs (after filtering the conditioning ones).
+        mask = torch.full(x0.shape, fill_value=True)
+        mask[maf_periodic_dof_indices] = False
+        maf_nonperiodic_dof_indices = torch.tensor(range(len(x0)))[mask]
+
+        # Standard splines for non-periodic DOFs.
+        spline = tfep.nn.transformers.NeuralSplineTransformer(
+            x0=x0[maf_nonperiodic_dof_indices].detach(),
+            xf=xf[maf_nonperiodic_dof_indices].detach(),
             n_bins=5,
-            circular=maf_periodic_dof_indices.detach(),
+            circular=False,
+        )
+
+        # Circular splines for periodic DOFs.
+        circular_spline = tfep.nn.transformers.NeuralSplineTransformer(
+            x0=x0[maf_periodic_dof_indices].detach(),
+            xf=xf[maf_periodic_dof_indices].detach(),
+            n_bins=5,
+            circular=True,
+        )
+
+        return tfep.nn.transformers.MixedTransformer(
+            transformers=[spline, circular_spline],
+            indices=[maf_nonperiodic_dof_indices, maf_periodic_dof_indices],
         )
 
 
