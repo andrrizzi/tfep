@@ -197,7 +197,7 @@ def test_neural_spline_transformer_reference(batch_size, n_features, x0, y0, n_b
     x, parameters = create_random_input(
         batch_size,
         n_features,
-        n_parameters=transformer.n_parameters_per_input*n_features,
+        n_parameters=transformer.n_parameters_per_feature*n_features,
         seed=0,
         x_func=torch.rand if circular else torch.randn,
     )

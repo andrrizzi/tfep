@@ -49,16 +49,16 @@ def teardown_module(module):
 
 def get_random_input(batch_size, n_features, scale):
     """Create random input and parameters."""
-    n_parameters_per_input = 2 if scale else 1
+    n_parameters_per_feature = 2 if scale else 1
     x, coefficients = create_random_input(
         batch_size,
         n_features,
-        n_parameters=n_parameters_per_input*n_features,
+        n_parameters=n_parameters_per_feature*n_features,
         seed=0,
     )
 
-    # From (batch, n_parameters_per_input*n_features) to (batch, n_parameters_per_input, n_features).
-    coefficients = coefficients.reshape(batch_size, n_parameters_per_input, n_features)
+    # From (batch, n_parameters_per_feature*n_features) to (batch, n_parameters_per_feature, n_features).
+    coefficients = coefficients.reshape(batch_size, n_parameters_per_feature, n_features)
 
     # Divide features.
     shift = coefficients[:, 0]

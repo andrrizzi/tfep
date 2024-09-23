@@ -54,7 +54,7 @@ class MoebiusTransformer(MAFTransformer):
 
     """
     # Number of parameters needed by the transformer for each input dimension.
-    n_parameters_per_input = 1
+    n_parameters_per_feature = 1
 
     def __init__(self, dimension: int, max_radius: float = 0.99, unit_sphere: bool = False):
         """Constructor.
@@ -170,7 +170,7 @@ class MoebiusTransformer(MAFTransformer):
             vector to perform the identity function with a Moebius transformer.
 
         """
-        return torch.zeros(size=(self.n_parameters_per_input*n_features,))
+        return torch.zeros(size=(self.n_parameters_per_feature*n_features,))
 
     def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
         """Returns the degrees associated to the conditioner's output.
@@ -189,7 +189,7 @@ class MoebiusTransformer(MAFTransformer):
             transformer as parameters.
 
         """
-        return degrees_in.tile((self.n_parameters_per_input,))
+        return degrees_in.tile((self.n_parameters_per_feature,))
 
 
 class SymmetrizedMoebiusTransformer(MAFTransformer):
@@ -220,7 +220,7 @@ class SymmetrizedMoebiusTransformer(MAFTransformer):
 
     """
     # Number of parameters needed by the transformer for each input dimension.
-    n_parameters_per_input = 1
+    n_parameters_per_feature = 1
 
     def __init__(self, dimension: int, max_radius: float = 0.99):
         """Constructor.
@@ -330,7 +330,7 @@ class SymmetrizedMoebiusTransformer(MAFTransformer):
             vector to perform the identity function with a Moebius transformer.
 
         """
-        return torch.zeros(size=(self.n_parameters_per_input*n_features,))
+        return torch.zeros(size=(self.n_parameters_per_feature*n_features,))
 
     def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
         """Returns the degrees associated to the conditioner's output.
@@ -349,7 +349,7 @@ class SymmetrizedMoebiusTransformer(MAFTransformer):
             transformer as parameters.
 
         """
-        return degrees_in.tile((self.n_parameters_per_input,))
+        return degrees_in.tile((self.n_parameters_per_feature,))
 
 
 # =============================================================================

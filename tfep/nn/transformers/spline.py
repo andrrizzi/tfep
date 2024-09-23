@@ -137,7 +137,7 @@ class NeuralSplineTransformer(MAFTransformer):
         self.register_buffer('_min_slope', torch.as_tensor(min_slope))
 
     @property
-    def n_parameters_per_input(self) -> int:
+    def n_parameters_per_feature(self) -> int:
         """int: Number of parameters needed by the transformer for each feature."""
         if self._identity_boundary_slopes:
             if self._circular:
@@ -247,7 +247,7 @@ class NeuralSplineTransformer(MAFTransformer):
         # The slopes parameters in _get_parameters are offset so that the final
         # slope will be 1 when zeros are passed. This also sets the shifts to 0
         # for periodic features.
-        id_conditioner = torch.zeros(size=(self.n_parameters_per_input, n_features)).to(self.x0)
+        id_conditioner = torch.zeros(size=(self.n_parameters_per_feature, n_features)).to(self.x0)
 
         # Both the width and the height of each bin must be constant.
         # Remember that the parameters go through the softmax function.
@@ -273,7 +273,7 @@ class NeuralSplineTransformer(MAFTransformer):
             transformer as parameters.
 
         """
-        return degrees_in.tile((self.n_parameters_per_input,))
+        return degrees_in.tile((self.n_parameters_per_feature,))
 
     def _get_parameters(self, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Return the parameters for the functional API.
@@ -304,7 +304,7 @@ class NeuralSplineTransformer(MAFTransformer):
         """
         # From (batch_size, n_par_per_feat*n_features) to (batch_size, n_par_per_feat, n_features).
         batch_size = parameters.shape[0]
-        parameters = parameters.reshape(batch_size, self.n_parameters_per_input, -1)
+        parameters = parameters.reshape(batch_size, self.n_parameters_per_feature, -1)
 
         # Extract parameters.
         widths = parameters[:, :self.n_bins]
