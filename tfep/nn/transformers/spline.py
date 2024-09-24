@@ -385,17 +385,18 @@ class NeuralSplineTransformer(MAFTransformer):
 
         # rescaled_width/height is the only portion of the domain interval that
         # can be rescaled to maintain a minimum bin size.
-        min_interval = self.n_bins*self._min_bin_size
+        min_interval = self.n_bins * self._min_bin_size
         rescaled_width = self.xf - self.x0 - min_interval
         rescaled_height = self._yf - self._y0 - min_interval
         if self._learn_lower_bound or self._learn_upper_bound:
-            domain_scale = torch.exp(parameters[:, -1])
+            # rescale_X has shape (batch, par, feat).
+            domain_scale = torch.exp(parameters[:, -1:])
             rescaled_width = rescaled_width * domain_scale
             rescaled_height = rescaled_height * domain_scale
 
-        # Normalize widths/heights. rescaled_X from (*, feat) to (*, par, feat).
-        widths = torch.nn.functional.softmax(widths, dim=1) * rescaled_width.unsqueeze(-2) + self._min_bin_size
-        heights = torch.nn.functional.softmax(heights, dim=1) * rescaled_height.unsqueeze(-2) + self._min_bin_size
+        # Normalize widths/heights.
+        widths = torch.nn.functional.softmax(widths, dim=1) * rescaled_width + self._min_bin_size
+        heights = torch.nn.functional.softmax(heights, dim=1) * rescaled_height + self._min_bin_size
 
         # Determine the start of the input/output domain. This reshapes x0/y0
         # from (n_features,) to (batch, n_features).
@@ -409,8 +410,8 @@ class NeuralSplineTransformer(MAFTransformer):
         elif self._learn_lower_bound:
             # We keep the upper bounds fixed and shift the lower bounds
             # according to the scaled widths/heights.
-            x0 = self.xf - rescaled_width - min_interval
-            y0 = self._yf - rescaled_height - min_interval
+            x0 = self.xf - rescaled_width.squeeze(1) - min_interval
+            y0 = self._yf - rescaled_height.squeeze(1) - min_interval
 
         # Normalize slopes. The offset is such that the slope will 1 when the
         # parameters passed will be 0.
@@ -580,8 +581,14 @@ def _assign_bins(x, x0, y0, widths, heights, slopes, inverse):
     # (x0, xf).
     n_knots = n_bins + 3
 
+    # x0/y0 is a scalar or has shape (n_features) or (batch, n_features).
+    # We need it to broadcast to cum_X with shape (batch, n_bins, n_features).
+    if len(x0.shape) == 0:
+        x0 = x0.unsqueeze(0)
+    if len(y0.shape) == 0:
+        y0 = y0.unsqueeze(0)
+
     # knots_x has shape (batch, K+1+2, n_features).
-    # x0/y0 has shape (n_features) or (batch, n_features).
     # cum_width/height has shape (batch, n_bins, n_features).
     knots_x = torch.empty(batch_size, n_knots, n_features).to(x0)
     knots_x[:, 1] = x0
