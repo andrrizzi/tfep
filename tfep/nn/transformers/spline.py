@@ -37,6 +37,14 @@ class NeuralSplineTransformer(MAFTransformer):
     interval are transformed linearly following the slopes of the first and
     last knot.
 
+    Optionally, the spline domain can be learned. If only one boundary is
+    learned, this is done through a parameter (made positive through an
+    exponential) provided by the conditioner that scales the domain interval.
+    The same scaling parameter is applied to the input and output domains. If
+    both boundaries are learned, another parameter shifting the domain interval
+    is required from the conditioner, which is also applied identically to both
+    the input and output domains.
+
     This class can also implement circular splines [2] for periodic degrees of
     freedom. The periodic DOFs do not take slopes for the last knot (which is
     set to be equal to that of the first), but take instead a shift parameter
@@ -45,7 +53,8 @@ class NeuralSplineTransformer(MAFTransformer):
     :math:`y = \mathrm{spline}((x - x_0 + \phi) % p + x_0)
 
     where :math:`x_0` correspond to the ``x0`` parameter for that DOF, :math:`p`
-    is the period, and :math:`\phi` is the shift.
+    is the period, and :math:`\phi` is the shift. With circular splines,
+    learning the spline domain is not supported.
 
     See Also
     --------
@@ -68,6 +77,8 @@ class NeuralSplineTransformer(MAFTransformer):
             yf: Optional[torch.Tensor] = None,
             circular: bool = False,
             identity_boundary_slopes: bool = False,
+            learn_lower_bound: bool = False,
+            learn_upper_bound: bool = False,
             min_bin_size: float = 1e-4,
             min_slope: float = 1e-4,
     ):
@@ -77,20 +88,24 @@ class NeuralSplineTransformer(MAFTransformer):
         ----------
         x0 : torch.Tensor
             Shape ``(n_features,)``. Position of the first of the K+1 knots
-            determining the positions of the K bins for the input.
+            determining the positions of the K bins for the input. If
+            ``learn_lower_bound`` is ``True``, this is the starting value.
         xf : torch.Tensor
             Shape ``(n_features,)``. Position of the last of the K+1 knots
-            determining the positions of the K bins for the input.
+            determining the positions of the K bins for the input. If
+            ``learn_upper_bound`` is ``True``, this is the starting value.
         n_bins : int
             Total number of bins (i.e., K).
         y0 : torch.Tensor, optional
             Shape ``(n_features,)``. Position of the first of the K+1 knots
             determining the positions of the K bins for the output. If not passed,
-            ``x0`` is taken.
+            ``x0`` is taken.  If ``learn_lower_bound`` is ``True``, this is the
+            starting value.
         yf : torch.Tensor, optional
             Shape ``(n_features,)``. Position of the last of the K+1 knots
             determining the positions of the K bins for the output. If not
-            passed, ``xf`` is taken.
+            passed, ``xf`` is taken.  If ``learn_upper_bound`` is ``True``,
+            this is the starting value.
         circular : bool, optional
             If ``True``, the features are treated as periodic. In this case,
             ``y0`` and ``yf`` must correspond to ``x0`` and ``xf``.
@@ -99,6 +114,12 @@ class NeuralSplineTransformer(MAFTransformer):
             to 1 so that the spline can implement the identity function outside
             its domain. Note that this will be true only if ``x0 == y0`` and
             ``xf == yf``.
+        learn_lower_bound : bool, optional
+            If ``True``, the lower limit of the spline domain (both input and
+            output) is learned. Default is ``False``.
+        learn_upper_bound : bool, optional
+            If ``True``, the upper limit of the spline domain (both input and
+            output) is learned. Default is ``False``.
         min_bin_size : float, optional
             The minimum possible bin size (i.e., width and height) for
             numerical stability.
@@ -115,6 +136,9 @@ class NeuralSplineTransformer(MAFTransformer):
             yf = xf.detach()
 
         # Check consistent configuration of circular.
+        if circular and (learn_lower_bound or learn_upper_bound):
+            raise ValueError('Cannot instantiate a circular spline with learnable limits.')
+
         if circular and not (
                     torch.allclose(x0[circular], y0[circular]) and
                     torch.allclose(xf[circular], yf[circular])):
@@ -133,18 +157,29 @@ class NeuralSplineTransformer(MAFTransformer):
         self.register_buffer('_yf', yf)
         self.register_buffer('_circular', torch.as_tensor(circular))
         self.register_buffer('_identity_boundary_slopes', torch.as_tensor(identity_boundary_slopes))
+        self.register_buffer('_learn_lower_bound', torch.as_tensor(learn_lower_bound))
+        self.register_buffer('_learn_upper_bound', torch.as_tensor(learn_upper_bound))
         self.register_buffer('_min_bin_size', torch.as_tensor(min_bin_size))
         self.register_buffer('_min_slope', torch.as_tensor(min_slope))
 
     @property
     def n_parameters_per_feature(self) -> int:
         """int: Number of parameters needed by the transformer for each feature."""
+        n_pars_per_feat = 3*self.n_bins + 1
+
+        # Learnable limits require extra parameters.
+        if self._learn_lower_bound:
+            n_pars_per_feat += 1
+        if self._learn_upper_bound:
+            n_pars_per_feat += 1
+
+        # Identity boundary slopes require less parameters.
         if self._identity_boundary_slopes:
             if self._circular:
-                return 3*self.n_bins
+                n_pars_per_feat -= 1
             else:
-                return 3*self.n_bins - 1
-        return 3*self.n_bins + 1
+                n_pars_per_feat -= 2
+        return n_pars_per_feat
 
     def forward(self, x: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Apply the transformation to the input.
@@ -157,11 +192,13 @@ class NeuralSplineTransformer(MAFTransformer):
             transformed. Non-periodic features outside their domain will be
             transformed linearly.
         parameters : torch.Tensor
-            Shape: ``(batch_size, n_parameters_per_feat*n_features)``, where
-            ``n_parameters_per_feat`` is ``3*n_bins + 1`` for standard splines.
-            If ``identity_boundary_slopes=True``, ``n_parameters_per_feat`` is
-            instead ``3*n_bins`` for circular splines and ``3*n_bins - 1`` for
-            standard ones since the slopes of the boundary knots are fixed.
+            Shape: ``(batch_size, n_parameters_per_feat*n_features)``. For
+            standard splines, ``n_parameters_per_feat`` is ``3*n_bins + 1``.
+            If ``identity_boundary_slopes=True``, the spline requires 1 less
+            parameter per feature in circular splines and 2 less for standard
+            splines since the slopes of the boundary knots are fixed. If the
+            lower and upper bound of the spline domain are learnable, they each
+            require 1 extra parameter per feature.
 
             The order of the parameters should allow reshaping the array to
             ``(batch_size, n_parameters_per_feat, n_features)``, where
@@ -169,8 +206,11 @@ class NeuralSplineTransformer(MAFTransformer):
             are the widths and heights of the bins for feature ``x[b, i]``.
             ``parameters[b, 2*n_bins:3*n_bins +- 1, i]`` are the slopes (the
             ``+- 1`` is due to the values of ``identity_boundary_slopes`` and
-            ``circular``). For circular splines, ``parameters[b, -1, i]`` is
-            the shift parameter.
+            ``circular``). For circular splines ``parameters[b, -1, i]`` is the
+            shift parameter. When the spline domain is learnable,
+            ``parameters[b, -1, i]`` is instead the domain scaling parameter.
+            Finally, when both spline domain bounds are learnable
+            ``parameters[b, -2, i]`` is the domain shifting parameter.
 
             As in the original paper, the passed widths and heights go through
             a ``softmax`` function and the slopes through a ``softplus`` function
@@ -188,16 +228,17 @@ class NeuralSplineTransformer(MAFTransformer):
         """
         # Divide the parameters in widths, heights and slopes (and shifts).
         # shift has shape (batch, n_features).
-        widths, heights, slopes, shifts = self._get_parameters(parameters)
+        x0, y0, widths, heights, slopes, shifts = self._get_parameters(parameters)
 
         # First we shift the periodic DOFs so that we can learn the fixed point
         # of the neural spline transformation. Shifting is volume preserving
         # (i.e., log_det_J = 0).
-        if shifts is not None:
-            x = (x - self.x0 + shifts) % (self.xf - self.x0) + self.x0
+        if self._circular:
+            # We can use self.xf as learnable xf is incompatible with circular.
+            x = (x - x0 + shifts) % (self.xf - x0) + x0
 
         # Run rational quadratic spline.
-        return neural_spline_transformer(x, self.x0, self._y0, widths, heights, slopes)
+        return neural_spline_transformer(x, x0, y0, widths, heights, slopes)
 
     def inverse(self, y: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Inverse function.
@@ -207,14 +248,15 @@ class NeuralSplineTransformer(MAFTransformer):
         """
         # Divide the parameters in widths, heights and slopes (and shifts).
         # shift has shape (batch, n_features).
-        widths, heights, slopes, shifts = self._get_parameters(parameters)
+        x0, y0, widths, heights, slopes, shifts = self._get_parameters(parameters)
 
         # Invert rational quadratic spline.
-        x, log_det_J = neural_spline_transformer_inverse(y, self.x0, self._y0, widths, heights, slopes)
+        x, log_det_J = neural_spline_transformer_inverse(y, x0, y0, widths, heights, slopes)
 
         # Shifts the periodic DOFs. Shifting is volume preserving.
         if shifts is not None:
-            x = (x - self.x0 - shifts) % (self.xf - self.x0) + self.x0
+            # We can use self.xf as learnable xf is incompatible with circular.
+            x = (x - x0 - shifts) % (self.xf - x0) + x0
 
         return x, log_det_J
 
@@ -240,13 +282,16 @@ class NeuralSplineTransformer(MAFTransformer):
             Shape ``(n_parameters,)``. The parameters for the identity function.
 
         """
+        # The same domain shift and scale is applied to x and y so that this
+        # condition is verified even with learnable limits.
         if not (torch.allclose(self.x0, self._y0) and torch.allclose(self.xf, self._yf)):
             raise ValueError('The identity neural spline transformer can be '
                              'implemented only if x0=y0 and xf=yf.')
 
         # The slopes parameters in _get_parameters are offset so that the final
         # slope will be 1 when zeros are passed. This also sets the shifts to 0
-        # for periodic features.
+        # for periodic features/learnable domain and the domain scale (which
+        # goes through an exponential) to 1.
         id_conditioner = torch.zeros(size=(self.n_parameters_per_feature, n_features)).to(self.x0)
 
         # Both the width and the height of each bin must be constant.
@@ -289,6 +334,10 @@ class NeuralSplineTransformer(MAFTransformer):
 
         Returns
         -------
+        x0 : torch.Tensor
+            Shape ``(batch_size, n_features)``.
+        y0 : torch.Tensor
+            Shape ``(batch_size, n_features)``.
         widths : torch.Tensor
             Shape ``(batch_size, 3*n_bins, n_features)``.
         heights : torch.Tensor
@@ -309,41 +358,66 @@ class NeuralSplineTransformer(MAFTransformer):
         # Extract parameters.
         widths = parameters[:, :self.n_bins]
         heights = parameters[:, self.n_bins:2*self.n_bins]
-        slopes = parameters[:, 2*self.n_bins:]
 
-        # Init identity slopes.
+        # The number of slopes parameters depend on the boundary slopes.
         if self._identity_boundary_slopes:
-            zeros = torch.zeros_like(widths[:, :1])
+            n_slopes = self.n_bins - 1
+        elif self._circular:
+            n_slopes = self.n_bins
+        else:
+            n_slopes = self.n_bins + 1
+        slopes = parameters[:, 2*self.n_bins:2*self.n_bins+n_slopes]
 
-        # Handle slopes and shifts for periodic DOFs.
+        # Shift for periodic features.
         if self._circular:
-            # The last parameter is the shift.
-            shifts = slopes[:, -1]
-
-            # Check if we the slope of the boundary knots are fixed.
-            if self._identity_boundary_slopes:
-                slopes = torch.cat([zeros, slopes], dim=1)
-            else: # Do not modify the original parameters.
-                slopes = slopes.clone()
-            # We set the slope of the last knot equal to the first.
-            slopes[:, -1] = slopes[:, 0]
+            shifts = parameters[:, -1]
+            # The slopes of period boundaries must be identical. Identity
+            # boundaries slopes are handled below.
+            if not self._identity_boundary_slopes:
+                slopes = torch.cat([slopes, slopes[:, :1]], dim=1)
         else:
             shifts = None
-            if self._identity_boundary_slopes:
-                slopes = torch.cat([zeros, slopes, zeros], dim=1)
 
-        # Normalize widths/heights.
-        tot_width = self.xf - self.x0 - self.n_bins*self._min_bin_size
-        tot_height = self._yf - self._y0 - self.n_bins*self._min_bin_size
-        widths = torch.nn.functional.softmax(widths, dim=1) * tot_width + self._min_bin_size
-        heights = torch.nn.functional.softmax(heights, dim=1) * tot_height + self._min_bin_size
+        # Set identity slopes.
+        if self._identity_boundary_slopes:
+            zeros = torch.zeros_like(widths[:, :1])
+            slopes = torch.cat([zeros, slopes, zeros], dim=1)
+
+        # rescaled_width/height is the only portion of the domain interval that
+        # can be rescaled to maintain a minimum bin size.
+        min_interval = self.n_bins*self._min_bin_size
+        rescaled_width = self.xf - self.x0 - min_interval
+        rescaled_height = self._yf - self._y0 - min_interval
+        if self._learn_lower_bound or self._learn_upper_bound:
+            domain_scale = torch.exp(parameters[:, -1])
+            rescaled_width = rescaled_width * domain_scale
+            rescaled_height = rescaled_height * domain_scale
+
+        # Normalize widths/heights. rescaled_X from (*, feat) to (*, par, feat).
+        widths = torch.nn.functional.softmax(widths, dim=1) * rescaled_width.unsqueeze(-2) + self._min_bin_size
+        heights = torch.nn.functional.softmax(heights, dim=1) * rescaled_height.unsqueeze(-2) + self._min_bin_size
+
+        # Determine the start of the input/output domain. This reshapes x0/y0
+        # from (n_features,) to (batch, n_features).
+        x0 = self.x0
+        y0 = self._y0
+        if self._learn_lower_bound and self._learn_upper_bound:
+            # If both bounds are learned, we need to shift the domain.
+            domain_shift = parameters[:, -2]
+            x0 = x0 + domain_shift
+            y0 = y0 + domain_shift
+        elif self._learn_lower_bound:
+            # We keep the upper bounds fixed and shift the lower bounds
+            # according to the scaled widths/heights.
+            x0 = self.xf - rescaled_width - min_interval
+            y0 = self._yf - rescaled_height - min_interval
 
         # Normalize slopes. The offset is such that the slope will 1 when the
         # parameters passed will be 0.
         offset = torch.log(torch.exp(1. - self._min_slope) - 1.)
         slopes = torch.nn.functional.softplus(slopes + offset) + self._min_slope
 
-        return widths, heights, slopes, shifts
+        return x0, y0, widths, heights, slopes, shifts
 
 
 # =============================================================================
@@ -379,11 +453,13 @@ def neural_spline_transformer(x, x0, y0, widths, heights, slopes):
         must be within their domain. Non-periodic features outside their domain
         will be transformed linearly.
     x0 : torch.Tensor
-        Shape ``(n_features,)``. Position of the first of the K+1 knots determining
-        the positions of the K bins for the input.
+        Shape ``(n_features,)`` or ``(batch_size, n_features)``. Position of
+        the first of the K+1 knots determining the positions of the K bins for
+        the input.
     y0 : torch.Tensor
-        Shape ``(n_features,)``. Position of the first of the K+1 knots determining
-        the positions of the K bins for the output.
+        Shape ``(n_features,)`` or ``(batch_size, n_features)``. Position of
+        the first of the K+1 knots determining the positions of the K bins for
+        the output.
     widths : torch.Tensor
         Shape ``(batch_size, K, n_features)``. ``widths[b, k, i]`` is the width
         of the k-th bin between the k-th and (k+1)-th knot for the i-th feature
@@ -505,17 +581,19 @@ def _assign_bins(x, x0, y0, widths, heights, slopes, inverse):
     n_knots = n_bins + 3
 
     # knots_x has shape (batch, K+1+2, n_features).
+    # x0/y0 has shape (n_features) or (batch, n_features).
+    # cum_width/height has shape (batch, n_bins, n_features).
     knots_x = torch.empty(batch_size, n_knots, n_features).to(x0)
     knots_x[:, 1] = x0
-    knots_x[:, 2:-1] = x0 + cum_width
+    knots_x[:, 2:-1] = x0.unsqueeze(-2) + cum_width
     knots_y = torch.empty(batch_size, n_knots, n_features).to(x0)
     knots_y[:, 1] = y0
-    knots_y[:, 2:-1] = y0 + cum_height
+    knots_y[:, 2:-1] = y0.unsqueeze(-2) + cum_height
 
     # The extreme knots defining the linear layers must be large. We set them
-    # to 2 orders of magnitude larger than the spline domain. cum_width[-1] is
+    # to 3 orders of magnitude larger than the spline domain. cum_width[-1] is
     # the total width of the domain.
-    dx = cum_width[:, -1] * 100.
+    dx = cum_width[:, -1] * 1000.
     knots_x[:, 0] = x0 - dx
     knots_x[:, -1] = knots_x[:, -2] + dx
 
