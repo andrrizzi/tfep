@@ -428,8 +428,8 @@ def test_min_bin_and_slopes(
 
     # Create the spline.
     transformer = NeuralSplineTransformer(
-        x0=torch.tensor([x0]*n_features),
-        xf=torch.tensor([xf]*n_features),
+        x0=torch.tensor(x0),
+        xf=torch.tensor(xf),
         n_bins=n_bins,
         circular=circular,
         identity_boundary_slopes=identity_boundary_slopes,
