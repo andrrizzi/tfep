@@ -42,7 +42,7 @@ class AffineTransformer(MAFTransformer):
 
     """
     # Number of parameters needed by the transformer for each input dimension.
-    n_parameters_per_input = 2
+    n_parameters_per_feature = 2
 
     def forward(self, x: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Apply the affine transformation to the input.
@@ -112,7 +112,7 @@ class AffineTransformer(MAFTransformer):
             Shape ``(2*n_features)``. The parameters for the identity.
 
         """
-        return torch.zeros(size=(self.n_parameters_per_input*n_features,))
+        return torch.zeros(size=(self.n_parameters_per_feature*n_features,))
 
     def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
         """Returns the degrees associated to the conditioner's output.
@@ -131,13 +131,13 @@ class AffineTransformer(MAFTransformer):
             transformer as parameters.
 
         """
-        return degrees_in.tile((self.n_parameters_per_input,))
+        return degrees_in.tile((self.n_parameters_per_feature,))
 
     def _split_parameters(self, parameters):
         """Divide shift from log scale."""
         # From (batch, 2*n_features) to (batch, 2, n_features).
         batch_size = parameters.shape[0]
-        parameters = parameters.reshape(batch_size, self.n_parameters_per_input, -1)
+        parameters = parameters.reshape(batch_size, self.n_parameters_per_feature, -1)
         return parameters[:, 0], parameters[:, 1]
 
 
@@ -162,7 +162,7 @@ class VolumePreservingShiftTransformer(MAFTransformer):
 
     """
     # Number of parameters needed by the transformer for each input dimension.
-    n_parameters_per_input = 1
+    n_parameters_per_feature = 1
 
     def __init__(
             self,
@@ -252,7 +252,7 @@ class VolumePreservingShiftTransformer(MAFTransformer):
             Shape ``(n_features)``. The parameters for the identity.
 
         """
-        return torch.zeros(size=(self.n_parameters_per_input*n_features,))
+        return torch.zeros(size=(self.n_parameters_per_feature*n_features,))
 
     def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
         """Returns the degrees associated to the conditioner's output.
@@ -271,7 +271,7 @@ class VolumePreservingShiftTransformer(MAFTransformer):
             transformer as parameters.
 
         """
-        return degrees_in.tile((self.n_parameters_per_input,))
+        return degrees_in.tile((self.n_parameters_per_feature,))
 
 
 # =============================================================================

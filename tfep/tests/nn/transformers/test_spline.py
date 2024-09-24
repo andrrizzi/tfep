@@ -19,10 +19,7 @@ import pytest
 import torch
 import torch.autograd
 
-from tfep.nn.transformers.spline import (
-    NeuralSplineTransformer,
-    neural_spline_transformer, neural_spline_transformer_inverse,
-)
+from tfep.nn.transformers.spline import NeuralSplineTransformer
 from tfep.utils.math import batch_autograd_log_abs_det_J
 from .. import create_random_input
 
@@ -47,54 +44,67 @@ def teardown_module(module):
 # REFERENCE IMPLEMENTATIONS
 # =============================================================================
 
-def reference_neural_spline(x, x0, y0, widths, heights, slopes):
-    """Reference implementation of neural_spline_transformer for testing."""
+def reference_neural_spline(x, x0, y0, widths, heights, slopes, shifts):
+    """A slow but simple implementation of neural_spline_transformer for testing."""
     x = x.detach().cpu().numpy()
     x0 = x0.detach().cpu().numpy()
     y0 = y0.detach().cpu().numpy()
     widths = widths.detach().cpu().numpy()
     heights = heights.detach().cpu().numpy()
     slopes = slopes.detach().cpu().numpy()
+    if shifts is not None:
+        shifts = shifts.detach().cpu().numpy()
 
     batch_size, n_bins, n_features = widths.shape
-    n_knots = n_bins + 1
-
-    # Set the slope of the last knot if not given.
-    if slopes.shape[1] < n_knots:
-        slopes = np.concatenate([slopes, slopes[:, 0:1]], axis=1)
 
     knots_x = np.empty((batch_size, n_bins+1, n_features), dtype=x.dtype)
     knots_x[:, 0] = x0
-    knots_x[:, 1:] = x0 + np.cumsum(widths, axis=1)
+    knots_x[:, 1:] = np.expand_dims(x0, axis=-2) + np.cumsum(widths, axis=1)
     knots_y = np.empty((batch_size, n_bins+1, n_features), dtype=x.dtype)
     knots_y[:, 0] = y0
-    knots_y[:, 1:] = y0 + np.cumsum(heights, axis=1)
+    knots_y[:, 1:] = np.expand_dims(y0, axis=-2) + np.cumsum(heights, axis=1)
 
     y = np.empty_like(x)
     log_det_J = np.zeros(batch_size, dtype=x.dtype)
 
     for batch_idx in range(batch_size):
         for feat_idx in range(n_features):
-            bin_idx = np.digitize(x[batch_idx, feat_idx], knots_x[batch_idx, :, feat_idx], right=False) - 1
+            x_i = x[batch_idx, feat_idx]
 
-            xk = knots_x[batch_idx, bin_idx, feat_idx]
-            xk1 = knots_x[batch_idx, bin_idx+1, feat_idx]
-            yk = knots_y[batch_idx, bin_idx, feat_idx]
-            yk1 = knots_y[batch_idx, bin_idx+1, feat_idx]
+            # Shift for circular splines.
+            if shifts is not None:
+                x_i = x_i - x0[feat_idx] + shifts[batch_idx, feat_idx]
+                x_i = x_i % (knots_x[batch_idx, -1, feat_idx] - x0[feat_idx]) + x0[feat_idx]
 
-            deltak = slopes[batch_idx, bin_idx, feat_idx]
-            deltak1 = slopes[batch_idx, bin_idx+1, feat_idx]
+            # Assign bin.
+            bin_idx = np.digitize(x_i, knots_x[batch_idx, :, feat_idx], right=False) - 1
 
-            sk = (yk1 - yk) / (xk1 - xk)
-            epsilon = (x[batch_idx, feat_idx] - xk) / (xk1 - xk)
+            # If the value falls outside the limits, we transform linearly.
+            if (bin_idx < 0) or (bin_idx == n_bins):
+                i = 0 if bin_idx < 0 else -1
+                dx = x_i - knots_x[batch_idx, i, feat_idx]
+                y[batch_idx, feat_idx] = knots_y[batch_idx, i, feat_idx] + slopes[batch_idx, i, feat_idx] * dx
+                log_det_J[batch_idx] += np.log(slopes[batch_idx, i, feat_idx])
+            else:
+                # Neural spline.
+                xk = knots_x[batch_idx, bin_idx, feat_idx]
+                xk1 = knots_x[batch_idx, bin_idx+1, feat_idx]
+                yk = knots_y[batch_idx, bin_idx, feat_idx]
+                yk1 = knots_y[batch_idx, bin_idx+1, feat_idx]
 
-            numerator = (yk1 - yk) * (sk * epsilon**2 + deltak * epsilon * (1 - epsilon))
-            denominator = sk + (deltak1 + deltak - 2*sk) * epsilon * (1 - epsilon)
-            y[batch_idx, feat_idx] = yk + numerator / denominator
+                deltak = slopes[batch_idx, bin_idx, feat_idx]
+                deltak1 = slopes[batch_idx, bin_idx+1, feat_idx]
 
-            numerator = sk**2 * (deltak1 * epsilon**2 + 2*sk*epsilon*(1 - epsilon) + deltak*(1 - epsilon)**2)
-            denominator = (sk + (deltak1 + deltak + - 2*sk) * epsilon * (1 - epsilon))**2
-            log_det_J[batch_idx] += np.log(numerator / denominator)
+                sk = (yk1 - yk) / (xk1 - xk)
+                epsilon = (x_i - xk) / (xk1 - xk)
+
+                numerator = (yk1 - yk) * (sk * epsilon**2 + deltak * epsilon * (1 - epsilon))
+                denominator = sk + (deltak1 + deltak - 2*sk) * epsilon * (1 - epsilon)
+                y[batch_idx, feat_idx] = yk + numerator / denominator
+
+                numerator = sk**2 * (deltak1 * epsilon**2 + 2*sk*epsilon*(1 - epsilon) + deltak*(1 - epsilon)**2)
+                denominator = (sk + (deltak1 + deltak + - 2*sk) * epsilon * (1 - epsilon))**2
+                log_det_J[batch_idx] += np.log(numerator / denominator)
 
     return y, log_det_J
 
@@ -103,50 +113,179 @@ def reference_neural_spline(x, x0, y0, widths, heights, slopes):
 # TESTS
 # =============================================================================
 
-@pytest.mark.parametrize('batch_size', [1, 4])
-@pytest.mark.parametrize('n_features', [2, 5, 8])
-@pytest.mark.parametrize('x0', [-2, -1])
-@pytest.mark.parametrize('y0', [1, 2])
-@pytest.mark.parametrize('n_bins', [2, 3, 5])
-def test_neural_spline_transformer_reference(batch_size, n_features, x0, y0, n_bins):
-    """Compare PyTorch and reference implementation of neural spline transformer."""
-    # Determine the first and final knots of the spline. We
-    # arbitrarily set the domain of the first dimension to 0.0
-    # to test different dimensions for different features.
-    x0 = torch.full((n_features,), x0, dtype=torch.double, requires_grad=False)
+@pytest.mark.parametrize('batch_size', [1, 5])
+@pytest.mark.parametrize('n_features', [1, 4])
+@pytest.mark.parametrize('n_bins', [2, 3])
+@pytest.mark.parametrize('circular', [False, True])
+@pytest.mark.parametrize('identity_boundary_slopes', [False, True])
+@pytest.mark.parametrize('learn_lower_bound', [False, True])
+@pytest.mark.parametrize('learn_upper_bound', [False, True])
+def test_neural_spline_transformer_get_parameters(
+        batch_size,
+        n_features,
+        n_bins,
+        circular,
+        identity_boundary_slopes,
+        learn_lower_bound,
+        learn_upper_bound,
+):
+    """Check the parameters' split and the boundary slopes."""
+    x0 = torch.full((n_features,), -1., dtype=torch.double, requires_grad=False)
     xf = -x0
-    xf[0] = 0
-    y0 = torch.full((n_features,), y0, dtype=torch.double, requires_grad=False)
-    yf = y0 + xf - x0
+    init_kwargs = dict(
+        x0=x0, xf=xf,
+        n_bins=n_bins,
+        circular=circular,
+        identity_boundary_slopes=identity_boundary_slopes,
+        learn_lower_bound=learn_lower_bound,
+        learn_upper_bound=learn_upper_bound,
+    )
 
-    # Create widths, heights, and slopes of the bins.
+    # An error is raised if a circular spline is created with learnable limits.
+    if circular and (learn_lower_bound or learn_upper_bound):
+        with pytest.raises(ValueError, match='circular spline with learnable limits'):
+            NeuralSplineTransformer(**init_kwargs)
+        return
+    transformer = NeuralSplineTransformer(**init_kwargs)
+
+    # Verify the expected number of parameters.
+    n_parameters = (3*n_bins + 1) * n_features
+    # In circular splines, there is a an extra shift parameter.
+    n_parameters += (n_features*circular - 2*n_features) * identity_boundary_slopes
+    n_parameters += n_features * learn_lower_bound
+    n_parameters += n_features * learn_upper_bound
+    assert len(transformer.get_identity_parameters(n_features)) == n_parameters
+
+    # Create random parameters.
     x, parameters = create_random_input(
         batch_size,
         n_features,
-        n_parameters=(3*n_bins+1) * n_features,
-        seed=0,
-        x_func=torch.rand,
+        n_parameters=n_parameters,
+        x_func=torch.randn,
     )
-    parameters = parameters.reshape(batch_size, -1, n_features)
 
-    widths = torch.nn.functional.softmax(parameters[:, :n_bins], dim=1) * (xf - x0)
-    heights = torch.nn.functional.softmax(parameters[:, n_bins:2*n_bins], dim=1) * (yf - y0)
-    slopes = torch.nn.functional.softplus(parameters[:, 2*n_bins:])
+    # Process the parameters.
+    new_x0, new_y0, widths, heights, slopes, shifts = transformer._get_parameters(parameters)
+    new_xf = new_x0 + torch.sum(widths, dim=1)
+    new_yf = new_y0 + torch.sum(heights, dim=1)
 
-    # x is now between 0 and 1 but it must be between x0 and xf. We detach
-    # to make the new x a leaf variable and reset requires_grad.
-    x = x.detach() * (xf - x0) + x0
+    # The lengths of the parameters are correct.
+    assert widths.shape == (batch_size, n_bins, n_features)
+    assert heights.shape == (batch_size, n_bins, n_features)
+    assert slopes.shape == (batch_size, n_bins+1, n_features)
+
+    # For circular splines check also the shift parameter.
+    if circular:
+        assert shifts.shape == (batch_size, n_features)
+    else:
+        assert shifts is None
+
+    # The boundary slopes are correct.
+    if identity_boundary_slopes:
+        assert torch.allclose(slopes[:, 0], torch.ones_like(slopes[:, 0]))
+        assert torch.allclose(slopes[:, -1], torch.ones_like(slopes[:, 0]))
+    if circular:
+        assert torch.allclose(slopes[:, 0], slopes[:, -1])
+
+    # Check the domain has been changed. x and y have the same domain here.
+    for bound in [new_x0, new_y0]:
+        is_close = torch.allclose(x0, bound)
+        assert not is_close if learn_lower_bound else is_close
+    for bound in [new_xf, new_yf]:
+        is_close = torch.allclose(xf, bound)
+        assert not is_close if learn_upper_bound else is_close
+
+
+@pytest.mark.parametrize('batch_size', [1, 3])
+@pytest.mark.parametrize('n_features', [1, 4])
+@pytest.mark.parametrize('x0', [-2, -1])
+@pytest.mark.parametrize('y0', [1, 2])
+@pytest.mark.parametrize('n_bins', [2, 5])
+@pytest.mark.parametrize('circular', [False, True])
+@pytest.mark.parametrize('identity_boundary_slopes', [False, True])
+@pytest.mark.parametrize('learn_lower_bound', [False, True])
+@pytest.mark.parametrize('learn_upper_bound', [False, True])
+def test_neural_spline_transformer_reference(
+        batch_size,
+        n_features,
+        x0,
+        y0,
+        n_bins,
+        circular,
+        identity_boundary_slopes,
+        learn_lower_bound,
+        learn_upper_bound,
+):
+    """Compare PyTorch and reference implementation of neural spline transformer."""
+    if circular and (learn_lower_bound or learn_upper_bound):
+        pytest.skip('circular splines are incompatible with learnable limits.')
+
+    # Determine the first and final knots of the spline. We arbitrarily set the
+    # domain of the first dimension to 0.0 to test different dimensions for
+    # different features.
+    x0 = torch.full((n_features,), x0, dtype=torch.double, requires_grad=False)
+    xf = -x0
+    xf[0] = 0
+
+    # Circular splines require the same domain for y.
+    if circular:
+        y0 = x0
+        yf = xf
+    else:
+        y0 = torch.full((n_features,), y0, dtype=torch.double, requires_grad=False)
+        yf = y0 + xf - x0
+
+    # Deactivate minimum bin size/slope which are not implemented in the reference.
+    transformer = NeuralSplineTransformer(
+        x0=x0, xf=xf,
+        n_bins=n_bins,
+        y0=y0, yf=yf,
+        circular=circular,
+        learn_lower_bound=learn_lower_bound,
+        learn_upper_bound=learn_upper_bound,
+        min_bin_size=1e-12, min_slope=1e-12,
+    )
+
+    # Create random input. Periodic inputs are expected within the domain.
+    x, parameters = create_random_input(
+        batch_size,
+        n_features,
+        n_parameters=transformer.n_parameters_per_feature*n_features,
+        seed=0,
+        x_func=torch.rand if circular else torch.randn,
+    )
+
+    if circular:
+        # x is now between 0 and 1. Scale and shift to match the spline domain.
+        x = x * (xf - x0) + x0
+        assert torch.all(x >= x0) and torch.all(x <= xf)
+    else:
+        # x is now distributed around 0. We center it and scale it so that the
+        # most of the values are between x0 and xf. We detach to make the new x
+        # a leaf variable and reset requires_grad.
+        x = x * (xf - x0) + (x0 + xf) / 2
+
+    # Set requires_grad to check the log_det_J against autograd.
+    x = x.detach()
     x.requires_grad = True
 
-    ref_y, ref_log_det_J = reference_neural_spline(x, x0, y0, widths, heights, slopes)
-    torch_y, torch_log_det_J = neural_spline_transformer(x, x0, y0, widths, heights, slopes)
+    # The parameters for the reference function.
+    x0, y0, widths, heights, slopes, shifts = transformer._get_parameters(parameters)
 
+    # Test the result against the reference implementation.
+    torch_y, torch_log_det_J = transformer(x, parameters)
+    ref_y, ref_log_det_J = reference_neural_spline(x, x0, y0, widths, heights, slopes, shifts)
     assert np.allclose(ref_y, torch_y.detach().cpu().numpy())
     assert np.allclose(ref_log_det_J, torch_log_det_J.detach().cpu().numpy())
 
-    # Check y0, yf boundaries are satisfied
-    assert torch.all(y0 < torch_y)
-    assert torch.all(torch_y < yf)
+    # Update also upper domain bounds.
+    if learn_upper_bound:
+        xf = x0 + widths.sum(dim=1)
+        yf = y0 + heights.sum(dim=1)
+
+    # Check y0, yf boundaries are satisfied for inputs within the spline domain.
+    assert torch.all((x0 < x) == (y0 < torch_y))
+    assert torch.all((x < xf) == (torch_y < yf))
 
     # Compute the reference log_det_J also with autograd and numpy.
     ref_log_det_J2 = batch_autograd_log_abs_det_J(x, torch_y)
@@ -155,7 +294,7 @@ def test_neural_spline_transformer_reference(batch_size, n_features, x0, y0, n_b
     # Check that inverting returns the original input.
     y = torch_y.detach()
     y.requires_grad = True
-    x_inv, log_det_J_inv = neural_spline_transformer_inverse(y, x0, y0, widths, heights, slopes)
+    x_inv, log_det_J_inv = transformer.inverse(y, parameters)
     assert torch.allclose(x, x_inv)
     assert torch.allclose(torch_log_det_J+log_det_J_inv, torch.zeros_like(torch_log_det_J))
 
@@ -164,30 +303,18 @@ def test_neural_spline_transformer_reference(batch_size, n_features, x0, y0, n_b
     assert torch.allclose(ref_log_det_J_inv, log_det_J_inv)
 
 
-@pytest.mark.parametrize('circular', [
-    True,
-    torch.tensor([0]),
-    torch.tensor([1]),
-    torch.tensor([0, 1]),
-    torch.tensor([1, 2]),
-])
-def test_circular_spline_transformer_periodic(circular):
+def test_circular_spline_transformer_periodic():
     """Test that circular spline transformer conditions for periodicity are verified."""
     batch_size = 5
     n_features = 3
     n_bins = 3
 
-    if circular is True:
-        circular_indices = torch.arange(n_features)
-    else:
-        circular_indices = circular
-
     # Input lower/upper boundaries.
     x0 = torch.tensor([0.0, -1, 2])
     xf = torch.tensor([2.0, -0.5, 5])
 
-    # Create input. The first and last batch are the lower and upper boundaries
-    # respectively. The last batches are random.
+    # Create input. The first and second batches are the lower and upper
+    # boundaries, respectively. The last batches are random.
     epsilon = 1e-8
     x = torch.cat([
         x0.unsqueeze(0) + epsilon,
@@ -199,12 +326,12 @@ def test_circular_spline_transformer_periodic(circular):
     parameters = torch.randn((batch_size, (3*n_bins+1) * n_features))
 
     # Create and run the transformer.
-    transformer = NeuralSplineTransformer(x0=x0, xf=xf, n_bins=n_bins, circular=circular)
+    transformer = NeuralSplineTransformer(x0=x0, xf=xf, n_bins=n_bins, circular=True)
     y, log_det_J = transformer(x, parameters)
 
     # The slopes of the first and last knots must be the same.
-    _, _, slopes, shifts = transformer._get_parameters(parameters)
-    assert torch.allclose(slopes[:, 0, circular_indices], slopes[:, -1, circular_indices])
+    _, _, _, _, slopes, shifts = transformer._get_parameters(parameters)
+    assert torch.allclose(slopes[:, 0], slopes[:, -1])
 
     # The random input are still within boundaries
     assert torch.all(x0 < y)
@@ -216,32 +343,51 @@ def test_circular_spline_transformer_periodic(circular):
     assert torch.allclose(log_det_J+log_det_J_inv, torch.zeros_like(log_det_J))
 
     # If the shifts are 0.0, the boundaries must be mapped to themselves.
-    parameters.reshape(batch_size, -1, n_features)[:, 3*n_bins, circular_indices] = 0.0
+    parameters.reshape(batch_size, -1, n_features)[:, 3*n_bins] = 0.0
     y, log_det_J = transformer(x, parameters.reshape(batch_size, -1))
     assert torch.allclose(x[:2], y[:2], atol=10*epsilon)
 
 
-@pytest.mark.parametrize('circular', [
-    False,
-    True,
-    torch.tensor([0]),
-    torch.tensor([1]),
-    torch.tensor([0, 2]),
-    torch.tensor([1, 2]),
-])
-def test_identity_neural_spline(circular):
+@pytest.mark.parametrize('batch_size', [1, 3])
+@pytest.mark.parametrize('n_features', [1, 4])
+@pytest.mark.parametrize('n_bins', [2, 5])
+@pytest.mark.parametrize('circular', [False, True])
+@pytest.mark.parametrize('identity_boundary_slopes', [False, True])
+@pytest.mark.parametrize('learn_lower_bound', [False, True])
+@pytest.mark.parametrize('learn_upper_bound', [False, True])
+def test_identity_neural_spline(
+        batch_size,
+        n_features,
+        n_bins,
+        circular,
+        identity_boundary_slopes,
+        learn_lower_bound,
+        learn_upper_bound,
+):
     """Test that get_identity_parameters returns the correct parameters for the identity function."""
-    batch_size = 5
-    n_features = 3
-    n_bins = 3
+    if circular and (learn_lower_bound or learn_upper_bound):
+        pytest.skip('circular splines are incompatible with learnable limits.')
 
-    # Create random input.
     x0 = torch.randn(n_features)
-    xf = x0 + torch.abs(torch.randn(n_features))
-    x = torch.rand((batch_size, n_features)) * (xf - x0) + x0
+    xf = x0 + torch.abs(torch.rand(n_features)) + 1.
+
+    # Create random input. For circular splines, the input is expected to be
+    # within the spline domain.
+    if circular:
+        x = torch.rand((batch_size, n_features)) * (xf - x0) + x0
+    else:
+        x = torch.randn((batch_size, n_features)) * (xf - x0) + (x0 + xf) / 2
 
     # Obtain identity parameters.
-    transformer = NeuralSplineTransformer(x0=x0, xf=xf, n_bins=n_bins, circular=circular)
+    transformer = NeuralSplineTransformer(
+        x0=x0,
+        xf=xf,
+        n_bins=n_bins,
+        circular=circular,
+        identity_boundary_slopes=identity_boundary_slopes,
+        learn_lower_bound=learn_lower_bound,
+        learn_upper_bound=learn_upper_bound,
+    )
     parameters = transformer.get_identity_parameters(n_features)
     # We need to clone to actually allocate the memory or sliced
     # assignment operations on parameters won't work.
@@ -256,3 +402,68 @@ def test_identity_neural_spline(circular):
     x_inv, log_det_J_inv = transformer.inverse(y, parameters)
     assert torch.allclose(x, x_inv)
     assert torch.allclose(log_det_J_inv, torch.zeros_like(log_det_J))
+
+
+@pytest.mark.parametrize('circular', [False, True])
+@pytest.mark.parametrize('identity_boundary_slopes', [False, True])
+@pytest.mark.parametrize('learn_lower_bound', [False, True])
+@pytest.mark.parametrize('learn_upper_bound', [False, True])
+def test_min_bin_and_slopes(
+        circular,
+        identity_boundary_slopes,
+        learn_lower_bound,
+        learn_upper_bound,
+):
+    """NeuralSplineTransformer sets a minimum bin size and slope."""
+    if circular and (learn_lower_bound or learn_upper_bound):
+        pytest.skip('circular splines are incompatible with learnable limits.')
+
+    batch_size = 5
+    n_bins = 3
+    n_features = 3
+    x0 = -2.
+    xf = 2.
+    min_bin_size = 1e-2
+    min_slope = 1e-2
+
+    # Create the spline.
+    transformer = NeuralSplineTransformer(
+        x0=torch.tensor(x0),
+        xf=torch.tensor(xf),
+        n_bins=n_bins,
+        circular=circular,
+        identity_boundary_slopes=identity_boundary_slopes,
+        learn_lower_bound=learn_lower_bound,
+        learn_upper_bound=learn_upper_bound,
+        min_bin_size=min_bin_size,
+        min_slope=min_slope,
+    )
+
+    # Create random parameters.
+    parameters = torch.randn((batch_size, transformer.n_parameters_per_feature, n_features))
+
+    # Set very small widths, heights, and slopes for a bin/knot.
+    parameters[:, 0] = parameters[:, n_bins] = parameters[:, 2*n_bins] = -1e3
+
+    # Verify that there are bins/slopes smaller than the threshold.
+    widths = torch.nn.functional.softmax(parameters[:, :n_bins], dim=1) * (xf - x0)
+    heights = torch.nn.functional.softmax(parameters[:, n_bins:2*n_bins], dim=1) * (xf - x0)
+    offset = torch.log(torch.tensor(np.e) - 1.)
+    slopes = torch.nn.functional.softplus(parameters[:, 2*n_bins:] + offset)
+    assert torch.any(widths < min_bin_size)
+    assert torch.any(heights < min_bin_size)
+    assert torch.any(slopes < min_slope)
+
+    # With learnable domain, also set the scale to a very small value.
+    if learn_lower_bound or learn_upper_bound:
+        parameters[:, -2] = -1e9
+        scale = torch.exp(parameters[:, -2])
+        assert torch.all(widths.sum(dim=1) * scale < min_bin_size)
+        assert torch.all(heights.sum(dim=1) * scale < min_bin_size)
+
+    # The bins/slopes smaller than the threshold has been increased.
+    parameters = parameters.reshape(batch_size, -1)
+    x0, y0, widths, heights, slopes, shifts = transformer._get_parameters(parameters)
+    assert torch.all(widths >= min_bin_size)
+    assert torch.all(heights >= min_bin_size)
+    assert torch.all(slopes >= min_slope)

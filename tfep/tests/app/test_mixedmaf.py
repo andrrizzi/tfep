@@ -480,31 +480,34 @@ def test_mixed_maf_flow_get_transformer(origin_atom, axes_atoms, are_bonded):
     tfep_map.setup()
 
     # Get transformer.
-    transformer = tfep_map._flow.flow.flow[0]._transformer
+    mixed_transformer = tfep_map._flow.flow.flow[0]._transformer
+    spline, circular_spline = mixed_transformer._transformers
 
     # There are always 4 bonds/angles/torsions.
     n_ic = 4
 
     # Check bond limits.
-    assert torch.allclose(transformer.x0[:n_ic], torch.full((n_ic,), bond_limits[0]))
-    assert torch.allclose(transformer.xf[:n_ic], torch.full((n_ic,), bond_limits[1]))
+    assert torch.allclose(spline.x0[:n_ic], torch.full((n_ic,), bond_limits[0]))
+    assert torch.allclose(spline.xf[:n_ic], torch.full((n_ic,), bond_limits[1]))
 
     # Check angles and torsions limits.
-    assert torch.allclose(transformer.x0[n_ic:3*n_ic], torch.zeros(2*n_ic))
-    assert torch.allclose(transformer.xf[n_ic:3*n_ic], torch.ones(2*n_ic))
+    assert torch.allclose(spline.x0[n_ic:2*n_ic], torch.zeros(n_ic))
+    assert torch.allclose(spline.xf[n_ic:2*n_ic], torch.ones(n_ic))
+    assert torch.allclose(circular_spline.x0, torch.zeros(n_ic))
+    assert torch.allclose(circular_spline.xf, torch.ones(n_ic))
 
     # Torsions must be flagged as circular (but not bond angles which are in [0, pi]).
     expected_circular_indices = list(range(2*n_ic, 3*n_ic))
-    assert torch.all(transformer._circular == torch.tensor(expected_circular_indices))
+    assert torch.all(mixed_transformer._indices1 == torch.tensor(expected_circular_indices))
 
     # Check if there are the axes atoms DOFs after the internal coordinates.
     if axes_atoms is not None:
         # The limits are different if the axes atoms are bonded to the origin or not.
         for i, is_bonded in enumerate(are_bonded):
-            idx = 3 * n_ic + i
+            idx = 2 * n_ic + i
             if is_bonded:
-                assert np.isclose(transformer.x0[idx].tolist(), bond_limits[0])
-                assert np.isclose(transformer.xf[idx].tolist(), bond_limits[1])
+                assert np.isclose(spline.x0[idx].tolist(), bond_limits[0])
+                assert np.isclose(spline.xf[idx].tolist(), bond_limits[1])
             else:
                 # The limits depends on the value during the simulation.
                 positions = tfep_map.dataset.universe.trajectory[0].positions
@@ -515,27 +518,29 @@ def test_mixed_maf_flow_get_transformer(origin_atom, axes_atoms, are_bonded):
                     axes_pos = axes_pos - positions[tfep_map._origin_atom_idx.tolist()]
                 axes_dist = np.linalg.norm(axes_pos).tolist()
 
-                assert np.isclose(transformer.x0[idx].tolist(), max(0.0, axes_dist-max_cartesian_displacement), atol=1e-5)
-                assert np.isclose(transformer.xf[idx].tolist(), axes_dist+max_cartesian_displacement, atol=1e-5)
+                assert np.isclose(spline.x0[idx].tolist(), max(0.0, axes_dist-max_cartesian_displacement), atol=1e-5)
+                assert np.isclose(spline.xf[idx].tolist(), axes_dist+max_cartesian_displacement, atol=1e-5)
 
         # The third DOF is always an angle.
-        idx = 3 * n_ic + 2
-        assert np.isclose(transformer.x0[idx].tolist(), 0.0)
-        assert np.isclose(transformer.xf[idx].tolist(), 1.0)
+        idx = 2 * n_ic + 2
+        assert np.isclose(spline.x0[idx].tolist(), 0.0)
+        assert np.isclose(spline.xf[idx].tolist(), 1.0)
 
         # First index treated as a Cartesian coordinate.
         start_cartesian_idx = idx + 1
     else:
-        start_cartesian_idx = 3 * n_ic + 1
+        start_cartesian_idx = 2 * n_ic + 1
 
     # Neural splines don't care about conditioning atoms.
-    assert len(transformer.x0) == tfep_map.n_mapped_dofs
-    assert len(transformer.xf) == tfep_map.n_mapped_dofs
+    assert len(spline.x0) == tfep_map.n_mapped_dofs - n_ic
+    assert len(circular_spline.x0) == n_ic
+    assert len(spline.xf) == tfep_map.n_mapped_dofs - n_ic
+    assert len(circular_spline.xf) == n_ic
 
     # The other mapped and conditioning are treated as Cartesian. There is only
     # 1 frame in the trajectory so the min and max value for the DOF is the same.
     expected_diff = 2 * max_cartesian_displacement
-    diff = transformer.xf[start_cartesian_idx:] - transformer.x0[start_cartesian_idx:]
+    diff = spline.xf[start_cartesian_idx:] - spline.x0[start_cartesian_idx:]
     assert torch.all(torch.isclose(diff, torch.tensor(expected_diff)))
 
 

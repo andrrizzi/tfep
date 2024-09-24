@@ -77,7 +77,7 @@ class SOSPolynomialTransformer(MAFTransformer):
         return self.degree_polynomials + 1
 
     @property
-    def n_parameters_per_input(self):
+    def n_parameters_per_feature(self):
         """Number of parameters needed by the transformer for each input dimension."""
         return self.parameters_per_polynomial * self.n_polynomials + 1
 
@@ -105,7 +105,7 @@ class SOSPolynomialTransformer(MAFTransformer):
         """
         # From (batch, n_parameters*n_features) to (batch, n_parameters, n_features).
         batch_size = parameters.shape[0]
-        parameters = parameters.reshape(batch_size, self.n_parameters_per_input, -1)
+        parameters = parameters.reshape(batch_size, self.n_parameters_per_feature, -1)
         return sos_polynomial_transformer(x, parameters)
 
     def inverse(self, y: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
@@ -131,7 +131,7 @@ class SOSPolynomialTransformer(MAFTransformer):
             and degree of the polynomials.
 
         """
-        id_conditioner = torch.zeros(size=(self.n_parameters_per_input, n_features))
+        id_conditioner = torch.zeros(size=(self.n_parameters_per_feature, n_features))
         # The sum of the squared linear parameters must be 1.
         id_conditioner[1::self.parameters_per_polynomial].fill_(np.sqrt(1 / self.n_polynomials))
         return id_conditioner.flatten()
@@ -153,7 +153,7 @@ class SOSPolynomialTransformer(MAFTransformer):
             transformer as parameters.
 
         """
-        return degrees_in.tile((self.n_parameters_per_input,))
+        return degrees_in.tile((self.n_parameters_per_feature,))
 
 
 # =============================================================================
