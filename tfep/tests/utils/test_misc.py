@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 import torch
 
-from tfep.utils.misc import ensure_tensor_sequence
+from tfep.utils.misc import ensure_tensor_sequence, remove_and_shift_sorted_indices
 
 
 # =============================================================================
@@ -44,3 +44,58 @@ def test_ensure_int_tensor_sequence(x, expected):
     except TypeError:
         assert y == expected
         assert type(y) == type(expected)
+
+
+@pytest.mark.parametrize('indices,removed_indices,remove,shift,expected', [
+    (
+        [0, 2, 3, 7],
+        [1, 3, 5],
+        True, True,
+        [0, 1, 4],
+    ), (
+        [0, 2, 3, 7],
+        [1, 3, 5],
+        True, False,
+        [0, 2, 7],
+    ), (
+        [0, 1, 2, 3],
+        [0, 1, 2, 3],
+        True, True,
+        [],
+    ), (
+        [0, 1, 2, 3],
+        [0, 1, 2, 3],
+        True, False,
+        [],
+    ), (
+        [3, 5, 8, 12, 15],
+        [2, 7],
+        True, True,
+        [2, 4, 6, 10, 13],
+    ), (
+        [3, 5, 8, 12, 15],
+        [2, 7],
+        True, False,
+        [3, 5, 8, 12, 15],
+    ), (
+        [3, 5, 8, 12, 15],
+        [2, 7],
+        False, True,
+        [2, 4, 6, 10, 13],
+    )
+])
+def test_remove_and_shift_sorted_indices(
+        indices,
+        removed_indices,
+        remove,
+        shift,
+        expected,
+):
+    """Test utility method remove_and_shift_sorted_indices()."""
+    out = remove_and_shift_sorted_indices(
+        indices=torch.tensor(indices),
+        removed_indices=torch.tensor(removed_indices),
+        remove=remove,
+        shift=shift,
+    )
+    assert torch.all(torch.tensor(expected) == out)
