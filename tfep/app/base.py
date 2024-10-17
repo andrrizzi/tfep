@@ -23,7 +23,7 @@ import torch
 
 import tfep.loss
 import tfep.io.sampler
-from tfep.utils.misc import atom_to_flattened_indices
+from tfep.utils.misc import atom_to_flattened_indices, remove_and_shift_sorted_indices
 
 
 # =============================================================================
@@ -527,8 +527,9 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         if remove_fixed and self.n_fixed_atoms > 0:
             for i, atom_indices in enumerate(reference_atom_indices):
                 if atom_indices is not None:
-                    shift = torch.searchsorted(self._fixed_atom_indices, atom_indices)
-                    reference_atom_indices[i] = atom_indices - shift
+                    # Reference atoms are conditioning or mapped. We can set remove=False.
+                    reference_atom_indices[i] = remove_and_shift_sorted_indices(
+                        atom_indices, removed_indices=self._fixed_atom_indices, remove=False)
 
         # Concatenate if requested.
         if not separate_origin_axes:
@@ -954,11 +955,12 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         # Returned value (could be atom or dof indices).
         indices = atom_indices
 
-        # We search the fixed indices by atom index so that searchsorted takes
-        # three times less and we expect the fixed indices (when present) to be
-        # the most numerous.
+        # We remove the atom indices (not DOF indices) which is 3 times faster.
         if remove_fixed and self.n_fixed_atoms > 0:
-            indices = indices - torch.searchsorted(self._fixed_atom_indices, indices)
+            # We already know that atom_indices do not contain any fixed atom
+            # index so we just need to shift them.
+            indices = remove_and_shift_sorted_indices(
+                indices, removed_indices=self._fixed_atom_indices, remove=False)
 
         # Convert to DOF indices.
         if is_dof:

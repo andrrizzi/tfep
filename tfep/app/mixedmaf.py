@@ -34,7 +34,12 @@ from tfep.utils.geometry import (
     cartesian_to_polar,
     polar_to_cartesian,
 )
-from tfep.utils.misc import atom_to_flattened_indices, atom_to_flattened, flattened_to_atom
+from tfep.utils.misc import (
+    atom_to_flattened_indices,
+    atom_to_flattened,
+    flattened_to_atom,
+    remove_and_shift_sorted_indices,
+)
 
 
 # =============================================================================
@@ -797,19 +802,14 @@ class MixedMAFMap(TFEPMapBase):
 
         # Now filter all conditioning dofs.
         if maf_conditioning_dof_indices is not None:
-            maf_conditioning_dof_indices_set = set(maf_conditioning_dof_indices.tolist())
-            mask = [i not in maf_conditioning_dof_indices_set for i in range(self.n_nonfixed_dofs)]
+            mask = torch.isin(torch.arange(self.n_nonfixed_dofs), maf_conditioning_dof_indices,
+                              assume_unique=True, invert=True)
             x0 = x0[mask]
             xf = xf[mask]
 
-            # We need to filter also for the periodic DOF indices.
-            mask = [i not in maf_conditioning_dof_indices_set for i in maf_periodic_dof_indices.tolist()]
-            maf_periodic_dof_indices = maf_periodic_dof_indices[mask]
-
-            # The indices of circular refer to the indices of x0/xf. We need to
-            # shift them to account for the removal of the conditioning DOFs.
-            maf_periodic_dof_indices = maf_periodic_dof_indices - torch.searchsorted(
-                maf_conditioning_dof_indices, maf_periodic_dof_indices)
+            # We need to remove (and shift) the periodic DOF indices.
+            maf_periodic_dof_indices = remove_and_shift_sorted_indices(
+                maf_periodic_dof_indices, removed_indices=maf_conditioning_dof_indices)
 
         # Find all non-periodic DOFs (after filtering the conditioning ones).
         mask = torch.full(x0.shape, fill_value=True)
@@ -1050,11 +1050,14 @@ class _CartesianToMixedFlow(torch.nn.Module):
         conditioning_atom_indices_in_cartesian_no_ref = torch.tensor(
             conditioning_atom_indices_in_cartesian_no_ref).to(self._reference_atoms_indices_in_cartesian)
 
-        # Shift indices due to the removed reference atoms. searchsorted requires sorted tensor.
-        # We eventually will shift the indices to the right for the axes atoms DOFs later.
+        # Shift indices due to the removed reference atoms. We eventually will
+        # shift the indices to the right for the axes atoms DOFs later.
         reference_atoms_indices_in_cartesian_sorted = self._reference_atoms_indices_in_cartesian.sort()[0]
-        conditioning_atom_indices_in_cartesian_no_ref = conditioning_atom_indices_in_cartesian_no_ref - torch.searchsorted(
-            reference_atoms_indices_in_cartesian_sorted, conditioning_atom_indices_in_cartesian_no_ref)
+        conditioning_atom_indices_in_cartesian_no_ref = remove_and_shift_sorted_indices(
+            conditioning_atom_indices_in_cartesian_no_ref,
+            removed_indices=reference_atoms_indices_in_cartesian_sorted,
+            remove=False,
+        )
 
         # Shift indices by the number of internal coordinates before the Cartesian ones.
         maf_conditioning_dof_indices = conditioning_atom_indices_in_cartesian_no_ref + self.n_ic_atoms
