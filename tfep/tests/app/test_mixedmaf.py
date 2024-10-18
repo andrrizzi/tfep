@@ -74,9 +74,13 @@ class MyMixedMAFMap(MixedMAFMap):
     CLMET, F, WAT1, and WAT2 respectively. The positions of the atoms may overlap
     so don't run a potential energy evaluation.
 
-    The returned trajectory has only 1 frame.
+    The returned trajectory has only 1 frame and as a consequence the spline
+    lower/upper limits for the Cartesian coordinates are identical so here we
+    shift them by one Angstrom.
 
     """
+
+    CARTESIAN_LIMIT_SHIFT = 1.0
 
     def __init__(self, benzoic_acid_only=False, **kwargs):
         super().__init__(
@@ -107,6 +111,12 @@ class MyMixedMAFMap(MixedMAFMap):
         combined.del_TopologyAttr('resname')
         combined.add_TopologyAttr('resname', ['BEN', 'CLMET', 'F', 'WAT1', 'WAT2'])
         return combined
+
+    def _get_transformer(self, *args, **kwargs):
+        mixed_transformer = super()._get_transformer(*args, **kwargs)
+        mixed_transformer._transformers[-1].x0 -= self.CARTESIAN_LIMIT_SHIFT
+        mixed_transformer._transformers[-1].xf += self.CARTESIAN_LIMIT_SHIFT
+        return mixed_transformer
 
 
 # =============================================================================
@@ -155,8 +165,8 @@ def test_cartesian_to_mixed_flow_get_maf_conditioning_dof_indices(origin, axes, 
 @pytest.mark.parametrize('axes', [None, [1, 0], [3, 5]])
 def test_cartesian_to_mixed_flow_get_maf_angles_dof_indices(axes):
     """Test method _CartesianToMixedFlow.get_maf_angles_dof_indices()."""
-    expected_angles = torch.tensor([2, 3, 4, 5])
-    expected_periodic = torch.tensor([4, 5])
+    expected_angles = torch.tensor([2, 3])
+    expected_torsions = torch.tensor([4, 5])
     if axes is not None:
         axes = torch.tensor(axes)
         expected_angles = torch.cat([expected_angles, torch.tensor([8])])
@@ -171,13 +181,11 @@ def test_cartesian_to_mixed_flow_get_maf_angles_dof_indices(axes):
     angles_indices, periodic_indices = flow.get_maf_angles_dof_indices()
 
     assert torch.all(angles_indices == expected_angles)
-    assert torch.all(periodic_indices == expected_periodic)
+    assert torch.all(periodic_indices == expected_torsions)
 
 
 @pytest.mark.parametrize('axes', [None, torch.tensor([1, 0])])
-@pytest.mark.parametrize('return_bonds', [False, True])
-@pytest.mark.parametrize('return_axes', [False, True])
-def test_cartesian_to_mixed_flow_get_maf_distance_dof_indices(axes, return_bonds, return_axes):
+def test_cartesian_to_mixed_flow_get_maf_distance_dof_indices(axes):
     """Test method _CartesianToMixedFlow.get_maf_distance_dof_indices()."""
     flow = _CartesianToMixedFlow(
         flow=None,
@@ -186,12 +194,10 @@ def test_cartesian_to_mixed_flow_get_maf_distance_dof_indices(axes, return_bonds
         origin_atom_idx=None,
         axes_atoms_indices=axes,
     )
-    distance_indices = flow.get_maf_distance_dof_indices(return_bonds=return_bonds, return_axes=return_axes)
+    distance_indices = flow.get_maf_distance_dof_indices()
 
-    expected = []
-    if return_bonds:
-        expected = [0, 1]
-    if return_axes and axes is not None:
+    expected = [0, 1]
+    if axes is not None:
         expected.extend([6, 7])
     assert torch.all(distance_indices == torch.tensor(expected))
 
@@ -248,29 +254,29 @@ def test_cartesian_to_mixed_flow_conversion(origin, axes):
 # TESTS MixedMAFMap
 # =============================================================================
 
-@pytest.mark.parametrize('mapped_atoms,conditioning_atoms,origin_atom,axes_atoms,expected_are_bonded,expected_z_matrix', [
+@pytest.mark.parametrize('mapped_atoms,conditioning_atoms,origin_atom,axes_atoms,expected_z_matrix', [
     # Chloromethane is mapped. Everything else is fixed. No origin/axes.
     ('resname CLMET',
      None,
-     None, None, None,
+     None, None,
      [[3, 0, 2, 1], [4, 0, 3, 2]]
      ),
     # Map separable parts of benzoic acid. Everything else is fixed. No origin/axes.
     ('resname BEN and (name H3 or name C3 or name C4 or name H4 or name HO2 or name O2 or name C or name O1)',
      None,
-     None, None, None,
+     None, None,
      [[5, 2, 0, 1], [7, 4, 3, 6]]
      ),
     # Map multiple molecules: chloromethane, water, and F. Everything else is fixed. No origin/axes.
     ('resname CLMET or resname WAT1 or resname F',
      None,
-     None, None, None,
+     None, None,
      [[3, 0, 2, 1], [4, 0, 3, 2]]
      ),
     # Map multiple molecules: benzoic acid and chloromethane. Everything else is fixed. No origin/axes.
     ('resname BEN or resname CLMET',
      None,
-     None, None, None,
+     None, None,
      [
          [8, 3, 4, 0],
          [1, 0, 3, 8],
@@ -290,7 +296,7 @@ def test_cartesian_to_mixed_flow_conversion(origin, axes):
     # Condition benzoic acid's H atoms on its other atoms.
     ('resname BEN and element H',
      'resname BEN and not element H',
-     None, None, None,
+     None, None,
       [
          [10, 4, 5, 3],
          [14, 8, 7, 3],
@@ -302,37 +308,37 @@ def test_cartesian_to_mixed_flow_conversion(origin, axes):
     # Set the origin atom.
     ('resname BEN and element C and not name C4',
      'resname BEN and name C4',
-     'resname BEN and name C4', None, None,
+     'resname BEN and name C4', None,
       [[2, 3, 4, 5], [6, 5, 4, 2], [1, 6, 2, 5], [0, 1, 6, 2]]
      ),
     # Set as axes atom the C3 and C5 atoms of benzoic acid.
     ('resname BEN and element C',
      None,
-     None, 'resname BEN and (name C3 or name C5)', None,
+     None, 'resname BEN and (name C3 or name C5)',
       [[4, 5, 3, 2], [1, 2, 3, 5], [0, 1, 2, 5], [6, 1, 5, 0]]
      ),
     # Axes atom bonded.
     ('resname BEN and element C and not name C6',
      'resname BEN and name C6',
-     'resname BEN and name C6', 'resname BEN and (name C1 or name C5)', [True, True],
+     'resname BEN and name C6', 'resname BEN and (name C1 or name C5)',
       [[0, 1, 6, 5], [2, 1, 0, 6], [4, 5, 6, 2], [3, 4, 2, 5]],
      ),
     # Origin and axes are distant on the same molecule.
     ('resname BEN and element C and not name C1',
      'resname BEN and name C1',
-     'resname BEN and name C1', 'resname BEN and (name C or name C5)', [True, False],
+     'resname BEN and name C1', 'resname BEN and (name C or name C5)',
       [[2, 1, 0, 5], [6, 5, 1, 2], [3, 2, 1, 5], [4, 3, 5, 2]],
      ),
     # Origin and axes are on different mapped molecules.
     ('(resname BEN and element C) or (resname CLMET and not name C1)',
      'resname CLMET and name C1',
-     'resname CLMET and name C1', 'resname BEN and (name C1 or name C6)', [False, False],
+     'resname CLMET and name C1', 'resname BEN and (name C1 or name C6)',
       [[2, 1, 0, 6], [3, 2, 1, 0], [5, 6, 1, 3], [4, 5, 3, 6], [10, 7, 9, 8], [11, 7, 10, 9]]
      ),
     # Origin and bonded axes atom are different conditioning molecules.
     ('resname CLMET',
      'resname WAT1',
-     'resname WAT1 and name O', '(resname CLMET and name H3) or (resname WAT1 and name H2)', [False, True],
+     'resname WAT1 and name O', '(resname CLMET and name H3) or (resname WAT1 and name H2)',
       [[2, 0, 1, 4], [3, 0, 2, 1]]
      ),
 ])
@@ -341,7 +347,6 @@ def test_mixed_maf_flow_build_z_matrix(
         conditioning_atoms,
         origin_atom,
         axes_atoms,
-        expected_are_bonded,
         expected_z_matrix,
 ):
     """MixedMAFMap correctly converts the coordinates into Cartesian+internal DOFs."""
@@ -369,10 +374,6 @@ def test_mixed_maf_flow_build_z_matrix(
 
     # Check that we determine the correct Z-matrix.
     assert (cartesian_to_mixed_flow.z_matrix == expected_z_matrix).all()
-
-    # Test are_axes_atoms_bonded.
-    _, _, are_axes_atoms_bonded = tfep_map._build_z_matrix()
-    assert are_axes_atoms_bonded == expected_are_bonded
 
     # The Z-matrix and fixed atoms cover all the mapped + conditioning atoms.
     n_expected_atoms = tfep_map.n_mapped_atoms + tfep_map.n_conditioning_atoms
@@ -445,28 +446,26 @@ def test_mixed_maf_flow_auto_reference_atoms():
 
 
 @pytest.mark.parametrize('origin_atom', [False, True])
-@pytest.mark.parametrize('axes_atoms,are_bonded', [
-    (None, None),
-    ('resname BEN and (name C3 or name C5)', [True, True]),
-    ('resname BEN and (name C3 or name C6)', [True, False]),
-    ('resname BEN and (name C2 or name C3)', [False, True]),
-    ('resname BEN and (name C2 or name C1)', [False, False]),
+@pytest.mark.parametrize('axes_atoms', [
+    None,
+    'resname BEN and (name C3 or name C5)',
+    'resname BEN and (name C3 or name C6)',
+    'resname BEN and (name C2 or name C3)',
+    'resname BEN and (name C2 or name C1)',
 ])
-def test_mixed_maf_flow_get_transformer(origin_atom, axes_atoms, are_bonded):
+def test_mixed_maf_flow_get_transformer(origin_atom, axes_atoms):
     """The limits of the neural spline transformer are constructed correctly."""
     # MockPotential default positions unit is angstrom.
-    bond_limits = np.array([0.2, 5.4])  # in Angstrom
-    max_cartesian_displacement = 2.  # in Angstrom
+    distance_lower_limit_displacement = 0.2  # in Angstrom
 
     mapped_atoms = 'resname BEN and element C'
-    conditioning_atoms = 'resname BEN and element O'
     if origin_atom:
         mapped_atoms += ' and not name C4'
         origin_atom = 'resname BEN and name C4'
-        conditioning_atoms += ' or ' + origin_atom
+        conditioning_atoms = '(resname BEN and element O) or (' + origin_atom + ')'
     else:
         origin_atom = None
-        are_bonded = [False, False]
+        conditioning_atoms = 'resname BEN and element O'
 
     tfep_map = MyMixedMAFMap(
         batch_size=2,
@@ -474,74 +473,60 @@ def test_mixed_maf_flow_get_transformer(origin_atom, axes_atoms, are_bonded):
         conditioning_atoms=conditioning_atoms,
         origin_atom=origin_atom,
         axes_atoms=axes_atoms,
-        bond_limits=bond_limits * UNITS.angstrom,
-        max_cartesian_displacement=max_cartesian_displacement / 10. * UNITS.nanometer,
+        distance_lower_limit_displacement=distance_lower_limit_displacement * UNITS.angstrom,
     )
     tfep_map.setup()
 
     # Get transformer.
     mixed_transformer = tfep_map._flow.flow.flow[0]._transformer
-    spline, circular_spline = mixed_transformer._transformers
+    distance_spl, angle_spl, torsion_spl, cartesian_spl = mixed_transformer._transformers
 
     # There are always 4 bonds/angles/torsions.
     n_ic = 4
 
-    # Check bond limits.
-    assert torch.allclose(spline.x0[:n_ic], torch.full((n_ic,), bond_limits[0]))
-    assert torch.allclose(spline.xf[:n_ic], torch.full((n_ic,), bond_limits[1]))
+    # Check lengths.
+    assert len(distance_spl.x0) == n_ic + 2 * (axes_atoms is not None)
+    assert len(angle_spl.x0) == n_ic + 1 * (axes_atoms is not None)
+    assert len(torsion_spl.x0) == n_ic
+    assert len(cartesian_spl.x0) == tfep_map.n_mapped_dofs - 3 * n_ic - 3 * (axes_atoms is not None)
+
+    # Check bond limits. There are no bonds less than 1.35 or greater than 1.5 A.
+    assert torch.all(distance_spl.x0[:n_ic] > torch.tensor(1.35 - distance_lower_limit_displacement))
+    assert torch.all(distance_spl.xf[:n_ic] < torch.tensor(1.5))
 
     # Check angles and torsions limits.
-    assert torch.allclose(spline.x0[n_ic:2*n_ic], torch.zeros(n_ic))
-    assert torch.allclose(spline.xf[n_ic:2*n_ic], torch.ones(n_ic))
-    assert torch.allclose(circular_spline.x0, torch.zeros(n_ic))
-    assert torch.allclose(circular_spline.xf, torch.ones(n_ic))
+    assert torch.allclose(angle_spl.x0, torch.zeros_like(angle_spl.x0))
+    assert torch.allclose(angle_spl.xf, torch.ones_like(angle_spl.x0))
+    assert torch.allclose(torsion_spl.x0, torch.zeros_like(torsion_spl.x0))
+    assert torch.allclose(torsion_spl.xf, torch.ones_like(torsion_spl.x0))
 
     # Torsions must be flagged as circular (but not bond angles which are in [0, pi]).
     expected_circular_indices = list(range(2*n_ic, 3*n_ic))
-    assert torch.all(mixed_transformer._indices1 == torch.tensor(expected_circular_indices))
+    assert torch.all(mixed_transformer._indices2 == torch.tensor(expected_circular_indices))
 
     # Check if there are the axes atoms DOFs after the internal coordinates.
     if axes_atoms is not None:
-        # The limits are different if the axes atoms are bonded to the origin or not.
-        for i, is_bonded in enumerate(are_bonded):
-            idx = 2 * n_ic + i
-            if is_bonded:
-                assert np.isclose(spline.x0[idx].tolist(), bond_limits[0])
-                assert np.isclose(spline.xf[idx].tolist(), bond_limits[1])
-            else:
-                # The limits depends on the value during the simulation.
-                positions = tfep_map.dataset.universe.trajectory[0].positions
-                axes_pos = positions[tfep_map._axes_atoms_indices[i].tolist()]
+        for axes_atom_idx in range(2):
+            # The limits depends on the value during the simulation.
+            positions = tfep_map.dataset.universe.trajectory[0].positions
+            axes_pos = positions[tfep_map._axes_atoms_indices[axes_atom_idx].tolist()]
 
-                # Find distance.
-                if origin_atom is not None:
-                    axes_pos = axes_pos - positions[tfep_map._origin_atom_idx.tolist()]
-                axes_dist = np.linalg.norm(axes_pos).tolist()
+            # Find distance.
+            if origin_atom is not None:
+                axes_pos = axes_pos - positions[tfep_map._origin_atom_idx.tolist()]
+            axes_dist = np.linalg.norm(axes_pos).tolist()
 
-                assert np.isclose(spline.x0[idx].tolist(), max(0.0, axes_dist-max_cartesian_displacement), atol=1e-5)
-                assert np.isclose(spline.xf[idx].tolist(), axes_dist+max_cartesian_displacement, atol=1e-5)
-
-        # The third DOF is always an angle.
-        idx = 2 * n_ic + 2
-        assert np.isclose(spline.x0[idx].tolist(), 0.0)
-        assert np.isclose(spline.xf[idx].tolist(), 1.0)
-
-        # First index treated as a Cartesian coordinate.
-        start_cartesian_idx = idx + 1
-    else:
-        start_cartesian_idx = 2 * n_ic + 1
-
-    # Neural splines don't care about conditioning atoms.
-    assert len(spline.x0) == tfep_map.n_mapped_dofs - n_ic
-    assert len(circular_spline.x0) == n_ic
-    assert len(spline.xf) == tfep_map.n_mapped_dofs - n_ic
-    assert len(circular_spline.xf) == n_ic
+            idx = n_ic + axes_atom_idx
+            assert np.isclose(distance_spl.x0[idx].tolist(), max(0.0, axes_dist-distance_lower_limit_displacement), atol=1e-5)
+            assert np.isclose(distance_spl.xf[idx].tolist(), axes_dist, atol=1e-5)
 
     # The other mapped and conditioning are treated as Cartesian. There is only
     # 1 frame in the trajectory so the min and max value for the DOF is the same.
-    expected_diff = 2 * max_cartesian_displacement
-    diff = spline.xf[start_cartesian_idx:] - spline.x0[start_cartesian_idx:]
-    assert torch.all(torch.isclose(diff, torch.tensor(expected_diff)))
+    # MyMixedMAF shifts the lower limit since there is only 1 frame in the trajectory.
+    assert torch.allclose(
+        cartesian_spl.x0 + tfep_map.CARTESIAN_LIMIT_SHIFT,
+        cartesian_spl.xf - tfep_map.CARTESIAN_LIMIT_SHIFT,
+    )
 
 
 def test_error_empty_z_matrix():

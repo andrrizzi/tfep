@@ -143,8 +143,7 @@ class MixedMAFMap(TFEPMapBase):
             tfep_logger_dir_path: str = 'tfep_logs',
             auto_reference_frame: bool = False,
             n_maf_layers: int = 6,
-            bond_limits: Optional[Tuple[pint.Quantity]] = None,
-            max_cartesian_displacement: Optional[pint.Quantity] = None,
+            distance_lower_limit_displacement: Optional[pint.Quantity] = None,
             dataloader_kwargs: Optional[Dict] = None,
             **kwargs,
     ):
@@ -210,15 +209,16 @@ class MixedMAFMap(TFEPMapBase):
             degrees of freedom.
         n_maf_layers : int, optional
             The number of MAF layers.
-        bond_limits : Tuple[pint.Quantity] or None
-            The minimum and maximum bond length used to set the limits to map
-            bonds with the neural spline transformer. Default is [0.5, 3.0] Angstrom.
-        max_cartesian_displacement : pint.Quantity or None
-            Cartesian coordinates are mapped with neural spline transformers and
-            their limits are set to ``min_value-max_cartesian_displacement`` and
-            ``max_value-max_cartesian_displacement``, where ``min/max_value`` are
-            the minimum and maximum value observed in the entire dataset for that
-            particular degree of freedom. Default is 3.0 Angstrom.
+        distance_lower_limit_displacement : pint.Quantity or None
+            This controls the (fixed) lower limit for the neural spline used to
+            transform bond lengths. This lower limit is set to
+            ``max(0, min_observed - distance_lower_limit_displacement)`` where
+            ``min_observed`` is the minimum bond length observed for the specific
+            bond on a random sample in the dataset. The default value is 0.3
+            Angstrom.
+
+            Note that the same maximum displacement is applied to control the
+            two distances between the two axes atoms from the origin.
         dataloader_kwargs : Dict, optional
             Extra keyword arguments to pass to ``torch.utils.data.DataLoader``.
         **kwargs
@@ -232,13 +232,6 @@ class MixedMAFMap(TFEPMapBase):
         # Check input.
         if auto_reference_frame and (origin_atom is not None or axes_atoms is not None):
             raise ValueError('With auto_reference_frame=True both origin_atom and axes_atoms must be None.')
-
-        # Handle mutable default values.
-        positions_unit = potential_energy_func.positions_unit
-        if bond_limits is None:
-            bond_limits = [0.5, 3.0] * positions_unit._REGISTRY.angstrom
-        if max_cartesian_displacement is None:
-            max_cartesian_displacement = 3.0 * positions_unit._REGISTRY.angstrom
 
         # Convert bond
         super().__init__(
@@ -254,13 +247,19 @@ class MixedMAFMap(TFEPMapBase):
             tfep_logger_dir_path=tfep_logger_dir_path,
             dataloader_kwargs=dataloader_kwargs,
         )
-        self.save_hyperparameters('n_maf_layers')
-        self._auto_reference_frame = auto_reference_frame
-        self._kwargs = kwargs
 
-        # Convert limits to input units.
-        self._bond_limits = bond_limits.to(positions_unit).magnitude
-        self._max_cartesian_displacement = max_cartesian_displacement.to(positions_unit).magnitude
+        # Default value and unit conversion.
+        positions_unit = potential_energy_func.positions_unit
+        if distance_lower_limit_displacement is None:
+            distance_lower_limit_displacement = 0.3 * positions_unit._REGISTRY.angstrom
+        distance_lower_limit_displacement = distance_lower_limit_displacement.to(positions_unit).magnitude
+
+        # Save hyperparameters.
+        self.hparams['distance_lower_limit_displacement'] = distance_lower_limit_displacement
+        self.save_hyperparameters('n_maf_layers', 'auto_reference_frame')
+
+        # MAF kwargs.
+        self._kwargs = kwargs
 
     def configure_flow(self) -> torch.nn.Module:
         """Initialize the normalizing flow.
@@ -273,7 +272,7 @@ class MixedMAFMap(TFEPMapBase):
         """
         # Determine Z-matrix and Cartesian atoms and (optionally)
         # automatically determine origin and axes atoms.
-        cartesian_atom_indices, z_matrix, are_axes_atoms_bonded = self._build_z_matrix()
+        cartesian_atom_indices, z_matrix = self._build_z_matrix()
         if len(z_matrix) == 0:
             raise ValueError('There are no internal coordinates to map. '
                              'Consider using a Cartesian flow.')
@@ -306,7 +305,7 @@ class MixedMAFMap(TFEPMapBase):
         # Determine the angles degrees of freedom (i.e., angles and torsions)
         # to pass to the MAF layer. Only torsions are periodic as angles are
         # in [0, pi].
-        maf_angles_dof_indices, maf_periodic_dof_indices = cartesian_to_mixed_flow.get_maf_angles_dof_indices()
+        maf_valence_angles_dof_indices, maf_torsions_dof_indices = cartesian_to_mixed_flow.get_maf_angles_dof_indices()
 
         # Create the transformer.
         transformer = self._get_transformer(
@@ -314,9 +313,8 @@ class MixedMAFMap(TFEPMapBase):
             min_dof_vals=min_dof_vals,
             max_dof_vals=max_dof_vals,
             maf_conditioning_dof_indices=maf_conditioning_dof_indices,
-            maf_angles_dof_indices=maf_angles_dof_indices,
-            maf_periodic_dof_indices=maf_periodic_dof_indices,
-            are_axes_atoms_bonded=are_axes_atoms_bonded,
+            maf_valence_angles_dof_indices=maf_valence_angles_dof_indices,
+            maf_torsions_dof_indices=maf_torsions_dof_indices,
         )
 
         # Build MAF layers.
@@ -331,7 +329,7 @@ class MixedMAFMap(TFEPMapBase):
                 transformer=transformer,
                 embedding=tfep.nn.embeddings.PeriodicEmbedding(
                     n_features_in=self.n_nonfixed_dofs,
-                    periodic_indices=maf_periodic_dof_indices,
+                    periodic_indices=maf_torsions_dof_indices,
                     # The periodic limits are 0 to 1 if normalize_angles=True in _CartesianToMixedFlow
                     limits=[0, 1],
                 ),
@@ -351,8 +349,8 @@ class MixedMAFMap(TFEPMapBase):
         The Z-matrix is constructed so that the origin and axes atoms are always
         included among the Cartesian atoms.
 
-        If self._auto_reference_frame is True, this method also sets self._origin_atom_idx
-        and self._axes_atoms_indices.
+        If self.hparams.auto_reference_frame is True, this method also sets
+        self._origin_atom_idx and self._axes_atoms_indices.
 
         Returns
         -------
@@ -365,8 +363,6 @@ class MixedMAFMap(TFEPMapBase):
             internal coordinates. E.g., ``z_matrix[i] == [7, 2, 4, 8]``
             means that the distance, angle, and dihedral for atom ``7`` must be
             computed between atoms ``7-2``, ``7-2-4``, and ``7-2-4-8`` respectively.
-        are_axes_atoms_bonded : List[bool] or None
-            Whether the first and second axes atoms are bonded to the origin atom.
 
         """
         # First we need to create a graph representation of all the molecules
@@ -390,7 +386,6 @@ class MixedMAFMap(TFEPMapBase):
             ref_atom_indices = []
         else:
             ref_atom_indices = ref_atom_indices.tolist()
-        ref_atoms = [self.dataset.universe.atoms[i] for i in ref_atom_indices]
 
         # Only the mapped atoms are represented using internal coordinates
         # so we build a set to check for membership.
@@ -399,16 +394,10 @@ class MixedMAFMap(TFEPMapBase):
         # Initialize returned values.
         cartesian_atom_indices = []
         system_z_matrix = []
-        are_axes_atoms_bonded = None
 
         # Build the Z-matrix for each connected subgraph.
         for graph_nodes in nx.connected_components(system_graph):
             graph = system_graph.subgraph(graph_nodes).copy()
-
-            # Update are_axes_atoms_bonded. The origin atom can belong only to a molecule.
-            # Both origin and axes atoms need to be passed for this to be != None.
-            if are_axes_atoms_bonded is None and len(ref_atoms) == 3 and ref_atoms[0] in graph:
-                are_axes_atoms_bonded = [graph.has_edge(ref_atoms[0], ref_atoms[1]), graph.has_edge(ref_atoms[0], ref_atoms[2])]
 
             # Check if this molecule is composed only by conditioning atoms.
             graph_atom_indices = [node.ix for node in graph]
@@ -426,7 +415,7 @@ class MixedMAFMap(TFEPMapBase):
             # to do it before we shift the indices to account for the removed fixed
             # atoms and before we remove the first three rows of the Z-matrix since
             # in the 4th row the order of origin/axes atoms is scrambled.
-            if self._auto_reference_frame and self._origin_atom_idx is None:
+            if self.hparams.auto_reference_frame and self._origin_atom_idx is None:
                 self._determine_reference_frame_atoms(graph_z_matrix, mapped_atom_indices_w_fixed_set)
 
             # Now separate the Cartesian atoms from the Z-matrix ones. First three
@@ -461,7 +450,7 @@ class MixedMAFMap(TFEPMapBase):
         # Sort atom indices and convert everything to numpy array (for RelativeInternalCoordinateTransformation).
         cartesian_atom_indices = np.array(cartesian_atom_indices)
         cartesian_atom_indices.sort()
-        return cartesian_atom_indices, np.array(system_z_matrix), are_axes_atoms_bonded
+        return cartesian_atom_indices, np.array(system_z_matrix)
 
     def _create_networkx_graph(self, atom_indices):
         """Return a networkx graph representing the given atoms."""
@@ -608,7 +597,7 @@ class MixedMAFMap(TFEPMapBase):
         self._conditioning_atom_indices, and the argument mapped_atom_indices_w_fixed_set.
 
         """
-        if not self._auto_reference_frame:
+        if not self.hparams.auto_reference_frame:
             return
         assert self._origin_atom_idx is None
         assert self._axes_atoms_indices is None
@@ -743,9 +732,8 @@ class MixedMAFMap(TFEPMapBase):
             min_dof_vals: torch.Tensor,
             max_dof_vals: torch.Tensor,
             maf_conditioning_dof_indices: Optional[torch.Tensor],
-            maf_angles_dof_indices: torch.Tensor,
-            maf_periodic_dof_indices: torch.Tensor,
-            are_axes_atoms_bonded: Optional[Tuple[bool]],
+            maf_valence_angles_dof_indices: torch.Tensor,
+            maf_torsions_dof_indices: torch.Tensor,
     ) -> torch.nn.Module:
         """Return the transformer for the MAF.
 
@@ -760,45 +748,29 @@ class MixedMAFMap(TFEPMapBase):
         maf_conditioning_dof_indices : torch.Tensor or None
             The indices of the conditioning DOFs after the conversion to mixed
             coordinates.
-        maf_angles_dof_indices : torch.Tensor
-            The indices of all the angles (i.e., bond angles and torsions) DOFs
-            after the conversion to mixed coordinates.
-        maf_periodic_dof_indices : torch.Tensor
-            The indices of the periodic DOFs (i.e., torsions since bond angles
-            are defined in [0, pi]) after the conversion to mixed coordinates.
-        are_axes_atoms_bonded : Tuple[bool] or None
-            Whether the first and second axes atoms are bonded to the origin atom..
+        maf_valence_angles_dof_indices : torch.Tensor
+            The indices of valence bond angles (which are defined in [0, pi]
+            and not periodic) after the conversion to mixed coordinates.
+        maf_torsions_dof_indices : torch.Tensor
+            The indices of the torsion angles (which are defined in [0, 2pi]
+            and periodic) after the conversion to mixed coordinates.
 
         """
         # We need to determine the limits only for the mapped (not conditioning)
-        # DOFs since that's what the NeuralSplineTransformer will act on. We compute
-        # the limits for all DOFs because it's easier and then filter out the
-        # conditioning DOFs. We assume everything is Cartesian and then we fix
-        # the limits for angles and distances.
-        x0 = min_dof_vals - self._max_cartesian_displacement
-        xf = max_dof_vals + self._max_cartesian_displacement
+        # DOFs since that's what the NeuralSplineTransformer will modify.
+        # Moreover, for angles, these limits are fixed. We still compute them
+        # for all DOFs because it's easier and then filter out conditioning and
+        # angle DOFs.
+        x0 = min_dof_vals
+        xf = max_dof_vals
 
-        # Set the limits for the angles.
-        assert cartesian_to_mixed_flow._rel_ic.normalize_angles
-        x0[maf_angles_dof_indices] = 0.0
-        xf[maf_angles_dof_indices] = 1.0
-
-        # Set the limits for the bonds. The distances DOFs of the axes atoms
-        # might not be bonds so we treat them separately.
-        dof_indices = cartesian_to_mixed_flow.get_maf_distance_dof_indices(return_axes=False)
-        x0[dof_indices] = self._bond_limits[0]
-        xf[dof_indices] = self._bond_limits[1]
-
-        # Set the limits for reference atom distance DOF (the angle has been taken
-        # care above). dof_indices is an empty list if there are no axes atoms.
-        dof_indices = cartesian_to_mixed_flow.get_maf_distance_dof_indices(return_bonds=False)
-        for i, dof_idx in enumerate(dof_indices):
-            if are_axes_atoms_bonded is not None and are_axes_atoms_bonded[i]:
-                x0[dof_idx] = self._bond_limits[0]
-                xf[dof_idx] = self._bond_limits[1]
-            else:
-                # The axis atom is not bonded to the origin but it's still a distance (i.e. > 0).
-                x0[dof_idx] = max(0.0, min_dof_vals[dof_idx] - self._max_cartesian_displacement)
+        # Set the limits for the bonds and the two distances of the axes atoms
+        # from the origin (which might not be bonds).
+        distances_dof_indices = cartesian_to_mixed_flow.get_maf_distance_dof_indices()
+        x0[distances_dof_indices] = torch.max(
+            torch.tensor(0.0),
+            x0[distances_dof_indices] - self.hparams.distance_lower_limit_displacement,
+        )
 
         # Now filter all conditioning dofs.
         if maf_conditioning_dof_indices is not None:
@@ -807,34 +779,78 @@ class MixedMAFMap(TFEPMapBase):
             x0 = x0[mask]
             xf = xf[mask]
 
-            # We need to remove (and shift) the periodic DOF indices.
-            maf_periodic_dof_indices = remove_and_shift_sorted_indices(
-                maf_periodic_dof_indices, removed_indices=maf_conditioning_dof_indices)
+            # We need to remove (and shift) the conditioning DOF also from distance/angle indices.
+            distances_dof_indices = remove_and_shift_sorted_indices(
+                distances_dof_indices, removed_indices=maf_conditioning_dof_indices)
+            maf_torsions_dof_indices = remove_and_shift_sorted_indices(
+                maf_torsions_dof_indices, removed_indices=maf_conditioning_dof_indices)
+            maf_valence_angles_dof_indices = remove_and_shift_sorted_indices(
+                maf_valence_angles_dof_indices, removed_indices=maf_conditioning_dof_indices)
 
-        # Find all non-periodic DOFs (after filtering the conditioning ones).
-        mask = torch.full(x0.shape, fill_value=True)
-        mask[maf_periodic_dof_indices] = False
-        maf_nonperiodic_dof_indices = torch.tensor(range(len(x0)))[mask]
+        # Cartesian DOFs indices are what is left.
+        all_other_indices = set(
+            distances_dof_indices.tolist() +
+            maf_valence_angles_dof_indices.tolist() +
+            maf_torsions_dof_indices.tolist()
+        )
+        cartesian_dof_indices = torch.tensor(
+            [i for i in range(len(x0)) if i not in all_other_indices]).to(distances_dof_indices)
 
-        # Standard splines for non-periodic DOFs.
-        spline = tfep.nn.transformers.NeuralSplineTransformer(
-            x0=x0[maf_nonperiodic_dof_indices].detach(),
-            xf=xf[maf_nonperiodic_dof_indices].detach(),
+        # Initialize the splines.
+        distance_spline = tfep.nn.transformers.NeuralSplineTransformer(
+            x0=x0[distances_dof_indices].detach(),
+            xf=xf[distances_dof_indices].detach(),
             n_bins=5,
             circular=False,
+            identity_boundary_slopes=True,
+            learn_lower_bound=False,
+            learn_upper_bound=True,
+        )
+        cartesian_spline = tfep.nn.transformers.NeuralSplineTransformer(
+            x0=x0[cartesian_dof_indices].detach(),
+            xf=xf[cartesian_dof_indices].detach(),
+            n_bins=5,
+            circular=False,
+            identity_boundary_slopes=True,
+            learn_lower_bound=True,
+            learn_upper_bound=True,
         )
 
-        # Circular splines for periodic DOFs.
-        circular_spline = tfep.nn.transformers.NeuralSplineTransformer(
-            x0=x0[maf_periodic_dof_indices].detach(),
-            xf=xf[maf_periodic_dof_indices].detach(),
+        # We set the limits of angles from 0 to 1 since they are normalized.
+        # Only torsions are periodic since valence bond angles are [0, pi].
+        assert cartesian_to_mixed_flow._rel_ic.normalize_angles
+        angle_spline = tfep.nn.transformers.NeuralSplineTransformer(
+            x0=torch.zeros(len(maf_valence_angles_dof_indices)),
+            xf=torch.ones(len(maf_valence_angles_dof_indices)),
+            n_bins=5,
+            circular=False,
+            identity_boundary_slopes=False,
+            learn_lower_bound=False,
+            learn_upper_bound=False,
+        )
+        torsion_spline = tfep.nn.transformers.NeuralSplineTransformer(
+            x0=torch.zeros(len(maf_torsions_dof_indices)),
+            xf=torch.ones(len(maf_torsions_dof_indices)),
             n_bins=5,
             circular=True,
+            identity_boundary_slopes=False,
+            learn_lower_bound=False,
+            learn_upper_bound=False,
         )
 
         return tfep.nn.transformers.MixedTransformer(
-            transformers=[spline, circular_spline],
-            indices=[maf_nonperiodic_dof_indices, maf_periodic_dof_indices],
+            transformers=[
+                distance_spline,
+                angle_spline,
+                torsion_spline,
+                cartesian_spline,
+            ],
+            indices=[
+                distances_dof_indices,
+                maf_valence_angles_dof_indices,
+                maf_torsions_dof_indices,
+                cartesian_dof_indices,
+            ],
         )
 
 
@@ -1092,40 +1108,37 @@ class _CartesianToMixedFlow(torch.nn.Module):
 
     def get_maf_angles_dof_indices(self) -> Tuple[torch.Tensor]:
         """
-        Return the indices of all angles (i.e., bond angles and torsions) and
-        periodic angles (i.e., only torsions since bond angles are in [0, pi])
-        after the conversion from Cartesian to mixed.
+        Return the indices of all angles (i.e., valence bond angles and torsions)
+        passed to the MAF after the conversion from Cartesian to mixed.
         """
         # Except for the single angle defining the reference frame atoms, all
         # angles and torsions are placed right after the bonds.
-        maf_angles_dof_indices = list(range(self.n_ic_atoms, 3*self.n_ic_atoms))
-
-        # Only torsions are periodic since bond angles are defined in [0, pi].
-        maf_periodic_dof_indices = list(range(2*self.n_ic_atoms, 3*self.n_ic_atoms))
-
+        maf_valence_angles_dof_indices = list(range(self.n_ic_atoms, 2*self.n_ic_atoms))
         # Check if there are axes atoms, whose DOFs are placed between the
         # internal and Cartesian coordinates after the conversion.
         if self.has_axes_atoms:
             # The axes atoms are defined by two distances and 1 angle.
-            maf_angles_dof_indices.append(3*self.n_ic_atoms+2)
+            maf_valence_angles_dof_indices.append(3*self.n_ic_atoms+2)
 
-        return torch.tensor(maf_angles_dof_indices), torch.tensor(maf_periodic_dof_indices)
+        # Return also valence bond and torsion angles.
+        maf_valence_angles_dof_indices = torch.tensor(maf_valence_angles_dof_indices)
+        maf_torsions_dof_indices = torch.arange(2*self.n_ic_atoms, 3*self.n_ic_atoms)
 
-    def get_maf_distance_dof_indices(self, return_bonds: bool = True, return_axes: bool = True) -> torch.Tensor:
+        return maf_valence_angles_dof_indices, maf_torsions_dof_indices
+
+    def get_maf_distance_dof_indices(self) -> torch.Tensor:
         """Return the indices of the bond DOFs after the conversion from Cartesian to mixed.
 
-        These do not include the two distances defining the coordinates of the axes atoms.
+        These include both bonds and the two distances of the axes atoms from
+        the origin.
 
         """
         # The bonds are placed at the beginning.
-        if return_bonds:
-            maf_distance_dof_indices = list(range(self.n_ic_atoms))
-        else:
-            maf_distance_dof_indices = []
+        maf_distance_dof_indices = list(range(self.n_ic_atoms))
 
         # Check if there are axes atoms, whose DOFs are placed between the
         # internal and Cartesian coordinates after the conversion.
-        if self.has_axes_atoms and return_axes:
+        if self.has_axes_atoms:
             # The axes atoms are defined by two distances and 1 angle.
             maf_distance_dof_indices.extend([3*self.n_ic_atoms, 3*self.n_ic_atoms+1])
 
