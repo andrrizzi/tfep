@@ -17,7 +17,7 @@ Test MAF layer in ``tfep.nn.embeddings.mafembed``.
 import pytest
 import torch
 
-from tfep.nn.embeddings.mafembed import PeriodicEmbedding
+from tfep.nn.embeddings.mafembed import PeriodicEmbedding, FlipInvariantEmbedding
 from .. import create_random_input
 
 
@@ -68,7 +68,7 @@ def create_input(batch_size, n_features_in, limits=None, periodic_indices=None, 
 
 
 # =============================================================================
-# TESTS
+# TEST PERIODIC EMBEDDING
 # =============================================================================
 
 @pytest.mark.parametrize('n_periodic', [2, 3])
@@ -116,3 +116,101 @@ def test_periodic_embedding(n_periodic, limits):
     assert torch.allclose(x_lifted[0, periodic_indices[0]:periodic_indices[0]+2], expected)
     # The "+ 1" here is because of the shift idx due to periodic_indices[0].
     assert torch.allclose(x_lifted[0, periodic_indices[1]+1:periodic_indices[1]+3], expected)
+
+
+# =============================================================================
+# TEST FLIP INVARIANT EMBEDDING
+# =============================================================================
+
+@pytest.mark.parametrize('n_features_in,embedding_dimension,embedded_indices,degrees_in,expected_degrees_out', [
+    (4, 4, range(4), [0, 0, 0, 0], [0, 0, 0, 0]),
+    (8, 4, range(8), [0, 0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 0, 1, 1, 1, 1]),
+    (8, 4, range(8), [1, 1, 1, 1, 0, 0, 0, 0], [1, 1, 1, 1, 0, 0, 0, 0]),
+    (4, 3, range(4), [0, 0, 0, 0], [0, 0, 0]),
+    (8, 3, range(8), [0, 0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 1, 1, 1]),
+    (8, 3, range(8), [1, 1, 1, 1, 0, 0, 0, 0], [1, 1, 1, 0, 0, 0]),
+    (9, 2, [2, 3, 4, 5], [3, 1, 2, 2, 2, 2, 0, 5, 4], [3, 1, 2, 2, 0, 5, 4]),
+    (10, 2, [1, 2, 3, 4, 6, 7, 8, 9], [1, 3, 3, 3, 3, 2, 0, 0, 0, 0], [1, 3, 3, 2, 0, 0]),
+    (10, 2, [0, 1, 2, 3, 5, 6, 7, 8], [2, 2, 2, 2, 3, 0, 0, 0, 0, 1], [2, 2, 3, 0, 0, 1]),
+])
+def test_flip_invariant_embedding_get_degrees_out(
+    n_features_in,
+    embedding_dimension,
+    embedded_indices,
+    degrees_in,
+    expected_degrees_out,
+):
+    """Test FlipInvariantEmbedding.get_degrees_out."""
+    # Create embedding layer.
+    embedding = FlipInvariantEmbedding(
+        n_features_in=n_features_in,
+        embedded_indices=embedded_indices,
+        embedding_dimension=embedding_dimension,
+    )
+
+    # Check degrees out.
+    degrees_out = embedding.get_degrees_out(torch.tensor(degrees_in))
+    assert torch.all(degrees_out == torch.tensor(expected_degrees_out))
+
+
+@pytest.mark.parametrize('batch_size', [1, 3])
+@pytest.mark.parametrize('n_features_in,embedding_dimension,embedded_indices_in', [
+    (4, 4, range(4)),
+    (12, 4, range(12)),
+    (4, 3, range(4)),
+    (12, 3, range(12)),
+    (9, 3, [2, 3, 4, 5]),
+    (10, 2, [1, 2, 3, 4, 6, 7, 8, 9]),
+    (11, 2, [1, 2, 3, 4, 6, 7, 8, 9]),
+])
+def test_flip_invariant_embedding_invariance(
+    batch_size,
+    n_features_in,
+    embedding_dimension,
+    embedded_indices_in,
+):
+    """Test FlipInvariantEmbedding is flip invariant."""
+    embedded_indices_in = torch.tensor(embedded_indices_in)
+
+    # Create embedding layer.
+    embedding = FlipInvariantEmbedding(
+        n_features_in=n_features_in,
+        embedded_indices=embedded_indices_in,
+        embedding_dimension=embedding_dimension,
+    )
+
+    # Create random input features and embed it.
+    x = torch.randn(batch_size, n_features_in)
+    out = embedding(x)
+
+    # The output has the correct dimension.
+    n_vectors = len(embedded_indices_in) // embedding.vector_dimension
+    n_features_diff = n_vectors * (embedding_dimension - embedding.vector_dimension)
+    assert out.shape == (batch_size, n_features_in + n_features_diff)
+
+    # Now flip the sign of all features.
+    out_flipped = embedding(-x)
+
+    # Find the output indices through get_degrees_out rather than private variables.
+    degrees_in = torch.zeros(n_features_in)
+    degrees_in[embedded_indices_in] = 1
+    degrees_out = embedding.get_degrees_out(degrees_in)
+    embedded_mask = degrees_out == 1
+    nonembedded_mask = degrees_out == 0
+
+    # The embedded vectors are flip invariant.
+    assert torch.all(out[:, embedded_mask] == out_flipped[:, embedded_mask])
+
+    # The non-embedded features have flipped.
+    assert torch.all(out[:, nonembedded_mask] == -out_flipped[:, nonembedded_mask])
+
+
+def test_flip_invariant_embedding_error_degrees_in():
+    """An error is raised if there are embedded vectors whose components are assigned different input degrees"""
+    embedding = FlipInvariantEmbedding(
+        n_features_in=5,
+        embedded_indices=list(range(4)),
+        embedding_dimension=3,
+    )
+    with pytest.raises(ValueError, match='same degree must be assigned'):
+        embedding.get_degrees_out(torch.tensor([0, 0, 0, 1, 2]))
