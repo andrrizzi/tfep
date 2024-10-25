@@ -16,6 +16,7 @@ Embedding layers for masked autoregressive flows (MAF).
 
 import abc
 from collections.abc import Sequence
+from typing import Optional
 
 import torch
 
@@ -61,55 +62,63 @@ class MAFEmbedding(abc.ABC, torch.nn.Module):
 # =============================================================================
 
 class PeriodicEmbedding(MAFEmbedding):
-    """Lift periodic DOFs into a periodic representation (cos, sin).
-
-    Parameters
-    ----------
-    n_features_in : int
-        Number of input features.
-    periodic_indices : torch.Tensor[int]
-        Shape (n_periodic,). The (ordered) indices of the input features that
-        are periodic and must be lifted to the (cos, sin) representation.
-    limits : torch.Tensor[float]
-        A pair ``(lower, upper)`` defining the limits of the periodic variables.
-        The period is given by ``upper - lower``.
-
-    """
+    """Lift periodic degrees of freedom into a periodic representation (cos, sin)."""
 
     def __init__(
             self,
             n_features_in : int,
-            periodic_indices : torch.Tensor,
             limits : torch.Tensor,
+            periodic_indices : Optional[Sequence[int]] = None,
     ):
+        """Constructor.
+
+        Parameters
+        ----------
+        n_features_in : int
+            Number of input features.
+        limits : torch.Tensor[float]
+            A pair ``(lower, upper)`` defining the limits of the periodic
+            variables. The period is given by ``upper - lower``.
+        periodic_indices : Sequence[int] or None, optional
+            Shape (n_periodic,). The (ordered) indices of the input features
+            that are periodic and must be lifted to the (cos, sin)
+            representation. If ``None``, all features are embedded.
+
+        """
         super().__init__()
 
         # Convert all sequences to Tensors to simplify the code.
-        periodic_indices = ensure_tensor_sequence(periodic_indices)
+        if periodic_indices is None:
+            periodic_indices = torch.arange(n_features_in)
+        else:
+            periodic_indices = ensure_tensor_sequence(periodic_indices)
         limits = ensure_tensor_sequence(limits)
 
         self.register_buffer('limits', limits)
 
-        # Cache a set of periodic/nonperiodic indices BEFORE and AFTER the input has been lifted.
+        # Cache a set of periodic/nonperiodic indices BEFORE and AFTER the
+        # input has been embedded.
         periodic_indices_set = set(periodic_indices.tolist())
         self.register_buffer('_periodic_indices', periodic_indices)
-        self.register_buffer('_nonperiodic_indices', torch.tensor([i for i in range(n_features_in)
-                                                                   if i not in periodic_indices_set]))
+        self.register_buffer('_nonperiodic_indices', torch.tensor(
+            [i for i in range(n_features_in) if i not in periodic_indices_set]
+        ).to(periodic_indices))
 
-        periodic_indices_lifted = []  # Shape (n_periodic,).
-        nonperiodic_indices_lifted = []  # Shape (n_non_periodic,).
+        periodic_indices_out = []  # Shape (n_periodic,).
+        nonperiodic_indices_out = []  # Shape (n_non_periodic,).
 
         shift_idx = 0
         for i in range(n_features_in):
             if i in periodic_indices_set:
-                periodic_indices_lifted.append(i+shift_idx)
+                periodic_indices_out.append(i+shift_idx)
                 shift_idx += 1
             else:
-                nonperiodic_indices_lifted.append(i + shift_idx)
+                nonperiodic_indices_out.append(i + shift_idx)
 
         # Cache as Tensor.
-        self.register_buffer('_periodic_indices_lifted', torch.tensor(periodic_indices_lifted))
-        self.register_buffer('_nonperiodic_indices_lifted', torch.tensor(nonperiodic_indices_lifted))
+        self.register_buffer('_periodic_indices_out', torch.tensor(periodic_indices_out))
+        self.register_buffer('_nonperiodic_indices_out', torch.tensor(
+            nonperiodic_indices_out).to(periodic_indices))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Lift each periodic degree of freedom x into a periodic representation (cosx, sinx).
@@ -139,9 +148,9 @@ class PeriodicEmbedding(MAFEmbedding):
         # Fill output.
         n_periodic = len(self._periodic_indices)
         y = torch.empty((batch_size, n_features+n_periodic)).to(x)
-        y[:, self._periodic_indices_lifted] = cosx
-        y[:, self._periodic_indices_lifted+1] = sinx
-        y[:, self._nonperiodic_indices_lifted] = x[:, self._nonperiodic_indices]
+        y[:, self._periodic_indices_out] = cosx
+        y[:, self._periodic_indices_out+1] = sinx
+        y[:, self._nonperiodic_indices_out] = x[:, self._nonperiodic_indices]
 
         return y
 
@@ -171,7 +180,7 @@ class PeriodicEmbedding(MAFEmbedding):
 
 
 # =============================================================================
-# PERIODIC EMBEDDING
+# FLIP-INVARIANT EMBEDDING
 # =============================================================================
 
 class FlipInvariantEmbedding(MAFEmbedding):
@@ -190,8 +199,8 @@ class FlipInvariantEmbedding(MAFEmbedding):
     def __init__(
             self,
             n_features_in : int,
-            embedded_indices : Sequence[int],
             embedding_dimension : int,
+            embedded_indices : Optional[Sequence[int]] = None,
             vector_dimension : int = 4,
             hidden_layer_width : int = 32,
     ):
@@ -201,20 +210,26 @@ class FlipInvariantEmbedding(MAFEmbedding):
         ----------
         n_features_in : int
             Number of input features (embedded and not).
-        vector_dimension : int
-            The dimension of the embedded vectors.
-        embedded_indices : Sequence[int]
+        embedding_dimension : int
+            The embedding dimension of each vector.
+        embedded_indices : Sequence[int] or None, optional
             A sequence of length ``n_vectors*vector_dimension`` with the
             (ordered) indices of the input features corresponding to the
             vectors to embed. Vectors are assumed to be represented by
-            consecutive elements.
-        embedding_dimension : int
-            The embedding dimension of each vector.
+            consecutive elements. If ``None``, all features are embedded.
+        vector_dimension : int, optional
+            The dimension of the embedded vectors. Default is 4.
+        hidden_layer_width : int, optional
+            The width of the hidden layer of the fully-connected neural
+            networks used to embed the vectors. Default is 32.
 
         """
         super().__init__()
 
-        embedded_indices = ensure_tensor_sequence(embedded_indices)
+        if embedded_indices is None:
+            embedded_indices = torch.arange(n_features_in)
+        else:
+            embedded_indices = ensure_tensor_sequence(embedded_indices)
         self.register_buffer('_embedded_indices_in', embedded_indices)
 
         # We need to cache both embedded and non-embedded indices

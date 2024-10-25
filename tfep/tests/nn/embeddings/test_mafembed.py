@@ -71,7 +71,7 @@ def create_input(batch_size, n_features_in, limits=None, periodic_indices=None, 
 # TEST PERIODIC EMBEDDING
 # =============================================================================
 
-@pytest.mark.parametrize('n_periodic', [2, 3])
+@pytest.mark.parametrize('n_periodic', [2, 3, 5])
 @pytest.mark.parametrize('limits', [
     (0., 1.),
     (-1., 1.),
@@ -93,10 +93,10 @@ def test_periodic_embedding(n_periodic, limits):
     x = create_input(batch_size, n_features_in, limits=limits, periodic_indices=periodic_indices)
 
     # Lift periodic DOFs.
-    x_lifted = lifter(x)
+    x_out = lifter(x)
 
     # The lifted input must have n_periodic more elements.
-    assert x.shape[1] + n_periodic == x_lifted.shape[1]
+    assert x.shape[1] + n_periodic == x_out.shape[1]
 
     # The lifter leaves unaltered the non-periodic DOFs and duplicate the periodic ones.
     shift_idx = 0
@@ -104,27 +104,27 @@ def test_periodic_embedding(n_periodic, limits):
         if i in periodic_indices:
             shift_idx += 1
         else:
-            assert torch.all(x[:, i] == x_lifted[:, i+shift_idx])
+            assert torch.all(x[:, i] == x_out[:, i+shift_idx])
     assert shift_idx == n_periodic
 
     # The limits are mapped to the same values (cos=1, sin=0).
     x[0, periodic_indices[0]] = limits[0]
     x[0, periodic_indices[1]] = limits[1]
-    x_lifted = lifter(x)
+    x_out = lifter(x)
 
     expected = torch.tensor([1.0, 0.0])
-    assert torch.allclose(x_lifted[0, periodic_indices[0]:periodic_indices[0]+2], expected)
+    assert torch.allclose(x_out[0, periodic_indices[0]:periodic_indices[0]+2], expected)
     # The "+ 1" here is because of the shift idx due to periodic_indices[0].
-    assert torch.allclose(x_lifted[0, periodic_indices[1]+1:periodic_indices[1]+3], expected)
+    assert torch.allclose(x_out[0, periodic_indices[1]+1:periodic_indices[1]+3], expected)
 
 
 # =============================================================================
-# TEST FLIP INVARIANT EMBEDDING
+# TEST FLIP-INVARIANT EMBEDDING
 # =============================================================================
 
 @pytest.mark.parametrize('n_features_in,embedding_dimension,embedded_indices,degrees_in,expected_degrees_out', [
     (4, 4, range(4), [0, 0, 0, 0], [0, 0, 0, 0]),
-    (8, 4, range(8), [0, 0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 0, 1, 1, 1, 1]),
+    (8, 4, None, [0, 0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 0, 1, 1, 1, 1]),
     (8, 4, range(8), [1, 1, 1, 1, 0, 0, 0, 0], [1, 1, 1, 1, 0, 0, 0, 0]),
     (4, 3, range(4), [0, 0, 0, 0], [0, 0, 0]),
     (8, 3, range(8), [0, 0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 1, 1, 1]),
@@ -134,18 +134,18 @@ def test_periodic_embedding(n_periodic, limits):
     (10, 2, [0, 1, 2, 3, 5, 6, 7, 8], [2, 2, 2, 2, 3, 0, 0, 0, 0, 1], [2, 2, 3, 0, 0, 1]),
 ])
 def test_flip_invariant_embedding_get_degrees_out(
-    n_features_in,
-    embedding_dimension,
-    embedded_indices,
-    degrees_in,
-    expected_degrees_out,
+        n_features_in,
+        embedding_dimension,
+        embedded_indices,
+        degrees_in,
+        expected_degrees_out,
 ):
     """Test FlipInvariantEmbedding.get_degrees_out."""
     # Create embedding layer.
     embedding = FlipInvariantEmbedding(
         n_features_in=n_features_in,
-        embedded_indices=embedded_indices,
         embedding_dimension=embedding_dimension,
+        embedded_indices=embedded_indices,
     )
 
     # Check degrees out.
@@ -164,10 +164,10 @@ def test_flip_invariant_embedding_get_degrees_out(
     (11, 2, [1, 2, 3, 4, 6, 7, 8, 9]),
 ])
 def test_flip_invariant_embedding_invariance(
-    batch_size,
-    n_features_in,
-    embedding_dimension,
-    embedded_indices_in,
+        batch_size,
+        n_features_in,
+        embedding_dimension,
+        embedded_indices_in,
 ):
     """Test FlipInvariantEmbedding is flip invariant."""
     embedded_indices_in = torch.tensor(embedded_indices_in)
@@ -175,8 +175,8 @@ def test_flip_invariant_embedding_invariance(
     # Create embedding layer.
     embedding = FlipInvariantEmbedding(
         n_features_in=n_features_in,
-        embedded_indices=embedded_indices_in,
         embedding_dimension=embedding_dimension,
+        embedded_indices=embedded_indices_in,
     )
 
     # Create random input features and embed it.
@@ -208,9 +208,8 @@ def test_flip_invariant_embedding_invariance(
 def test_flip_invariant_embedding_error_degrees_in():
     """An error is raised if there are embedded vectors whose components are assigned different input degrees"""
     embedding = FlipInvariantEmbedding(
-        n_features_in=5,
-        embedded_indices=list(range(4)),
+        n_features_in=4,
         embedding_dimension=3,
     )
     with pytest.raises(ValueError, match='same degree must be assigned'):
-        embedding.get_degrees_out(torch.tensor([0, 0, 0, 1, 2]))
+        embedding.get_degrees_out(torch.tensor([0, 0, 0, 1]))
