@@ -192,7 +192,7 @@ def test_flip_invariant_embedding_invariance(
     out_flipped = embedding(-x)
 
     # Find the output indices through get_degrees_out rather than private variables.
-    degrees_in = torch.zeros(n_features_in)
+    degrees_in = torch.zeros(n_features_in, dtype=int)
     degrees_in[embedded_indices_in] = 1
     degrees_out = embedding.get_degrees_out(degrees_in)
     embedded_mask = degrees_out == 1

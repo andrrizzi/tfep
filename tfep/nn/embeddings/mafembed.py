@@ -213,38 +213,6 @@ class FlipInvariantEmbedding(MAFEmbedding):
         """
         super().__init__()
 
-        if embedded_indices is None:
-            embedded_indices = torch.arange(n_features_in)
-        else:
-            embedded_indices = ensure_tensor_sequence(embedded_indices)
-        self.register_buffer('_embedded_indices_in', embedded_indices)
-
-        # We need to cache both embedded and non-embedded indices
-        # before and after the embedding.
-        all_indices = torch.arange(n_features_in)
-        self.register_buffer('_nonembedded_indices_in', remove_and_shift_sorted_indices(
-            all_indices, removed_indices=embedded_indices, shift=False))
-
-        # Indices of the first component of the embedded input vectors.
-        vectors_first_indices_in = embedded_indices.reshape(-1, vector_dimension)[:, 0].tolist()
-
-        # Find embedded vectors indices after the embedding.
-        embedded_indices_out = []
-        dimension_diff = embedding_dimension - vector_dimension
-        shift_idx = 0
-        for first_idx_in in vectors_first_indices_in:
-            first_idx_out = shift_idx + first_idx_in
-            vector_indices_out = range(first_idx_out, first_idx_out+embedding_dimension)
-            embedded_indices_out.extend(list(vector_indices_out))
-            shift_idx += dimension_diff
-        self.register_buffer('_embedded_indices_out', torch.tensor(embedded_indices_out))
-
-        # Find the non-embedded feature indices after the embedding.
-        n_features_diff = len(vectors_first_indices_in) * dimension_diff
-        all_indices = torch.arange(n_features_in + n_features_diff)
-        self.register_buffer('_nonembedded_indices_out', remove_and_shift_sorted_indices(
-            all_indices, removed_indices=self._embedded_indices_out, shift=False))
-
         # Create NNP layers for the embedding.
         self.embedding_layer = torch.nn.Sequential(
             torch.nn.Linear(vector_dimension, hidden_layer_width),
@@ -257,6 +225,22 @@ class FlipInvariantEmbedding(MAFEmbedding):
             torch.nn.Linear(hidden_layer_width, 1),
             torch.nn.Softmax(),
         )
+
+        # Save embedded indices.
+        if embedded_indices is None:
+            embedded_indices = torch.arange(n_features_in)
+        else:
+            embedded_indices = ensure_tensor_sequence(embedded_indices)
+        self.register_buffer('_embedded_indices_in', embedded_indices)
+
+        # We need to cache both embedded and non-embedded indices before and
+        # after the embedding.
+        degrees_in = torch.zeros(n_features_in).to(embedded_indices)
+        degrees_in[embedded_indices] = 1
+        degrees_out = self.get_degrees_out(degrees_in)
+        self.register_buffer('_embedded_indices_out', (degrees_out == 1).nonzero().flatten())
+        self.register_buffer('_nonembedded_indices_in', (degrees_in == 0).nonzero().flatten())
+        self.register_buffer('_nonembedded_indices_out', (degrees_out == 0).nonzero().flatten())
 
     @property
     def vector_dimension(self) -> int:
@@ -353,15 +337,14 @@ class FlipInvariantEmbedding(MAFEmbedding):
             raise ValueError('The same degree must be assigned to all '
                              'components of each embedded vectors.')
 
-        # Initialize the number of output features.
-        n_features_out = len(self._embedded_indices_out) + len(self._nonembedded_indices_out)
-        degrees_out = torch.empty(n_features_out, dtype=degrees_in.dtype).to(degrees_in)
+        # Remove from degrees_in all degrees associate to embedded vectors so
+        # that only 1 component (with degree equal to those removed) is left.
+        mask = torch.full(degrees_in.shape, fill_value=True)
+        mask[self._embedded_indices_in] = False
+        mask[self._embedded_indices_in[::self.vector_dimension]] = True
+        degrees_in_masked = degrees_in[mask]
 
-        # The degrees of the nonembedded features remain the same.
-        degrees_out[self._nonembedded_indices_out] = degrees_in[self._nonembedded_indices_in]
-
-        # The degrees of the embedded vectors are maintained but the change shape.
-        vec_degrees_out = vec_degrees_in[:, [0]].expand(-1, self.embedding_dimension)
-        degrees_out[self._embedded_indices_out] = vec_degrees_out.flatten()
-
-        return degrees_out
+        # Duplicate the vector-associated degrees to match the embedding dim.
+        repeats = torch.ones_like(degrees_in)
+        repeats[self._embedded_indices_in] = self.embedding_dimension
+        return torch.repeat_interleave(degrees_in_masked, repeats[mask])
