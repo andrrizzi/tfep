@@ -57,6 +57,7 @@ class MAFEmbedding(abc.ABC, torch.nn.Module):
         """
         pass
 
+
 # =============================================================================
 # PERIODIC EMBEDDING
 # =============================================================================
@@ -87,38 +88,23 @@ class PeriodicEmbedding(MAFEmbedding):
         """
         super().__init__()
 
-        # Convert all sequences to Tensors to simplify the code.
+        # Limits.
+        self.register_buffer('limits', ensure_tensor_sequence(limits))
+
+        # Input periodic feature indices.
         if periodic_indices is None:
             periodic_indices = torch.arange(n_features_in)
         else:
             periodic_indices = ensure_tensor_sequence(periodic_indices)
-        limits = ensure_tensor_sequence(limits)
+        self.register_buffer('_periodic_indices_in', periodic_indices)
 
-        self.register_buffer('limits', limits)
-
-        # Cache a set of periodic/nonperiodic indices BEFORE and AFTER the
-        # input has been embedded.
-        periodic_indices_set = set(periodic_indices.tolist())
-        self.register_buffer('_periodic_indices', periodic_indices)
-        self.register_buffer('_nonperiodic_indices', torch.tensor(
-            [i for i in range(n_features_in) if i not in periodic_indices_set]
-        ).to(periodic_indices))
-
-        periodic_indices_out = []  # Shape (n_periodic,).
-        nonperiodic_indices_out = []  # Shape (n_non_periodic,).
-
-        shift_idx = 0
-        for i in range(n_features_in):
-            if i in periodic_indices_set:
-                periodic_indices_out.append(i+shift_idx)
-                shift_idx += 1
-            else:
-                nonperiodic_indices_out.append(i + shift_idx)
-
-        # Cache as Tensor.
-        self.register_buffer('_periodic_indices_out', torch.tensor(periodic_indices_out))
-        self.register_buffer('_nonperiodic_indices_out', torch.tensor(
-            nonperiodic_indices_out).to(periodic_indices))
+        # We cache both periodic and nonperiodic indices in input and output.
+        degrees_in = torch.zeros(n_features_in).to(periodic_indices)
+        degrees_in[self._periodic_indices_in] = 1
+        degrees_out = self.get_degrees_out(degrees_in)
+        self.register_buffer('_periodic_indices_out', (degrees_out == 1).nonzero().flatten())
+        self.register_buffer('_nonperiodic_indices_in', (degrees_in == 0).nonzero().flatten())
+        self.register_buffer('_nonperiodic_indices_out', (degrees_out == 0).nonzero().flatten())
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Lift each periodic degree of freedom x into a periodic representation (cosx, sinx).
@@ -141,16 +127,17 @@ class PeriodicEmbedding(MAFEmbedding):
 
         # Transform periodic interval to [0, 2pi].
         period_scale = 2*torch.pi / (self.limits[1] - self.limits[0])
-        x_periodic = (x[:, self._periodic_indices] - self.limits[0]) * period_scale
-        cosx = torch.cos(x_periodic)
-        sinx = torch.sin(x_periodic)
+        x_periodic = (x[:, self._periodic_indices_in] - self.limits[0]) * period_scale
+        x_embedded = torch.stack([
+            torch.cos(x_periodic),
+            torch.sin(x_periodic),
+        ], dim=2).reshape(batch_size, -1)
 
         # Fill output.
-        n_periodic = len(self._periodic_indices)
+        n_periodic = len(self._periodic_indices_in)
         y = torch.empty((batch_size, n_features+n_periodic)).to(x)
-        y[:, self._periodic_indices_out] = cosx
-        y[:, self._periodic_indices_out+1] = sinx
-        y[:, self._nonperiodic_indices_out] = x[:, self._nonperiodic_indices]
+        y[:, self._periodic_indices_out] = x_embedded
+        y[:, self._nonperiodic_indices_out] = x[:, self._nonperiodic_indices_in]
 
         return y
 
@@ -175,7 +162,7 @@ class PeriodicEmbedding(MAFEmbedding):
 
         """
         repeats = torch.ones_like(degrees_in)
-        repeats[self._periodic_indices] = 2
+        repeats[self._periodic_indices_in] = 2
         return torch.repeat_interleave(degrees_in, repeats)
 
 
@@ -233,7 +220,7 @@ class FlipInvariantEmbedding(MAFEmbedding):
         self.register_buffer('_embedded_indices_in', embedded_indices)
 
         # We need to cache both embedded and non-embedded indices
-        # before and after the transformation.
+        # before and after the embedding.
         all_indices = torch.arange(n_features_in)
         self.register_buffer('_nonembedded_indices_in', remove_and_shift_sorted_indices(
             all_indices, removed_indices=embedded_indices, shift=False))
