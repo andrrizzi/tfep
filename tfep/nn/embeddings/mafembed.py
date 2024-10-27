@@ -96,6 +96,10 @@ class PeriodicEmbedding(MAFEmbedding):
             periodic_indices = torch.arange(n_features_in)
         else:
             periodic_indices = ensure_tensor_sequence(periodic_indices)
+
+        # Check if there are repeated entries.
+        if len(periodic_indices.unique()) < len(periodic_indices):
+            raise ValueError('Found duplicated indices in periodic_indices.')
         self.register_buffer('_periodic_indices_in', periodic_indices)
 
         # We cache both periodic and nonperiodic indices in input and output.
@@ -231,6 +235,10 @@ class FlipInvariantEmbedding(MAFEmbedding):
             embedded_indices = torch.arange(n_features_in)
         else:
             embedded_indices = ensure_tensor_sequence(embedded_indices)
+
+        # Check if there are repeated entries.
+        if len(embedded_indices.unique()) < len(embedded_indices):
+            raise ValueError('Found duplicated indices in embedded_indices.')
         self.register_buffer('_embedded_indices_in', embedded_indices)
 
         # We need to cache both embedded and non-embedded indices before and

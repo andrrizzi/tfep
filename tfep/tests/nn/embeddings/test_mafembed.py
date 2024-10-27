@@ -118,6 +118,12 @@ def test_periodic_embedding(n_periodic, limits):
     assert torch.allclose(x_out[0, periodic_indices[1]+1:periodic_indices[1]+3], expected)
 
 
+def test_periodic_embedding_error_repeated_indices():
+    """An error is raised if repeated indices are given."""
+    with pytest.raises(ValueError, match='Found duplicated indices'):
+        PeriodicEmbedding(n_features_in=5, limits=[0, 1], periodic_indices=[0, 1, 1])
+
+
 # =============================================================================
 # TEST FLIP-INVARIANT EMBEDDING
 # =============================================================================
@@ -203,6 +209,13 @@ def test_flip_invariant_embedding_invariance(
 
     # The non-embedded features have flipped.
     assert torch.all(out[:, nonembedded_mask] == -out_flipped[:, nonembedded_mask])
+
+
+def test_flip_invariant_embedding_error_repeated_indices():
+    """An error is raised if repeated indices are given."""
+    with pytest.raises(ValueError, match='Found duplicated indices'):
+        FlipInvariantEmbedding(n_features_in=5, embedding_dimension=3,
+                               embedded_indices=[3, 3, 4])
 
 
 def test_flip_invariant_embedding_error_degrees_in():
