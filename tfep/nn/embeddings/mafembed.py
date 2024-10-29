@@ -346,3 +346,102 @@ class FlipInvariantEmbedding(MAFEmbedding):
             degrees_in[self._nonembedded_indices],
             vec_degrees_in.flatten(),
         ])
+
+
+# =============================================================================
+# MIXED EMBEDDING
+# =============================================================================
+
+class MixedEmbedding(MAFEmbedding):
+    """Utility class mixing multiple embeddings.
+
+    The class forwards to the mixed embedding layers only the features assigned
+    to them.
+
+    """
+
+    def __init__(
+            self,
+            n_features_in : int,
+            embedding_layers : Sequence[MAFEmbedding],
+            embedded_indices : Sequence[Sequence[int]],
+    ):
+        """Constructor.
+
+        Parameters
+        ----------
+        n_features_in : int
+            Number of input features (embedded and not).
+        embedding_layers : Sequence[MAFEmbedding]
+            The embedding layers to mix.
+        embedded_indices : Sequence[Sequence[int]]
+            ``embedded_indices[i]`` is the set of indices passed to the
+            ``i``-th embedding layer. The indices cannot overlap.
+
+        """
+        super().__init__()
+
+        # Check the two lengths are equal.
+        if len(embedding_layers) != len(embedded_indices):
+            raise ValueError('Different number of layers and indices.')
+
+        # Convert to tensor.
+        embedded_indices = [ensure_tensor_sequence(indices) for indices in embedded_indices]
+
+        # Check that indices do not overlap.
+        indices0_set = set(embedded_indices[0].tolist())
+        for indices in embedded_indices[1:]:
+            if len(indices0_set & set(indices.tolist())) > 0:
+                raise ValueError('Different embedding layers must be assigned '
+                                 'to different feature indices.')
+
+        # Save embedding layers.
+        self.embedding_layers = torch.nn.ModuleList(embedding_layers)
+
+        # Cache embedded and nonembedd indices.
+        for i, indices in enumerate(embedded_indices):
+            self.register_buffer(f'_embedded_indices{i}', indices)
+
+        nonbedded_indices = remove_and_shift_sorted_indices(
+            indices=torch.arange(n_features_in),
+            removed_indices=torch.cat(embedded_indices).sort().values,
+            shift=False,
+        )
+        self.register_buffer('_nonembedded_indices', nonbedded_indices)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Shape ``(batch, n_features_in)``. Input tensor.
+
+        Returns
+        -------
+        out : torch.Tensor
+            Shape ``(batch, n_features_out``. The embedded features.
+
+        """
+        x_embedded = [layer(x[:, getattr(self, f'_embedded_indices{i}')])
+                      for i, layer in enumerate(self.embedding_layers)]
+        return torch.cat([x[:, self._nonembedded_indices], *x_embedded], dim=1)
+
+    def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
+        """Return the degrees of the features after the embedding.
+
+        Parameters
+        ----------
+        degrees_in : torch.Tensor
+            Shape ``(n_features_in,)``. The degrees of the input features.
+
+        Returns
+        -------
+        degrees_out : torch.Tensor
+            Shape ``(n_features_out,)``. The degrees of the features after the
+            embedding.
+
+        """
+        deg_out = [layer.get_degrees_out(degrees_in[getattr(self, f'_embedded_indices{i}')])
+                   for i, layer in enumerate(self.embedding_layers)]
+        return torch.cat([degrees_in[self._nonembedded_indices], *deg_out])

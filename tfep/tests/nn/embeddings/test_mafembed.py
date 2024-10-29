@@ -148,19 +148,18 @@ def test_periodic_embedding_error_repeated_indices():
 # TEST FLIP-INVARIANT EMBEDDING
 # =============================================================================
 
-@pytest.mark.parametrize('n_features_in,embedding_dimension,embedded_indices,degrees_in,expected_degrees_out', [
-    (4, 4, range(4), [0, 0, 0, 0], [0, 0, 0, 0]),
-    (8, 4, None, [0, 0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 0, 1, 1, 1, 1]),
-    (8, 4, range(8), [1, 1, 1, 1, 0, 0, 0, 0], [1, 1, 1, 1, 0, 0, 0, 0]),
-    (4, 3, range(4), [0, 0, 0, 0], [0, 0, 0]),
-    (8, 3, range(8), [0, 0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 1, 1, 1]),
-    (8, 3, range(8), [1, 1, 1, 1, 0, 0, 0, 0], [1, 1, 1, 0, 0, 0]),
-    (9, 2, [2, 3, 4, 5], [3, 1, 2, 2, 2, 2, 0, 5, 4], [3, 1, 0, 5, 4, 2, 2]),
-    (10, 2, [1, 2, 3, 4, 6, 7, 8, 9], [1, 3, 3, 3, 3, 2, 0, 0, 0, 0], [1, 2, 3, 3, 0, 0]),
-    (10, 2, [0, 1, 2, 3, 5, 6, 7, 8], [2, 2, 2, 2, 3, 0, 0, 0, 0, 1], [3, 1, 2, 2, 0, 0]),
+@pytest.mark.parametrize('embedding_dimension,embedded_indices,degrees_in,expected_degrees_out', [
+    (4, range(4), [0, 0, 0, 0], [0, 0, 0, 0]),
+    (4, None, [0, 0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 0, 1, 1, 1, 1]),
+    (4, range(8), [1, 1, 1, 1, 0, 0, 0, 0], [1, 1, 1, 1, 0, 0, 0, 0]),
+    (3, range(4), [0, 0, 0, 0], [0, 0, 0]),
+    (3, range(8), [0, 0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 1, 1, 1]),
+    (3, range(8), [1, 1, 1, 1, 0, 0, 0, 0], [1, 1, 1, 0, 0, 0]),
+    (2, [2, 3, 4, 5], [3, 1, 2, 2, 2, 2, 0, 5, 4], [3, 1, 0, 5, 4, 2, 2]),
+    (2, [1, 2, 3, 4, 6, 7, 8, 9], [1, 3, 3, 3, 3, 2, 0, 0, 0, 0], [1, 2, 3, 3, 0, 0]),
+    (2, [0, 1, 2, 3, 5, 6, 7, 8], [2, 2, 2, 2, 3, 0, 0, 0, 0, 1], [3, 1, 2, 2, 0, 0]),
 ])
 def test_flip_invariant_embedding_get_degrees_out(
-        n_features_in,
         embedding_dimension,
         embedded_indices,
         degrees_in,
@@ -169,7 +168,7 @@ def test_flip_invariant_embedding_get_degrees_out(
     """Test FlipInvariantEmbedding.get_degrees_out."""
     # Create embedding layer.
     embedding = FlipInvariantEmbedding(
-        n_features_in=n_features_in,
+        n_features_in=len(degrees_in),
         embedding_dimension=embedding_dimension,
         embedded_indices=embedded_indices,
     )
@@ -196,8 +195,6 @@ def test_flip_invariant_embedding_invariance(
         embedded_indices_in,
 ):
     """Test FlipInvariantEmbedding is flip invariant."""
-    embedded_indices_in = torch.tensor(embedded_indices_in)
-
     # Create embedding layer.
     embedding = FlipInvariantEmbedding(
         n_features_in=n_features_in,
@@ -240,3 +237,141 @@ def test_flip_invariant_embedding_error_degrees_in():
     )
     with pytest.raises(ValueError, match='same degree must be assigned'):
         embedding.get_degrees_out(torch.tensor([0, 0, 0, 1]))
+
+
+# =============================================================================
+# TEST MIXED EMBEDDING
+# =============================================================================
+
+@pytest.mark.parametrize('periodic_indices,flip_indices,degrees_in,expected_degrees_out', [
+    ([0], [2, 3], [0, 2, 1, 1], [2, 0, 0, 1]),
+    ([3], [0, 1], [2, 2, 0, 1], [0, 1, 1, 2]),
+    ([0], [1, 2], [2, 1, 1, 0], [0, 2, 2, 1]),
+    ([2], [0, 1], [0, 0, 1, 2], [2, 1, 1, 0]),
+    ([1], [2, 3], [2, 1, 0, 0], [2, 1, 1, 0]),
+    ([3], [1, 2], [1, 0, 0, 2], [1, 2, 2, 0]),
+])
+def test_mixed_embedding_get_degrees_out(
+        periodic_indices,
+        flip_indices,
+        degrees_in,
+        expected_degrees_out,
+):
+    """Test method MixedEmbedding.get_degrees_out()."""
+    # Create mixed embedding.
+    mixed = MixedEmbedding(
+        n_features_in=len(degrees_in),
+        embedding_layers=[
+            PeriodicEmbedding(
+                n_features_in=len(periodic_indices),
+                limits=[0., 1.],
+            ),
+            FlipInvariantEmbedding(
+                n_features_in=len(flip_indices),
+                embedding_dimension=1,
+                vector_dimension=2,
+            ),
+        ],
+        embedded_indices=[periodic_indices, flip_indices],
+    )
+
+    # Check degrees_in -> degrees_out.
+    degrees_out = mixed.get_degrees_out(torch.tensor(degrees_in))
+    assert torch.all(degrees_out == torch.tensor(expected_degrees_out))
+
+
+@pytest.mark.parametrize('batch_size', [1])
+@pytest.mark.parametrize('n_features_in,periodic_indices,flip_indices', [
+    (5, [0], [1, 2, 3]),
+    (6, [0], [3, 4, 5]),
+    (6, [1], [3, 4, 5]),
+    (6, [2], [3, 4, 5]),
+    (4, [0], [1, 2, 3]),
+    (4, [3], [0, 1, 2]),
+    (13, [3, 4], [5, 6, 7, 8, 9, 10]),
+    (13, [3, 7], [4, 5, 6, 8, 9, 10]),
+    (13, [1, 2], [5, 6, 7, 8, 9, 10]),
+    (13, [1, 3], [5, 6, 7, 9, 10, 11]),
+])
+def test_mixed_embedding_invariance(batch_size, n_features_in, periodic_indices, flip_indices):
+    """MixedEmbedding maintains the invariances of the embedding layers.
+
+    In particular, this tests mixing flip- and periodic-invariant layers.
+
+    """
+    embedding_dim = 2
+    vector_dim = 3
+    limits = [-1., 1.]
+
+    # Create mixed embedding.
+    mixed = MixedEmbedding(
+        n_features_in=n_features_in,
+        embedding_layers=[
+            PeriodicEmbedding(
+                n_features_in=len(periodic_indices),
+                limits=limits,
+            ),
+            FlipInvariantEmbedding(
+                n_features_in=len(flip_indices),
+                embedding_dimension=embedding_dim,
+                vector_dimension=vector_dim,
+            ),
+        ],
+        embedded_indices=[periodic_indices, flip_indices],
+    )
+
+    # Create random input features and embed it.
+    x = create_input(batch_size, n_features_in, limits=limits,
+                     periodic_indices=periodic_indices)
+    out = mixed(x)
+
+    # Number of nonembedded, periodic, flip-invariant output features.
+    n_nonembedded = n_features_in - len(periodic_indices) - len(flip_indices)
+    n_periodic = 2 * len(periodic_indices)
+    n_flip = len(flip_indices) // vector_dim * embedding_dim
+
+    # The output has the correct dimension.
+    assert out.shape == (batch_size, n_nonembedded + n_periodic + n_flip)
+
+    # Test flip invariance.
+    out2 = mixed(-x)
+    assert torch.allclose(out[:, :n_nonembedded], -out2[:, :n_nonembedded])
+    assert torch.allclose(out[:, n_nonembedded:-n_flip:2], out2[:, n_nonembedded:-n_flip:2])  # cos invariant
+    assert torch.allclose(out[:, n_nonembedded+1:-n_flip:2], -out2[:, n_nonembedded+1:-n_flip:2])  # sin flipped
+    assert torch.allclose(out[:, -n_flip:], out2[:, -n_flip:])
+
+    # Test periodic invariance.
+    period = limits[1] - limits[0]
+    out2 = mixed(x + period)
+    assert torch.allclose(out[:, n_nonembedded:-n_flip], out2[:, n_nonembedded:-n_flip])
+    assert torch.allclose(out[:, :n_nonembedded], out2[:, :n_nonembedded] - period)
+    assert torch.any(~torch.isclose(out[:, -n_flip:], out2[:, -n_flip:]))
+
+
+def test_mixed_embedding_error_different_lengths():
+    """An error is raised with different number of embedding layers and indices."""
+    with pytest.raises(ValueError, match='Different number of layers and indices'):
+        MixedEmbedding(
+            n_features_in=7,
+            embedding_layers=[
+                PeriodicEmbedding(n_features_in=3, limits=[0., 1.]),
+                FlipInvariantEmbedding(n_features_in=4, embedding_dimension=3),
+            ],
+            embedded_indices=[[0, 1, 2]],
+        )
+
+
+def test_mixed_embedding_error_overlapping_indices():
+    """An error is raised if indices assigned to different layers overlap."""
+    with pytest.raises(ValueError, match='Different embedding layers must be assigned'):
+        MixedEmbedding(
+            n_features_in=7,
+            embedding_layers=[
+                PeriodicEmbedding(n_features_in=3, limits=[0., 1.]),
+                FlipInvariantEmbedding(n_features_in=4, embedding_dimension=3),
+            ],
+            embedded_indices=[
+                [0, 1, 2],
+                [2, 3, 4, 5],
+            ],
+        )
