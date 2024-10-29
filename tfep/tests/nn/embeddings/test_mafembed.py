@@ -17,7 +17,11 @@ Test MAF layer in ``tfep.nn.embeddings.mafembed``.
 import pytest
 import torch
 
-from tfep.nn.embeddings.mafembed import PeriodicEmbedding, FlipInvariantEmbedding
+from tfep.nn.embeddings.mafembed import (
+    PeriodicEmbedding,
+    FlipInvariantEmbedding,
+    MixedEmbedding,
+)
 from .. import create_random_input
 
 
@@ -57,7 +61,7 @@ def create_input(batch_size, n_features_in, limits=None, periodic_indices=None, 
     if limits is not None:
         if periodic_indices is None:
             # All DOFs are periodic. Ignore previous random input.
-            periodic_indices = torch.tensor(list(range(n_features_in)))
+            periodic_indices = torch.arange(n_features_in)
 
         x_periodic = create_random_input(batch_size, len(periodic_indices), x_func=torch.rand, seed=seed)
         x_periodic = x_periodic * (limits[1] - limits[0]) + limits[0]
@@ -71,7 +75,7 @@ def create_input(batch_size, n_features_in, limits=None, periodic_indices=None, 
 # TEST PERIODIC EMBEDDING
 # =============================================================================
 
-@pytest.mark.parametrize('n_periodic', [2, 3, 5])
+@pytest.mark.parametrize('n_periodic', [2, 3, 5, None])
 @pytest.mark.parametrize('limits', [
     (0., 1.),
     (-1., 1.),
@@ -86,36 +90,52 @@ def test_periodic_embedding(n_periodic, limits):
     limits = torch.tensor(limits)
 
     # Select a few random indices for sampling.
-    periodic_indices = torch.sort(torch.randperm(n_features_in)[:n_periodic]).values
-    lifter = PeriodicEmbedding(n_features_in=n_features_in, periodic_indices=periodic_indices, limits=limits)
+    if n_periodic is None:
+        periodic_indices = None
+        n_periodic = n_features_in
+    else:
+        periodic_indices = torch.randperm(n_features_in)[:n_periodic].sort().values
+    
+    # Create embedding layer.
+    embedding = PeriodicEmbedding(
+        n_features_in=n_features_in,
+        limits=limits,
+        periodic_indices=periodic_indices,
+    )
 
     # Create random input with the correct periodicity.
-    x = create_input(batch_size, n_features_in, limits=limits, periodic_indices=periodic_indices)
+    x = create_input(batch_size, n_features_in, limits=limits,
+                     periodic_indices=periodic_indices)
 
-    # Lift periodic DOFs.
-    x_out = lifter(x)
+    # Embed DOFs.
+    x_out = embedding(x)
 
-    # The lifted input must have n_periodic more elements.
+    # The embedded input must have n_periodic more elements.
     assert x.shape[1] + n_periodic == x_out.shape[1]
 
-    # The lifter leaves unaltered the non-periodic DOFs and duplicate the periodic ones.
-    shift_idx = 0
-    for i in range(n_features_in):
-        if i in periodic_indices:
-            shift_idx += 1
-        else:
-            assert torch.all(x[:, i] == x_out[:, i+shift_idx])
-    assert shift_idx == n_periodic
+    # The embedding leaves unaltered the non-periodic DOFs.
+    n_nonperiodic = n_features_in - n_periodic
+    assert torch.allclose(x[:, embedding._nonperiodic_indices], x_out[:, :n_nonperiodic])
+
+    # Now apply apply the embedding after shifting by a period.
+    period = limits[1] - limits[0]
+    x_out2 = embedding(x + period)
+    
+    # Periodic features are identical while non periodic have changed.
+    assert torch.allclose(x_out2[:, :n_nonperiodic], x_out[:, :n_nonperiodic]+period)
+    assert torch.allclose(x_out2[:, n_nonperiodic:], x_out[:, n_nonperiodic:])
 
     # The limits are mapped to the same values (cos=1, sin=0).
-    x[0, periodic_indices[0]] = limits[0]
-    x[0, periodic_indices[1]] = limits[1]
-    x_out = lifter(x)
+    if periodic_indices is None:
+        x[0, 0:2] = limits
+    else:
+        x[0, periodic_indices[0]] = limits[0]
+        x[0, periodic_indices[1]] = limits[1]
+    x_out = embedding(x)
 
     expected = torch.tensor([1.0, 0.0])
-    assert torch.allclose(x_out[0, periodic_indices[0]:periodic_indices[0]+2], expected)
-    # The "+ 1" here is because of the shift idx due to periodic_indices[0].
-    assert torch.allclose(x_out[0, periodic_indices[1]+1:periodic_indices[1]+3], expected)
+    assert torch.allclose(x_out[0, n_nonperiodic:n_nonperiodic+2], expected)
+    assert torch.allclose(x_out[0, n_nonperiodic+2:n_nonperiodic+4], expected)
 
 
 def test_periodic_embedding_error_repeated_indices():
@@ -135,9 +155,9 @@ def test_periodic_embedding_error_repeated_indices():
     (4, 3, range(4), [0, 0, 0, 0], [0, 0, 0]),
     (8, 3, range(8), [0, 0, 0, 0, 1, 1, 1, 1], [0, 0, 0, 1, 1, 1]),
     (8, 3, range(8), [1, 1, 1, 1, 0, 0, 0, 0], [1, 1, 1, 0, 0, 0]),
-    (9, 2, [2, 3, 4, 5], [3, 1, 2, 2, 2, 2, 0, 5, 4], [3, 1, 2, 2, 0, 5, 4]),
-    (10, 2, [1, 2, 3, 4, 6, 7, 8, 9], [1, 3, 3, 3, 3, 2, 0, 0, 0, 0], [1, 3, 3, 2, 0, 0]),
-    (10, 2, [0, 1, 2, 3, 5, 6, 7, 8], [2, 2, 2, 2, 3, 0, 0, 0, 0, 1], [2, 2, 3, 0, 0, 1]),
+    (9, 2, [2, 3, 4, 5], [3, 1, 2, 2, 2, 2, 0, 5, 4], [3, 1, 0, 5, 4, 2, 2]),
+    (10, 2, [1, 2, 3, 4, 6, 7, 8, 9], [1, 3, 3, 3, 3, 2, 0, 0, 0, 0], [1, 2, 3, 3, 0, 0]),
+    (10, 2, [0, 1, 2, 3, 5, 6, 7, 8], [2, 2, 2, 2, 3, 0, 0, 0, 0, 1], [3, 1, 2, 2, 0, 0]),
 ])
 def test_flip_invariant_embedding_get_degrees_out(
         n_features_in,
@@ -197,18 +217,12 @@ def test_flip_invariant_embedding_invariance(
     # Now flip the sign of all features.
     out_flipped = embedding(-x)
 
-    # Find the output indices through get_degrees_out rather than private variables.
-    degrees_in = torch.zeros(n_features_in, dtype=int)
-    degrees_in[embedded_indices_in] = 1
-    degrees_out = embedding.get_degrees_out(degrees_in)
-    embedded_mask = degrees_out == 1
-    nonembedded_mask = degrees_out == 0
-
     # The embedded vectors are flip invariant.
-    assert torch.all(out[:, embedded_mask] == out_flipped[:, embedded_mask])
+    n_embedded = n_vectors * embedding_dimension
+    assert torch.all(out[:, -n_embedded:] == out_flipped[:, -n_embedded:])
 
     # The non-embedded features have flipped.
-    assert torch.all(out[:, nonembedded_mask] == -out_flipped[:, nonembedded_mask])
+    assert torch.allclose(out[:, :-n_embedded], -out_flipped[:, :-n_embedded])
 
 
 def test_flip_invariant_embedding_error_repeated_indices():

@@ -68,7 +68,7 @@ class PeriodicEmbedding(MAFEmbedding):
     def __init__(
             self,
             n_features_in : int,
-            limits : torch.Tensor,
+            limits : Sequence[float],
             periodic_indices : Optional[Sequence[int]] = None,
     ):
         """Constructor.
@@ -77,7 +77,7 @@ class PeriodicEmbedding(MAFEmbedding):
         ----------
         n_features_in : int
             Number of input features.
-        limits : torch.Tensor[float]
+        limits : Sequence[float]
             A pair ``(lower, upper)`` defining the limits of the periodic
             variables. The period is given by ``upper - lower``.
         periodic_indices : Sequence[int] or None, optional
@@ -91,24 +91,23 @@ class PeriodicEmbedding(MAFEmbedding):
         # Limits.
         self.register_buffer('limits', ensure_tensor_sequence(limits))
 
-        # Input periodic feature indices.
+        # Periodic feature indices.
         if periodic_indices is None:
             periodic_indices = torch.arange(n_features_in)
         else:
             periodic_indices = ensure_tensor_sequence(periodic_indices)
+            # Check if there are repeated entries.
+            if len(periodic_indices.unique()) < len(periodic_indices):
+                raise ValueError('Found duplicated indices in periodic_indices.')
+        self.register_buffer('_periodic_indices', periodic_indices)
 
-        # Check if there are repeated entries.
-        if len(periodic_indices.unique()) < len(periodic_indices):
-            raise ValueError('Found duplicated indices in periodic_indices.')
-        self.register_buffer('_periodic_indices_in', periodic_indices)
-
-        # We cache both periodic and nonperiodic indices in input and output.
-        degrees_in = torch.zeros(n_features_in).to(periodic_indices)
-        degrees_in[self._periodic_indices_in] = 1
-        degrees_out = self.get_degrees_out(degrees_in)
-        self.register_buffer('_periodic_indices_out', (degrees_out == 1).nonzero().flatten())
-        self.register_buffer('_nonperiodic_indices_in', (degrees_in == 0).nonzero().flatten())
-        self.register_buffer('_nonperiodic_indices_out', (degrees_out == 0).nonzero().flatten())
+        # Cache the nonperiodic indices to avoid recomputing them at each pass.
+        nonperiodic_indices = remove_and_shift_sorted_indices(
+            indices=torch.arange(n_features_in),
+            removed_indices=periodic_indices,
+            shift=False,
+        )
+        self.register_buffer('_nonperiodic_indices', nonperiodic_indices)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Lift each periodic degree of freedom x into a periodic representation (cosx, sinx).
@@ -120,30 +119,27 @@ class PeriodicEmbedding(MAFEmbedding):
 
         Returns
         -------
-        y : torch.Tensor
+        out : torch.Tensor
             Shape ``(batch_size, n_features + n_periodic)``. The input with the
             periodic DOFs transformed. The cosx, sinx representation is placed
             contiguously where the original DOF was. E.g., if ``2`` is the first
             element in ``periodic_indices``, then cos and sin will be placed at
             ``y[:, 2]`` and ``y[:, 3]`` respectively.
         """
-        batch_size, n_features = x.shape
+        batch_size = x.shape[0]
 
         # Transform periodic interval to [0, 2pi].
         period_scale = 2*torch.pi / (self.limits[1] - self.limits[0])
-        x_periodic = (x[:, self._periodic_indices_in] - self.limits[0]) * period_scale
-        x_embedded = torch.stack([
-            torch.cos(x_periodic),
-            torch.sin(x_periodic),
-        ], dim=2).reshape(batch_size, -1)
+        x_periodic = (x[:, self._periodic_indices] - self.limits[0]) * period_scale
 
-        # Fill output.
-        n_periodic = len(self._periodic_indices_in)
-        y = torch.empty((batch_size, n_features+n_periodic)).to(x)
-        y[:, self._periodic_indices_out] = x_embedded
-        y[:, self._nonperiodic_indices_out] = x[:, self._nonperiodic_indices_in]
-
-        return y
+        # Embed.
+        return torch.cat([
+            x[:, self._nonperiodic_indices],
+            torch.stack([
+                torch.cos(x_periodic),
+                torch.sin(x_periodic),
+            ], dim=2).reshape(batch_size, -1),
+        ], dim=1)
 
     def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
         """Return the degrees of the features after the forward pass.
@@ -165,9 +161,10 @@ class PeriodicEmbedding(MAFEmbedding):
             The degrees of the features after the forward pass.
 
         """
-        repeats = torch.ones_like(degrees_in)
-        repeats[self._periodic_indices_in] = 2
-        return torch.repeat_interleave(degrees_in, repeats)
+        return torch.cat([
+            degrees_in[self._nonperiodic_indices],
+            degrees_in[self._periodic_indices].repeat_interleave(2)
+        ])
 
 
 # =============================================================================
@@ -230,25 +227,23 @@ class FlipInvariantEmbedding(MAFEmbedding):
             torch.nn.Softmax(),
         )
 
-        # Save embedded indices.
+        # Embedded indices.
         if embedded_indices is None:
             embedded_indices = torch.arange(n_features_in)
         else:
             embedded_indices = ensure_tensor_sequence(embedded_indices)
+            # Check if there are repeated entries.
+            if len(embedded_indices.unique()) < len(embedded_indices):
+                raise ValueError('Found duplicated indices in embedded_indices.')
+        self.register_buffer('_embedded_indices', embedded_indices)
 
-        # Check if there are repeated entries.
-        if len(embedded_indices.unique()) < len(embedded_indices):
-            raise ValueError('Found duplicated indices in embedded_indices.')
-        self.register_buffer('_embedded_indices_in', embedded_indices)
-
-        # We need to cache both embedded and non-embedded indices before and
-        # after the embedding.
-        degrees_in = torch.zeros(n_features_in).to(embedded_indices)
-        degrees_in[embedded_indices] = 1
-        degrees_out = self.get_degrees_out(degrees_in)
-        self.register_buffer('_embedded_indices_out', (degrees_out == 1).nonzero().flatten())
-        self.register_buffer('_nonembedded_indices_in', (degrees_in == 0).nonzero().flatten())
-        self.register_buffer('_nonembedded_indices_out', (degrees_out == 0).nonzero().flatten())
+        # Cache the nonembedded indices to avoid recomputing them at each pass.
+        nonembedded_indices = remove_and_shift_sorted_indices(
+            indices=torch.arange(n_features_in),
+            removed_indices=embedded_indices,
+            shift=False,
+        )
+        self.register_buffer('_nonembedded_indices', nonembedded_indices)
 
     @property
     def vector_dimension(self) -> int:
@@ -270,7 +265,7 @@ class FlipInvariantEmbedding(MAFEmbedding):
 
         Returns
         -------
-        y : torch.Tensor
+        out : torch.Tensor
             Shape ``(batch, n_features + n_vectors*(embedded_dim - vector_dim))``.
             The transformed features with the ``n_vectors`` vectors embedded
             from the ``vector_dim`` to an ``embedded_dim`` space.
@@ -279,7 +274,7 @@ class FlipInvariantEmbedding(MAFEmbedding):
         batch_size = x.shape[0]
 
         # Extract vectors.
-        vectors = x[:, self._embedded_indices_in]
+        vectors = x[:, self._embedded_indices]
 
         # From (batch, n_vectors*vector_dim) to (batch*n_vectors, vector_dim).
         vectors = vectors.reshape(-1, self.vector_dimension)
@@ -305,13 +300,11 @@ class FlipInvariantEmbedding(MAFEmbedding):
         # From (batch*n_vectors, embedding_dim) to (batch, n_vectors*embedding_dim).
         embedded_vectors = embedded_vectors.reshape(batch_size, -1)
 
-        # Construct output tensor.
-        n_features_out = len(self._nonembedded_indices_out) + len(self._embedded_indices_out)
-        out = torch.empty((batch_size, n_features_out)).to(x)
-        out[:, self._embedded_indices_out] = embedded_vectors
-        out[:, self._nonembedded_indices_out] = x[:, self._nonembedded_indices_in]
-
-        return out
+        # Return embedded features.
+        return torch.cat([
+            x[:, self._nonembedded_indices],
+            embedded_vectors,
+        ], dim=1)
 
     def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
         """Return the degrees of the features after the forward pass.
@@ -338,21 +331,18 @@ class FlipInvariantEmbedding(MAFEmbedding):
 
         """
         # Get the degrees of the input vectors. Shape (n_vectors, vector_dimension).
-        vec_degrees_in = degrees_in[self._embedded_indices_in].reshape(-1, self.vector_dimension)
+        vec_degrees_in = degrees_in[self._embedded_indices].reshape(-1, self.vector_dimension)
 
         # All components of each vector must be assigned to the same degree.
         if not torch.all(vec_degrees_in == vec_degrees_in[:, [0]]):
             raise ValueError('The same degree must be assigned to all '
                              'components of each embedded vectors.')
 
-        # Remove from degrees_in all degrees associate to embedded vectors so
-        # that only 1 component (with degree equal to those removed) is left.
-        mask = torch.full(degrees_in.shape, fill_value=True)
-        mask[self._embedded_indices_in] = False
-        mask[self._embedded_indices_in[::self.vector_dimension]] = True
-        degrees_in_masked = degrees_in[mask]
-
-        # Duplicate the vector-associated degrees to match the embedding dim.
-        repeats = torch.ones_like(degrees_in)
-        repeats[self._embedded_indices_in] = self.embedding_dimension
-        return torch.repeat_interleave(degrees_in_masked, repeats[mask])
+        # Update vector degrees from vector to embedding dimension.
+        vec_degrees_in = vec_degrees_in[:, [0]].expand(-1, self.embedding_dimension)
+        
+        # Concatenate to non-embedded features.
+        return torch.cat([
+            degrees_in[self._nonembedded_indices],
+            vec_degrees_in.flatten(),
+        ])
