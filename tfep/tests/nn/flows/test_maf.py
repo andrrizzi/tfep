@@ -26,6 +26,7 @@ from tfep.nn.transformers import (
 from tfep.nn.conditioners.made import generate_degrees
 from tfep.nn.embeddings.mafembed import PeriodicEmbedding
 from tfep.nn.flows.maf import MAF
+from tfep.utils.misc import remove_and_shift_sorted_indices
 
 from .. import check_autoregressive_property
 from .. import create_random_input
@@ -101,8 +102,8 @@ def create_input(batch_size, dimension_in, limits=None, periodic_indices=None, s
     SOSPolynomialTransformer(2),
     SOSPolynomialTransformer(3),
     NeuralSplineTransformer(
-        x0=torch.tensor(-2., dtype=torch.double),
-        xf=torch.tensor(2., dtype=torch.double),
+        x0=torch.tensor(-1., dtype=torch.double),
+        xf=torch.tensor(1., dtype=torch.double),
         n_bins=3
     ),
     MoebiusTransformer(dimension=3),
@@ -121,13 +122,11 @@ def test_identity_initialization_MAF(hidden_layers, conditioning_indices, period
     """
     n_features = 5
     batch_size = 2
-    limits = [-2., 2.]
+    limits = [-1., 1.]
 
     # Periodic indices with MoebiusTransformer doesn't make sense.
     if periodic_indices is None:
         embedding = None
-    elif isinstance(transformer, MoebiusTransformer):
-        pytest.skip('Vector inputs for Moebius transformers are not compatible with periodic.')
     else:
         embedding = PeriodicEmbedding(
             n_features_in=n_features,
@@ -145,15 +144,9 @@ def test_identity_initialization_MAF(hidden_layers, conditioning_indices, period
 
     # Remove the conditioning indices from the MixedTransformer.
     if isinstance(transformer, MixedTransformer) and len(conditioning_indices) > 0:
-        indices = [transformer._indices0.tolist(), transformer._indices1.tolist()]
-        indices = [[i for i in ind if i not in conditioning_indices] for ind in indices]
-        # Shift the indices to account for the removed conditioning indices.
-        new_indices = np.argsort(indices[0] + indices[1])
-        new_indices = [
-            torch.from_numpy(new_indices[:len(indices[0])]),
-            torch.from_numpy(new_indices[len(indices[0]):]),
-        ]
-        transformer = MixedTransformer(transformer._transformers, new_indices)
+        indices = [remove_and_shift_sorted_indices(idx, torch.tensor(conditioning_indices))
+                   for idx in transformer._indices]
+        transformer = MixedTransformer(transformer._transformers, indices)
 
     # Create MAF.
     maf = MAF(
@@ -170,19 +163,10 @@ def test_identity_initialization_MAF(hidden_layers, conditioning_indices, period
         initialize_identity=True,
     )
 
-    # Create random input.
-    if isinstance(transformer, NeuralSplineTransformer):
-        x = create_input(
-            batch_size,
-            n_features,
-            limits=(transformer.x0, transformer.xf),
-            periodic_indices=periodic_indices,
-        )
-    else:
-        x = create_input(batch_size, n_features)
-
+    # Create random input and forward.
+    x = create_input(batch_size, n_features, limits=limits,
+                     periodic_indices=periodic_indices)
     y, log_det_J = maf.forward(x)
-
     assert torch.allclose(x, y)
     assert torch.allclose(log_det_J, torch.zeros(batch_size), atol=1e-6)
 
@@ -248,15 +232,9 @@ def test_maf_autoregressive_round_trip(conditioning_indices, periodic_indices, d
 
     # Remove the conditioning indices from the MixedTransformer.
     if isinstance(transformer, MixedTransformer) and len(conditioning_indices) > 0:
-        indices = [transformer._indices0.tolist(), transformer._indices1.tolist()]
-        indices = [[i for i in ind if i not in conditioning_indices] for ind in indices]
-        # Shift the indices to account for the removed conditioning indices.
-        new_indices = np.argsort(indices[0] + indices[1])
-        new_indices = [
-            torch.from_numpy(new_indices[:len(indices[0])]),
-            torch.from_numpy(new_indices[len(indices[0]):]),
-        ]
-        transformer = MixedTransformer(transformer._transformers, new_indices)
+        indices = [remove_and_shift_sorted_indices(idx, torch.tensor(conditioning_indices))
+                   for idx in transformer._indices]
+        transformer = MixedTransformer(transformer._transformers, indices)
 
     # Input degrees.
     degrees_in = generate_degrees(
