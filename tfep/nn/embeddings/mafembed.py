@@ -224,7 +224,6 @@ class FlipInvariantEmbedding(MAFEmbedding):
             torch.nn.Linear(vector_dimension, hidden_layer_width),
             torch.nn.ELU(),
             torch.nn.Linear(hidden_layer_width, 1),
-            torch.nn.Softmax(),
         )
 
         # Embedded indices.
@@ -288,10 +287,10 @@ class FlipInvariantEmbedding(MAFEmbedding):
 
         # Find the softmax weights for the positive and negative embeddings.
         # Out shape is (batch*n_vectors, 2, 1).
-        weights = torch.stack([
+        weights = torch.softmax(torch.stack([
             self.weight_layer(vectors),
             self.weight_layer(-vectors),
-        ], dim=1)
+        ], dim=1), dim=1)
 
         # Weighted sum the positive and negative embeddings.
         # Out shape is (batch*n_vectors, embedding_dim)
