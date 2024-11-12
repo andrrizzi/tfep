@@ -543,7 +543,7 @@ def symmetrized_moebius_transformer_inverse(
 ) -> tuple[torch.Tensor]:
     r"""Inverse symmetrized Moebius transformer.
 
-    See :func:`.symmetrized_moebius_transformer_inverse` for documentation.
+    See :func:`.symmetrized_moebius_transformer` for the documentation.
 
     """
     # We solve the inversion first on the unit sphere, and then project back.
