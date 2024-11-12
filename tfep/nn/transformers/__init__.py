@@ -15,7 +15,9 @@ from tfep.nn.transformers.affine import (
 )
 from tfep.nn.transformers.mixed import MixedTransformer
 from tfep.nn.transformers.moebius import (
-    MoebiusTransformer, moebius_transformer)
+    MoebiusTransformer, moebius_transformer,
+    SymmetrizedMoebiusTransformer, symmetrized_moebius_transformer, symmetrized_moebius_transformer_inverse,
+)
 from tfep.nn.transformers.sos import (
     SOSPolynomialTransformer, SOSPolynomialTransformerFunc, sos_polynomial_transformer)
 from tfep.nn.transformers.spline import (
