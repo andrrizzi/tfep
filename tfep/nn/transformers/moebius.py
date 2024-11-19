@@ -210,6 +210,14 @@ class SymmetrizedMoebiusTransformer(MAFTransformer):
     following the same strategy as in [2] to satisfy the condition on the norm.
     Consequently, ``w``s of any norm can be passed.
 
+    The transformer can implement the identity function when :math:`w` is zero.
+    However, in this case, the gradient w.r.t. the parameters will also be zero
+    and thus the transformer will not be able to learn another function. To
+    avoid this :func:``.SymmetrizedMoebiusTransformer.get_identity_parameters``
+    returns a very small random tensor rather than exactly zero. How small is
+    controlled by the ``identity_eps`` argument.
+
+
     References
     ----------
     [1] Köhler J, Invernizzi M, De Haan P, Noé F. Rigid body flows for sampling
@@ -222,7 +230,12 @@ class SymmetrizedMoebiusTransformer(MAFTransformer):
     # Number of parameters needed by the transformer for each input dimension.
     n_parameters_per_feature = 1
 
-    def __init__(self, dimension: int, max_radius: float = 0.99):
+    def __init__(
+            self,
+            dimension: int,
+            max_radius: float = 0.99,
+            identity_eps: float = 1e-9,
+    ):
         """Constructor.
 
         Parameters
@@ -232,11 +245,16 @@ class SymmetrizedMoebiusTransformer(MAFTransformer):
         max_radius : float
             Must be stringly less than 1. Rescaling of the ``w`` vectors will be
             performed so that its maximum norm will be ``max_radius * |x|``.
+        identity_eps : float
+            The maximum value randomly generated for the tensor elements in
+            :func:``.SymmetrizedMoebiusTransformer.get_identity_parameters``.
+            Set this to ``0.`` to implement the exact identity function.
 
         """
         super().__init__()
         self.dimension = dimension
         self.max_radius = max_radius
+        self.identity_eps = identity_eps
 
     def forward(self, x: torch.Tensor, parameters: torch.Tensor) -> tuple[torch.Tensor]:
         """Apply the transformation.
@@ -315,8 +333,8 @@ class SymmetrizedMoebiusTransformer(MAFTransformer):
     def get_identity_parameters(self, n_features: int) -> torch.Tensor:
         """Return the value of the parameters that makes this the identity function.
 
-        This can be used to initialize the normalizing flow to perform the identity
-        transformation.
+        This can be used to initialize the normalizing flow to perform the
+        identity transformation.
 
         Parameters
         ----------
@@ -330,7 +348,8 @@ class SymmetrizedMoebiusTransformer(MAFTransformer):
             vector to perform the identity function with a Moebius transformer.
 
         """
-        return torch.zeros(size=(self.n_parameters_per_feature*n_features,))
+        par = torch.rand(self.n_parameters_per_feature*n_features)
+        return (2*par - 1) * self.identity_eps
 
     def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
         """Returns the degrees associated to the conditioner's output.
