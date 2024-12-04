@@ -804,10 +804,10 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         # Convert bias to units of kT.
         try:
             log_weights = batch['log_weights']
-        except KeyError:  # Unbiased simulation.
+        except KeyError:
             try:
                 log_weights = batch['bias'] / self._kT
-            except KeyError:
+            except KeyError:  # Unbiased simulation.
                 log_weights = None
 
         # Compute loss.
@@ -908,8 +908,13 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         """
         checkpoint['stateful_batch_sampler'] = self._stateful_batch_sampler.state_dict()
 
-    def _get_selected_indices(self, selection: Union[str, int, Sequence[int]], sort: bool = True) -> torch.Tensor:
-        """Return selected indices as a sorted Tensor of integers.
+    def _get_selected_indices(
+            self,
+            selection: Union[str, int, Sequence[int]],
+            sort: bool = True,
+            allow_empty: bool = False,
+    ) -> torch.Tensor:
+        """Return selected indices as a sorted Tensor of (unique) integers.
 
         This does not set the device of the returned tensor.
 
@@ -931,10 +936,9 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             selection = self.dataset.universe.select_atoms(selection).ix
         if not torch.is_tensor(selection):
             selection = torch.tensor(selection)
-        if selection.numel() == 0:
+        if selection.numel() == 0 and not allow_empty:
             raise ValueError('Selection contains 0 atoms.')
-        if sort:
-            selection = selection.sort()[0]
+        selection = selection.unique(sorted=sort)
         return selection
 
     def _get_nonfixed_indices(
