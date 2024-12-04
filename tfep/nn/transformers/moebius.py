@@ -53,8 +53,6 @@ class MoebiusTransformer(MAFTransformer):
         arXiv preprint arXiv:2002.02428. 2020 Feb 6.
 
     """
-    # Number of parameters needed by the transformer for each input dimension.
-    n_parameters_per_feature = 1
 
     def __init__(self, dimension: int, max_radius: float = 0.99, unit_sphere: bool = False):
         """Constructor.
@@ -170,7 +168,7 @@ class MoebiusTransformer(MAFTransformer):
             vector to perform the identity function with a Moebius transformer.
 
         """
-        return torch.zeros(size=(self.n_parameters_per_feature*n_features,))
+        return torch.zeros(size=(n_features,))
 
     def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
         """Returns the degrees associated to the conditioner's output.
@@ -189,7 +187,7 @@ class MoebiusTransformer(MAFTransformer):
             transformer as parameters.
 
         """
-        return degrees_in.tile((self.n_parameters_per_feature,))
+        return degrees_in.detach().clone()
 
 
 class SymmetrizedMoebiusTransformer(MAFTransformer):
@@ -227,8 +225,6 @@ class SymmetrizedMoebiusTransformer(MAFTransformer):
         arXiv preprint arXiv:2002.02428. 2020 Feb 6.
 
     """
-    # Number of parameters needed by the transformer for each input dimension.
-    n_parameters_per_feature = 1
 
     def __init__(
             self,
@@ -348,7 +344,7 @@ class SymmetrizedMoebiusTransformer(MAFTransformer):
             vector to perform the identity function with a Moebius transformer.
 
         """
-        par = torch.rand(self.n_parameters_per_feature*n_features)
+        par = torch.rand(n_features)
         return (2*par - 1) * self.identity_eps
 
     def get_degrees_out(self, degrees_in: torch.Tensor) -> torch.Tensor:
@@ -368,7 +364,7 @@ class SymmetrizedMoebiusTransformer(MAFTransformer):
             transformer as parameters.
 
         """
-        return degrees_in.tile((self.n_parameters_per_feature,))
+        return degrees_in.detach().clone()
 
 
 # =============================================================================

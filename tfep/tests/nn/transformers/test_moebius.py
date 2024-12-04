@@ -167,10 +167,10 @@ def reference_symmetrized_moebius_transformer(x, w, dimension):
     (4, 4),
     (8, 4),
 ])
-@pytest.mark.parametrize('unit_sphere', [True, False])
-@pytest.mark.parametrize('transformer_cls', [
-    MoebiusTransformer,
-    SymmetrizedMoebiusTransformer
+@pytest.mark.parametrize('unit_sphere,transformer_cls', [
+    (True, MoebiusTransformer),
+    (False, MoebiusTransformer),
+    (None, SymmetrizedMoebiusTransformer),
 ])
 def test_moebius_transformer_reference(batch_size, n_features, dimension, unit_sphere, transformer_cls):
     """Compare PyTorch and reference implementation of MoebiusTransformer."""
@@ -244,10 +244,10 @@ def test_moebius_transformer_identity(batch_size, n_features, dimension, unit_sp
     (4, 4),
     (8, 4),
 ])
-@pytest.mark.parametrize('unit_sphere', [True, False])
-@pytest.mark.parametrize('transformer_cls', [
-    MoebiusTransformer,
-    SymmetrizedMoebiusTransformer
+@pytest.mark.parametrize('unit_sphere,transformer_cls', [
+    (True, MoebiusTransformer),
+    (False, MoebiusTransformer),
+    (None, SymmetrizedMoebiusTransformer),
 ])
 def test_moebius_transformer_inverse(batch_size, n_features, dimension, unit_sphere, transformer_cls):
     """Compare PyTorch and reference implementation of MoebiusTransformer."""
