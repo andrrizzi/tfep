@@ -362,11 +362,16 @@ def reference_frame_rotation_matrix(
     """
     # Default argument.
     if plane_normal is None:
-        plane_normal = torch.cross(axis, plane_axis)
+        plane_normal = torch.cross(axis, plane_axis, dim=0)
 
     # Find the direction perpendicular to the plane formed by the axis atom,
     # and the axis. rotation_vectors has shape (batch_size, 3).
     rotation_vectors = torch.cross(axis_atom_positions, axis.unsqueeze(0), dim=1)
+
+    # If axis_atom_positions lies exactly on axis, any perpendicular vector
+    # will do. Shape (batch_size,).
+    is_parallel = torch.isclose(rotation_vectors, torch.zeros(1)).all(dim=1)
+    rotation_vectors[is_parallel] = torch.cross(plane_axis, axis, dim=0)
 
     # Find the first rotation angle. r1_angle has shape (batch_size,).
     r1_angles = vector_vector_angle(axis_atom_positions, axis)
