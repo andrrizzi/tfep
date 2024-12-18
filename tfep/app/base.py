@@ -17,8 +17,9 @@ from collections.abc import Sequence
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import lightning
-import pint
 import MDAnalysis
+import numpy as np
+import pint
 import torch
 
 import tfep.loss
@@ -938,7 +939,14 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             selection = torch.tensor(selection)
         if selection.numel() == 0 and not allow_empty:
             raise ValueError('Selection contains 0 atoms.')
-        selection = selection.unique(sorted=sort)
+        # Remove duplicated values. torch.Tensor.unique() always sorts on the
+        # CUDA and CPU platforms, even if unique(sorted=False).
+        if sort:
+            selection = selection.unique()
+        elif selection.numel() > 1:
+            selection = selection.detach().numpy()
+            sorter = np.unique(selection, return_index=True)[1]
+            selection = torch.tensor(selection[np.sort(sorter)])
         return selection
 
     def _get_nonfixed_indices(
