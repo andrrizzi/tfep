@@ -38,7 +38,7 @@ python >= 3.9
 pytorch >= 1.11
 mdanalysis >= 2.0
 pint
-numpy
+numpy < 2.0
 lightning >= 2.0
 ```
 and the following optional dependencies
@@ -58,7 +58,7 @@ example that creates a separate conda environment with all the dependencies and 
 
 ```bash
 # Required dependencies.
-conda create --name tfepenv python">=3.9" pytorch">=1.11" mdanalysis">=2.0" pint numpy lightning">=2.0" -c conda-forge
+conda create --name tfepenv python">=3.9" pytorch">=1.11" mdanalysis">=2.0" pint numpy"<2.0" lightning">=2.0" -c conda-forge
 conda activate tfepenv
 
 # Optional dependency using conda.
