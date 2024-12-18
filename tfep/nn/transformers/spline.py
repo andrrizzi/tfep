@@ -289,15 +289,11 @@ class NeuralSplineTransformer(MAFTransformer):
                              'implemented only if x0=y0 and xf=yf.')
 
         # The slopes parameters in _get_parameters are offset so that the final
-        # slope will be 1 when zeros are passed. This also sets the shifts to 0
-        # for periodic features/learnable domain and the domain scale (which
+        # slope will be 1 when zeros are passed. This also sets the 1) widths
+        # and heights (which go through a softmax) to equal bins; 2) shifts for
+        # periodic features/learnable domain to 0; and 3) the domain scale (which
         # goes through an exponential) to 1.
         id_conditioner = torch.zeros(size=(self.n_parameters_per_feature, n_features)).to(self.x0)
-
-        # Both the width and the height of each bin must be constant.
-        # Remember that the parameters go through the softmax function.
-        id_conditioner[:self.n_bins].fill_(1 / self.n_bins)
-        id_conditioner[self.n_bins:2*self.n_bins].fill_(1 / self.n_bins)
 
         return id_conditioner.reshape(-1)
 

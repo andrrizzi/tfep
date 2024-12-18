@@ -17,13 +17,14 @@ from collections.abc import Sequence
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import lightning
-import pint
 import MDAnalysis
+import numpy as np
+import pint
 import torch
 
 import tfep.loss
 import tfep.io.sampler
-from tfep.utils.misc import atom_to_flattened_indices
+from tfep.utils.misc import atom_to_flattened_indices, remove_and_shift_sorted_indices
 
 
 # =============================================================================
@@ -527,8 +528,9 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         if remove_fixed and self.n_fixed_atoms > 0:
             for i, atom_indices in enumerate(reference_atom_indices):
                 if atom_indices is not None:
-                    shift = torch.searchsorted(self._fixed_atom_indices, atom_indices)
-                    reference_atom_indices[i] = atom_indices - shift
+                    # Reference atoms are conditioning or mapped. We can set remove=False.
+                    reference_atom_indices[i] = remove_and_shift_sorted_indices(
+                        atom_indices, removed_indices=self._fixed_atom_indices, remove=False)
 
         # Concatenate if requested.
         if not separate_origin_axes:
@@ -683,12 +685,6 @@ class TFEPMapBase(ABC, lightning.LightningModule):
                     raise ValueError('Selected multiple atoms as the origin atom')
                 origin_atom_idx = origin_atom_idx[0]
 
-            # Make sure origin is a fixed atom.
-            if (conditioning_atom_indices is None or
-                        origin_atom_idx not in conditioning_atom_indices):
-                raise ValueError("origin_atom is not a conditioning atom. origin_atom "
-                                 "affects the mapping but its position is constrained.")
-
         # Select axes atoms.
         if axes is None:
             axes_atoms_indices = None
@@ -803,10 +799,10 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         # Convert bias to units of kT.
         try:
             log_weights = batch['log_weights']
-        except KeyError:  # Unbiased simulation.
+        except KeyError:
             try:
                 log_weights = batch['bias'] / self._kT
-            except KeyError:
+            except KeyError:  # Unbiased simulation.
                 log_weights = None
 
         # Compute loss.
@@ -907,8 +903,13 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         """
         checkpoint['stateful_batch_sampler'] = self._stateful_batch_sampler.state_dict()
 
-    def _get_selected_indices(self, selection: Union[str, int, Sequence[int]], sort: bool = True) -> torch.Tensor:
-        """Return selected indices as a sorted Tensor of integers.
+    def _get_selected_indices(
+            self,
+            selection: Union[str, int, Sequence[int]],
+            sort: bool = True,
+            allow_empty: bool = False,
+    ) -> torch.Tensor:
+        """Return selected indices as a sorted Tensor of (unique) integers.
 
         This does not set the device of the returned tensor.
 
@@ -930,10 +931,16 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             selection = self.dataset.universe.select_atoms(selection).ix
         if not torch.is_tensor(selection):
             selection = torch.tensor(selection)
-        if selection.numel() == 0:
+        if selection.numel() == 0 and not allow_empty:
             raise ValueError('Selection contains 0 atoms.')
+        # Remove duplicated values. torch.Tensor.unique() always sorts on the
+        # CUDA and CPU platforms, even if unique(sorted=False).
         if sort:
-            selection = selection.sort()[0]
+            selection = selection.unique()
+        elif selection.numel() > 1:
+            selection = selection.detach().numpy()
+            sorter = np.unique(selection, return_index=True)[1]
+            selection = torch.tensor(selection[np.sort(sorter)])
         return selection
 
     def _get_nonfixed_indices(
@@ -954,11 +961,12 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         # Returned value (could be atom or dof indices).
         indices = atom_indices
 
-        # We search the fixed indices by atom index so that searchsorted takes
-        # three times less and we expect the fixed indices (when present) to be
-        # the most numerous.
+        # We remove the atom indices (not DOF indices) which is 3 times faster.
         if remove_fixed and self.n_fixed_atoms > 0:
-            indices = indices - torch.searchsorted(self._fixed_atom_indices, indices)
+            # We already know that atom_indices do not contain any fixed atom
+            # index so we just need to shift them.
+            indices = remove_and_shift_sorted_indices(
+                indices, removed_indices=self._fixed_atom_indices, remove=False)
 
         # Convert to DOF indices.
         if is_dof:

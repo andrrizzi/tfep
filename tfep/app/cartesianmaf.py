@@ -21,7 +21,7 @@ import torch
 from tfep.app.base import TFEPMapBase
 import tfep.nn.conditioners.made
 import tfep.nn.flows
-from tfep.utils.misc import atom_to_flattened_indices
+from tfep.utils.misc import atom_to_flattened_indices, remove_and_shift_sorted_indices
 
 
 # =============================================================================
@@ -310,6 +310,17 @@ class CartesianMAFMap(TFEPMapBase):
             indices = self._remove_reference_indices(indices, idx_type=idx_type, remove_fixed=remove_fixed)
         return indices
 
+    def determine_atom_indices(self):
+        """Override CartesianMAFMap.determine_atom_indices to check that the origin atom is conditioning."""
+        super().determine_atom_indices()
+
+        # Make sure origin is a fixed atom.
+        if self._origin_atom_idx is not None and (
+                        self._conditioning_atom_indices is None or
+                        self._origin_atom_idx not in self._conditioning_atom_indices):
+            raise ValueError("origin_atom is not a conditioning atom. origin_atom "
+                             "affects the mapping but its position is constrained.")
+
     def _remove_reference_indices(
             self,
             indices: torch.Tensor,
@@ -349,17 +360,8 @@ class CartesianMAFMap(TFEPMapBase):
 
         # Remove the reference atom indices.
         if len(removed_indices) > 0:
-            # removed_indices must be sorted for searchsorted.
+            # removed_indices must be sorted for remove_and_shift_sorted_indices.
             removed_indices = torch.cat(removed_indices).sort()[0]
-
-            # We need to first to delete the constrained reference DOFs that belong to indices.
-            mask = True
-            for idx in removed_indices:
-                mask &= indices != idx
-            indices = indices[mask]
-
-            # And now shift the indices to account for the removal of the
-            # constrained indices (even if they don't belong to indices).
-            indices = indices - torch.searchsorted(removed_indices, indices)
+            indices = remove_and_shift_sorted_indices(indices, removed_indices)
 
         return indices

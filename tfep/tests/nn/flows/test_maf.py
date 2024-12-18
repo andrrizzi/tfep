@@ -14,7 +14,6 @@ Test MAF layer in tfep.nn.flows.maf.
 # GLOBAL IMPORTS
 # =============================================================================
 
-import numpy as np
 import pytest
 import torch
 
@@ -24,8 +23,13 @@ from tfep.nn.transformers import (
     MixedTransformer,
 )
 from tfep.nn.conditioners.made import generate_degrees
-from tfep.nn.embeddings.mafembed import PeriodicEmbedding
+from tfep.nn.embeddings.mafembed import (
+    PeriodicEmbedding,
+    FlipInvariantEmbedding,
+    MixedEmbedding,
+)
 from tfep.nn.flows.maf import MAF
+from tfep.utils.misc import remove_and_shift_sorted_indices
 
 from .. import check_autoregressive_property
 from .. import create_random_input
@@ -51,214 +55,76 @@ def teardown_module(module):
 # UTILITY FUNCTIONS
 # =============================================================================
 
-def create_input(batch_size, dimension_in, limits=None, periodic_indices=None, seed=0):
-    """Create random input with correct boundaries.
-
-    If limits=(x0, xf) are passed, the input is constrained to be within x0 and
-    xf. x0 and xf can be both floats or Tensors of size (n_features,).
-
-    If periodic_indices is passed, only these DOFs are restrained between x0
-    and xf.
-
-    """
-    # The non-periodic features do not need to be restrained between 0 and 1.
-    x = create_random_input(batch_size, dimension_in, x_func=torch.randn, seed=seed)
-
-    if (limits is not None) and (periodic_indices is not None):
-        x_periodic = create_random_input(batch_size, len(periodic_indices), x_func=torch.rand, seed=seed)
-        x_periodic = x_periodic * (limits[1] - limits[0]) + limits[0]
-        x = x.clone()
-        x[:, periodic_indices] = x_periodic
-
-    return x
-
-
-# =============================================================================
-# TESTS
-# =============================================================================
-
-@pytest.mark.parametrize('hidden_layers', [1, 4])
-@pytest.mark.parametrize('conditioning_indices', [
-    [],
-    [0, 1],
-    [0, 3],
-    [1, 3],
-    [0, 4],
-    [2, 4],
-    [3, 4]
-])
-@pytest.mark.parametrize('periodic_indices', [
-    None,
-    [0],
-    [1],
-    [1, 2],
-    [0, 2],
-])
-@pytest.mark.parametrize('degrees_in_order', ['ascending', 'descending'])
-@pytest.mark.parametrize('weight_norm', [False, True])
-@pytest.mark.parametrize('transformer', [
-    AffineTransformer(),
-    SOSPolynomialTransformer(2),
-    SOSPolynomialTransformer(3),
-    NeuralSplineTransformer(
-        x0=torch.tensor(-2., dtype=torch.double),
-        xf=torch.tensor(2., dtype=torch.double),
-        n_bins=3
-    ),
-    MoebiusTransformer(dimension=3),
-    MixedTransformer(
-        transformers=[AffineTransformer(), SOSPolynomialTransformer(3)],
-        indices=[[0, 2], [1, 3, 4]],
-    ),
-])
-def test_identity_initialization_MAF(hidden_layers, conditioning_indices, periodic_indices,
-                                     degrees_in_order, weight_norm, transformer):
-    """Test that the identity initialization of MAF works.
-
-    This tests that the flow layers can be initialized to perform the
-    identity function.
-
-    """
-    n_features = 5
+def generate_test_case(
+        conditioning_indices,
+        periodic_indices,
+        flip_invariant_indices,
+        transformer,
+        degrees_in_order,
+        weight_norm,
+        hidden_layers,
+        initialize_identity,
+):
+    """Create a new test case."""
     batch_size = 2
-    limits = [-2., 2.]
+    limits = torch.tensor([-1., 1.])
+    embed_dim = 1
+    vector_dim = 2
 
-    # Periodic indices with MoebiusTransformer doesn't make sense.
-    if periodic_indices is None:
+    # We increase the number of features by the number of conditioning indices
+    # to make sure that the MoebiusTransformer receives a number divisible by
+    # its vector dimension=2.
+    n_conditioning_indices = 0 if conditioning_indices is None else len(conditioning_indices)
+    n_features = 6 + n_conditioning_indices
+
+    # Create embedding.
+    if (periodic_indices is None) and (flip_invariant_indices is None):
         embedding = None
-    elif isinstance(transformer, MoebiusTransformer):
-        pytest.skip('Vector inputs for Moebius transformers are not compatible with periodic.')
-    else:
+    elif (periodic_indices is not None) and (flip_invariant_indices is not None):
+        embedding = MixedEmbedding(
+            n_features_in=n_features,
+            embedding_layers=[
+                PeriodicEmbedding(
+                    n_features_in=len(periodic_indices),
+                    limits=limits,
+                ),
+                FlipInvariantEmbedding(
+                    n_features_in=len(flip_invariant_indices),
+                    embedding_dimension=embed_dim,
+                    vector_dimension=vector_dim,
+                )
+            ],
+            embedded_indices=[periodic_indices, flip_invariant_indices]
+        )
+    elif periodic_indices is not None:
         embedding = PeriodicEmbedding(
             n_features_in=n_features,
             periodic_indices=periodic_indices,
             limits=limits,
         )
-
-    # With the MoebiusTransformer, the output must be vectors of the same size.
-    if isinstance(transformer, MoebiusTransformer):
-        extra_dim = transformer.dimension - (n_features - len(conditioning_indices)) % transformer.dimension
-        n_features = n_features + extra_dim
-        repeats = transformer.dimension
     else:
-        repeats = 1
-
-    # Remove the conditioning indices from the MixedTransformer.
-    if isinstance(transformer, MixedTransformer) and len(conditioning_indices) > 0:
-        indices = [transformer._indices0.tolist(), transformer._indices1.tolist()]
-        indices = [[i for i in ind if i not in conditioning_indices] for ind in indices]
-        # Shift the indices to account for the removed conditioning indices.
-        new_indices = np.argsort(indices[0] + indices[1])
-        new_indices = [
-            torch.from_numpy(new_indices[:len(indices[0])]),
-            torch.from_numpy(new_indices[len(indices[0]):]),
-        ]
-        transformer = MixedTransformer(transformer._transformers, new_indices)
-
-    # Create MAF.
-    maf = MAF(
-        degrees_in=generate_degrees(
-            n_features=n_features,
-            order=degrees_in_order,
-            conditioning_indices=conditioning_indices,
-            repeats=repeats,
-        ),
-        transformer=transformer,
-        hidden_layers=hidden_layers,
-        embedding=embedding,
-        weight_norm=weight_norm,
-        initialize_identity=True,
-    )
-
-    # Create random input.
-    if isinstance(transformer, NeuralSplineTransformer):
-        x = create_input(
-            batch_size,
-            n_features,
-            limits=(transformer.x0, transformer.xf),
-            periodic_indices=periodic_indices,
-        )
-    else:
-        x = create_input(batch_size, n_features)
-
-    y, log_det_J = maf.forward(x)
-
-    assert torch.allclose(x, y)
-    assert torch.allclose(log_det_J, torch.zeros(batch_size), atol=1e-6)
-
-
-@pytest.mark.parametrize('conditioning_indices', [
-    [],
-    [0, 1],
-    [0, 3],
-    [1, 3],
-    [0, 4],
-    [2, 4],
-    [3, 4]
-])
-@pytest.mark.parametrize('periodic_indices', [
-    None,
-    [0],
-    [1],
-    [1, 2],
-    [0, 2],
-])
-@pytest.mark.parametrize('degrees_in_order', ['ascending', 'descending', 'random'])
-@pytest.mark.parametrize('transformer', [
-    AffineTransformer(),
-    MoebiusTransformer(dimension=3),
-    MixedTransformer(
-        transformers=[
-            AffineTransformer(),
-            NeuralSplineTransformer(
-                x0=torch.tensor(0., dtype=torch.double),
-                xf=torch.tensor(2., dtype=torch.double),
-                n_bins=3,
-            ),
-        ],
-        indices=[[2, 0, 3], [4, 1]],
-    )
-])
-@pytest.mark.parametrize('weight_norm', [False, True])
-def test_maf_autoregressive_round_trip(conditioning_indices, periodic_indices, degrees_in_order, weight_norm, transformer):
-    """Test the autoregressive property and that the MAF.inverse(MAF.forward(x)) equals the identity."""
-    n_features = 5
-    batch_size = 2
-    limits = (0., 2.)
-
-    # Periodic indices with MoebiusTransformer doens't make sense.
-    if periodic_indices is None:
-        embedding = None
-    elif isinstance(transformer, MoebiusTransformer):
-        pytest.skip('Vector inputs for Moebius transformers are not compatible with periodic.')
-    else:
-        embedding = PeriodicEmbedding(
+        embedding = FlipInvariantEmbedding(
             n_features_in=n_features,
-            periodic_indices=periodic_indices,
-            limits=limits,
+            embedding_dimension=embed_dim,
+            embedded_indices=flip_invariant_indices,
+            vector_dimension=vector_dim,
         )
 
-    # With the MoebiusTransformer, the output must be vectors of the same size.
+    # Generate input degrees.
     if isinstance(transformer, MoebiusTransformer):
-        extra_dim = transformer.dimension - (n_features - len(conditioning_indices)) % transformer.dimension
-        n_features = n_features + extra_dim
         repeats = transformer.dimension
+    elif flip_invariant_indices is not None:
+        repeats = torch.ones(n_features, dtype=int)
+        repeats[flip_invariant_indices] = 2
+
+        # Repeats does not have conditioning indices and must have only 1
+        # entry for each flip-invariant vector.
+        removed_indices = torch.tensor(flip_invariant_indices[1::vector_dim])
+        if conditioning_indices is not None:
+            removed_indices = torch.cat([torch.tensor(conditioning_indices), removed_indices]).sort().values
+        repeats = repeats[remove_and_shift_sorted_indices(torch.arange(n_features), removed_indices, shift=False)]
     else:
         repeats = 1
-
-    # Remove the conditioning indices from the MixedTransformer.
-    if isinstance(transformer, MixedTransformer) and len(conditioning_indices) > 0:
-        indices = [transformer._indices0.tolist(), transformer._indices1.tolist()]
-        indices = [[i for i in ind if i not in conditioning_indices] for ind in indices]
-        # Shift the indices to account for the removed conditioning indices.
-        new_indices = np.argsort(indices[0] + indices[1])
-        new_indices = [
-            torch.from_numpy(new_indices[:len(indices[0])]),
-            torch.from_numpy(new_indices[len(indices[0]):]),
-        ]
-        transformer = MixedTransformer(transformer._transformers, new_indices)
-
-    # Input degrees.
     degrees_in = generate_degrees(
         n_features=n_features,
         order=degrees_in_order,
@@ -266,32 +132,157 @@ def test_maf_autoregressive_round_trip(conditioning_indices, periodic_indices, d
         repeats=repeats,
     )
 
-    # We don't initialize as the identity function to make the test meaningful.
+    # Create MAF.
     maf = MAF(
         degrees_in=degrees_in,
         transformer=transformer,
-        hidden_layers=2,
+        hidden_layers=hidden_layers,
         embedding=embedding,
         weight_norm=weight_norm,
-        initialize_identity=False,
+        initialize_identity=initialize_identity,
     )
 
-    # Create random input.
-    x = create_input(
-        batch_size,
-        n_features,
-        limits=limits,
+    # Create random input. We set the limit of periodic indices so that the
+    # MoebiusTransformer cannot move things outside them.
+    x = create_random_input(batch_size, n_features, x_func=torch.randn, seed=0)
+    if periodic_indices is not None:
+        limits = limits / torch.linalg.norm(torch.ones(vector_dim))
+        x_periodic = create_random_input(batch_size, len(periodic_indices), x_func=torch.rand, seed=0)
+        x_periodic = x_periodic * (limits[1] - limits[0]) + limits[0]
+        x = x.clone()
+        x[:, periodic_indices] = x_periodic
+
+    return x, maf, degrees_in
+
+
+# =============================================================================
+# TESTS
+# =============================================================================
+
+@pytest.mark.parametrize('conditioning_indices,periodic_indices,flip_invariant_indices', [
+    (None, None, None),
+    ([0, 1], None, None),
+    ([2, 7], None, None),
+    (None, [2], None),
+    (None, [0, 5], None),
+    (None, None, [2, 3]),
+    (None, None, [0, 1, 4, 5]),
+    ([1], [0], [3, 4]),
+    ([4], [2, 3], [0, 1, 5, 6]),
+    ([0, 7], [3], [5, 6]),
+    ([2, 4], [4], [6, 7]),
+    ([0, 3, 4], [6], [3, 4]),
+])
+@pytest.mark.parametrize('transformer', [
+    AffineTransformer(),
+    SOSPolynomialTransformer(2),
+    SOSPolynomialTransformer(3),
+    NeuralSplineTransformer(
+        x0=torch.tensor(-1., dtype=torch.double),
+        xf=torch.tensor(1., dtype=torch.double),
+        n_bins=3
+    ),
+    MoebiusTransformer(dimension=2),
+    MixedTransformer(
+        transformers=[AffineTransformer(), SOSPolynomialTransformer(3)],
+        indices=[[0, 2, 5], [1, 3, 4]],
+    ),
+])
+@pytest.mark.parametrize('degrees_in_order', ['ascending', 'descending'])
+@pytest.mark.parametrize('weight_norm', [False, True])
+@pytest.mark.parametrize('hidden_layers', [1, 4])
+def test_maf_identity_initialization(
+        conditioning_indices,
+        periodic_indices,
+        flip_invariant_indices,
+        transformer,
+        degrees_in_order,
+        weight_norm,
+        hidden_layers,
+):
+    """Test that the identity initialization of MAF works.
+
+    This tests that the flow layers can be initialized to perform the
+    identity function.
+
+    """
+    x, maf, degrees_in = generate_test_case(
+        conditioning_indices=conditioning_indices,
         periodic_indices=periodic_indices,
+        flip_invariant_indices=flip_invariant_indices,
+        transformer=transformer,
+        degrees_in_order=degrees_in_order,
+        weight_norm=weight_norm,
+        hidden_layers=hidden_layers,
+        initialize_identity=True,
+    )
+
+    # Test identity.
+    y, log_det_J = maf.forward(x)
+    assert torch.allclose(x, y)
+    assert torch.allclose(log_det_J, torch.zeros_like(log_det_J), atol=1e-6)
+
+
+@pytest.mark.parametrize('conditioning_indices,periodic_indices,flip_invariant_indices', [
+    (None, None, None),
+    ([0, 1], None, None),
+    ([2, 7], None, None),
+    (None, [2], None),
+    (None, [0, 5], None),
+    (None, None, [2, 3]),
+    (None, None, [0, 1, 4, 5]),
+    ([1], [0], [3, 4]),
+    ([4], [2, 3], [0, 1, 5, 6]),
+    ([0, 7], [3], [5, 6]),
+    ([2, 4], [4], [6, 7]),
+    ([0, 3, 4], [6], [3, 4]),
+])
+@pytest.mark.parametrize('degrees_in_order', ['ascending', 'descending', 'random'])
+@pytest.mark.parametrize('transformer', [
+    AffineTransformer(),
+    MoebiusTransformer(dimension=2),
+    MixedTransformer(
+        transformers=[
+            AffineTransformer(),
+            NeuralSplineTransformer(
+                x0=torch.tensor(-1., dtype=torch.double),
+                xf=torch.tensor(1., dtype=torch.double),
+                n_bins=3,
+            ),
+        ],
+        indices=[[1, 4], [0, 2, 3, 5]],
+    )
+])
+@pytest.mark.parametrize('weight_norm', [False, True])
+def test_maf_autoregressive_round_trip(
+        conditioning_indices,
+        periodic_indices,
+        flip_invariant_indices,
+        degrees_in_order,
+        weight_norm,
+        transformer,
+):
+    """Test the autoregressive property and that the MAF.inverse(MAF.forward(x)) equals the identity."""
+    x, maf, degrees_in = generate_test_case(
+        conditioning_indices=conditioning_indices,
+        periodic_indices=periodic_indices,
+        flip_invariant_indices=flip_invariant_indices,
+        transformer=transformer,
+        degrees_in_order=degrees_in_order,
+        weight_norm=weight_norm,
+        hidden_layers=2,
+        initialize_identity=False,
     )
 
     # The conditioning features are always left unchanged.
     y, log_det_J = maf.forward(x)
-    assert torch.allclose(x[:, conditioning_indices], y[:, conditioning_indices])
+    if conditioning_indices is not None:
+        assert torch.allclose(x[:, conditioning_indices], y[:, conditioning_indices])
 
     # Inverting the transformation produces the input vector.
     x_inv, log_det_J_inv = maf.inverse(y)
     assert torch.allclose(x, x_inv)
-    assert torch.allclose(log_det_J + log_det_J_inv, torch.zeros(batch_size), atol=1e-04)
+    assert torch.allclose(log_det_J + log_det_J_inv, torch.zeros_like(log_det_J), atol=1e-04)
 
     # Test the autoregressive property.
     check_autoregressive_property(

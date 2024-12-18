@@ -34,7 +34,13 @@ from tfep.utils.geometry import (
     cartesian_to_polar,
     polar_to_cartesian,
 )
-from tfep.utils.misc import atom_to_flattened_indices, atom_to_flattened, flattened_to_atom
+from tfep.utils.misc import (
+    atom_to_flattened_indices,
+    atom_to_flattened,
+    flattened_to_atom,
+    ensure_tensor_sequence,
+    remove_and_shift_sorted_indices,
+)
 
 
 # =============================================================================
@@ -56,9 +62,10 @@ class MixedMAFMap(TFEPMapBase):
     atoms are not mapped but are given as input to the flow to condition the
     mapping. Fixed atoms are instead ignored.
 
-    The coordinates of the mapped molecules are transformed into a mixed
-    Cartesian/internal coordinate representation based on a Z-matrix before going
-    through the MAF.
+    Before going through the MAF, the coordinates of are transformed into a mixed
+    Cartesian/internal coordinate system. To this end, the system is first
+    divided into connected fragments based on the bond topology, and a separate
+    Z-matrix is built for each fragment.
 
     The Z-matrix is automatically determined based on a heuristic. The first atom
     is chosen as the center of the graph representing the molecule. The graph is
@@ -74,14 +81,21 @@ class MixedMAFMap(TFEPMapBase):
     are represented as Cartesian, while the remaining mapped atoms are converted
     to internal coordinates.
 
-    Optionally, the flow can map the atoms in a relative frame of reference
-    which based on the position of an ``origin_atom`` and two ``axes_atoms``
-    that determine the origin and the orientation of the axes, respectively.
-    When given, these atoms are prioritized for the choice of the first three
-    atoms of a molecule's Z-matrix. Furthermore, if ``auto_reference_frame``
-    is set to ``True``, the class will determine the frame of reference automatically
-    based on the first three atoms of the Z-matrix. In this case, if the origin
-    atom is mapped, it will be automatically set to be conditioning.
+    The flow also rototranslates the Cartesian coordinates into a relative
+    frame of reference which based on the position of an ``origin_atom`` and
+    two ``axes_atoms`` that determine the origin and the orientation of the
+    axes, respectively. When given, these atoms are prioritized for the choice
+    of the first three atoms of a molecule's Z-matrix. If not passed, these 3
+    atoms are automatically chosen as the first three atoms in the Z-matrix of
+    the largest fragment. Optionally, the roto-translational degrees of freedom
+    can be removed from the mapping with ``remove_translation`` and
+    ``remove_rotation``.
+
+    When ``remove_rotation is True`` the ``axes_atoms`` are represented in
+    internal coordinates (2 distances w.r.t. the origin atom and 1 angle).
+    When ``False``, the axis/plane atoms are represented in Cartesian/cylindrical
+    coordinates. This is just because it simplifies the support for removing
+    the global rotational degrees of freedom with ``remove_rotation``.
 
     The class further supports logging the potential energies computed during
     training (required for the multimap TFEP analysis) and mid-epoch resuming.
@@ -135,11 +149,11 @@ class MixedMAFMap(TFEPMapBase):
             conditioning_atoms: Optional[Union[Sequence[int], str]] = None,
             origin_atom: Optional[Union[int, str]] = None,
             axes_atoms: Optional[Union[Sequence[int], str]] = None,
+            remove_translation: bool = False,
+            remove_rotation: bool = False,
             tfep_logger_dir_path: str = 'tfep_logs',
-            auto_reference_frame: bool = False,
             n_maf_layers: int = 6,
-            bond_limits: Optional[Tuple[pint.Quantity]] = None,
-            max_cartesian_displacement: Optional[pint.Quantity] = None,
+            distance_lower_limit_displacement: Optional[pint.Quantity] = None,
             dataloader_kwargs: Optional[Dict] = None,
             **kwargs,
     ):
@@ -167,17 +181,17 @@ class MixedMAFMap(TFEPMapBase):
             The indices (0-based) of the atoms to map or a selection string in
             MDAnalysis syntax. If not passed, all atoms that are not conditioning
             are mapped (i.e., all atoms are mapped if also ``conditioning_atoms``
-            is not given.
+            is not given).
         conditioning_atoms : Sequence[int] or str, optional
             The indices (0-based) of the atoms conditioning the mapping or a
             selection string in MDAnalysis syntax. If not passed, no atom will
-            condition the map.
+            condition the map. These atoms cannot overlap with ``mapped_atoms``.
         origin_atom : int or str or None, optional
             The index (0-based) or a selection string in MDAnalysis syntax of an
             atom on which to center the origin of the relative frame of reference.
-            While this atom affects the mapping of the mapped atoms, its position
-            will be constrained during the mapping, and thus it must be a conditioning
-            atom by definition.
+            If a conditioning atom, the coordinates are not passed to the flow
+            as they would be always zero. By default, this is chosen as the 1st
+            atom in the Z-matrix of the largest fragment.
         axes_atoms : Sequence[int] or str or None, optional
             A pair of indices (0-based) or a selection string in MDAnalysis syntax
             for the two atoms determining the relative frame of reference. The
@@ -186,34 +200,36 @@ class MixedMAFMap(TFEPMapBase):
             and ``z`` axes. The ``y`` axis will be set as the cross product of
             ``x`` and ``y``.
 
-            These atoms can be either conditioning or mapped. ``axes_atoms[0]``
-            has only 1 degree of freedom (DOF) while ``axes_atoms[1]`` has 2.
-            Whether these DOFs are mapped or not depends on whether their atoms
-            are indicated as mapped or conditioning, respectively.
+            If conditioning atoms, the coordinates that after the rotation are
+            0 are not passed to the flow. The other degrees of freedom are
+            converted into two distances (from the origin atom) and a valence
+            angle. By default, these are chosen as the 2nd and 3rd atoms in the
+            Z-matrix of the largest fragment.
+        remove_translation : bool, optional
+            If ``True``, the 3 degrees of freedom of the ``origin_atom`` are
+            not mapped even if ``origin_atom`` is mapped. When ``origin_atom``
+            is conditioning, this option has no effect.
+        remove_rotation : bool, optional
+            If ``True``, the 3 rotational degrees of freedom of ``axes_atoms``
+            are not mapped even if ``axes_atoms`` are mapped atoms. In this
+            case, only their 2 distances from the origin atom and the valence
+            angle between them is passed to the flow. When ``axes_atoms`` are
+            conditioning, this option has no effect.
         tfep_logger_dir_path : str, optional
             The path where to save TFEP-related information (potential energies,
             sample indices, etc.).
-        auto_reference_frame : bool, optional
-            If ``True``, the class automatically determines a relative frame of
-            reference based on the first three atoms entering the Z-matrix. Both
-            ``origin_atom`` and ``axes_atoms`` must be ``None`` for this. Note
-            that the origin atom, if mapped, will become effectively conditioning
-            because its position will be maintained.
-
-            This is useful, for example, in vacuum, where the potential is invariant
-            to rototranslations of the molecule and the system effectively has 3*N-6
-            degrees of freedom.
         n_maf_layers : int, optional
             The number of MAF layers.
-        bond_limits : Tuple[pint.Quantity] or None
-            The minimum and maximum bond length used to set the limits to map
-            bonds with the neural spline transformer. Default is [0.5, 3.0] Angstrom.
-        max_cartesian_displacement : pint.Quantity or None
-            Cartesian coordinates are mapped with neural spline transformers and
-            their limits are set to ``min_value-max_cartesian_displacement`` and
-            ``max_value-max_cartesian_displacement``, where ``min/max_value`` are
-            the minimum and maximum value observed in the entire dataset for that
-            particular degree of freedom. Default is 3.0 Angstrom.
+        distance_lower_limit_displacement : pint.Quantity or None
+            This controls the (fixed) lower limit for the neural spline used to
+            transform bond lengths. This lower limit is set to
+            ``max(0, min_observed - distance_lower_limit_displacement)`` where
+            ``min_observed`` is the minimum bond length observed for the specific
+            bond on a random sample in the dataset. The default value is 0.3
+            Angstrom.
+
+            Note that the same maximum displacement is applied to control the
+            two distances between the axes atoms and the origin.
         dataloader_kwargs : Dict, optional
             Extra keyword arguments to pass to ``torch.utils.data.DataLoader``.
         **kwargs
@@ -225,15 +241,8 @@ class MixedMAFMap(TFEPMapBase):
 
         """
         # Check input.
-        if auto_reference_frame and (origin_atom is not None or axes_atoms is not None):
-            raise ValueError('With auto_reference_frame=True both origin_atom and axes_atoms must be None.')
-
-        # Handle mutable default values.
-        positions_unit = potential_energy_func.positions_unit
-        if bond_limits is None:
-            bond_limits = [0.5, 3.0] * positions_unit._REGISTRY.angstrom
-        if max_cartesian_displacement is None:
-            max_cartesian_displacement = 3.0 * positions_unit._REGISTRY.angstrom
+        if axes_atoms is not None and origin_atom is None:
+            raise ValueError('axes_atoms cannot be passed if origin_atom is None.')
 
         # Convert bond
         super().__init__(
@@ -249,13 +258,19 @@ class MixedMAFMap(TFEPMapBase):
             tfep_logger_dir_path=tfep_logger_dir_path,
             dataloader_kwargs=dataloader_kwargs,
         )
-        self.save_hyperparameters('n_maf_layers')
-        self._auto_reference_frame = auto_reference_frame
-        self._kwargs = kwargs
 
-        # Convert limits to input units.
-        self._bond_limits = bond_limits.to(positions_unit).magnitude
-        self._max_cartesian_displacement = max_cartesian_displacement.to(positions_unit).magnitude
+        # Default value and unit conversion.
+        positions_unit = potential_energy_func.positions_unit
+        if distance_lower_limit_displacement is None:
+            distance_lower_limit_displacement = 0.3 * positions_unit._REGISTRY.angstrom
+        distance_lower_limit_displacement = distance_lower_limit_displacement.to(positions_unit).magnitude
+
+        # Save hyperparameters.
+        self.hparams['distance_lower_limit_displacement'] = distance_lower_limit_displacement
+        self.save_hyperparameters('n_maf_layers', 'remove_translation', 'remove_rotation')
+
+        # MAF kwargs.
+        self._kwargs = kwargs
 
     def configure_flow(self) -> torch.nn.Module:
         """Initialize the normalizing flow.
@@ -268,21 +283,32 @@ class MixedMAFMap(TFEPMapBase):
         """
         # Determine Z-matrix and Cartesian atoms and (optionally)
         # automatically determine origin and axes atoms.
-        cartesian_atom_indices, z_matrix, are_axes_atoms_bonded = self._build_z_matrix()
+        cartesian_atom_indices, z_matrix = self._build_z_matrix()
         if len(z_matrix) == 0:
             raise ValueError('There are no internal coordinates to map. '
                              'Consider using a Cartesian flow.')
 
+        # If the origin and orientation atoms are conditioning, we remove the
+        # rototranslational DOFs in the coordinate conversion since they are constant.
+        reference_atom_indices = self.get_reference_atoms_indices(remove_fixed=True)
+        conditioning_atom_indices = self.get_conditioning_indices(idx_type='atom', remove_fixed=True)
+        if conditioning_atom_indices is None:
+            is_ref_conditioning = [False, False, False]
+        else:
+            is_ref_conditioning = torch.isin(reference_atom_indices, conditioning_atom_indices).tolist()
+
         # Initialize _CartesianToMixedFlow that will map the MAF. We will set
         # the wrapped flow after we have initialized the MAF.
-        origin_atom_idx, axes_atoms_indices = self.get_reference_atoms_indices(
-            remove_fixed=True, separate_origin_axes=True)
         cartesian_to_mixed_flow = _CartesianToMixedFlow(
             flow=None,
             cartesian_atom_indices=cartesian_atom_indices,
             z_matrix=z_matrix,
-            origin_atom_idx=origin_atom_idx,
-            axes_atoms_indices=axes_atoms_indices,
+            reference_atom_indices=reference_atom_indices,
+            remove_ref_rototranslation=[
+                self.hparams.remove_translation or is_ref_conditioning[0],
+                self.hparams.remove_rotation or is_ref_conditioning[1],
+                self.hparams.remove_rotation or is_ref_conditioning[2],
+            ],
         )
 
         # Now we take a pass at the trajectory to check that the Z-matrix is robust
@@ -291,44 +317,36 @@ class MixedMAFMap(TFEPMapBase):
         # neural splines correctly.
         min_dof_vals, max_dof_vals = self._analyze_dataset(z_matrix, cartesian_to_mixed_flow)
 
-        # Determine the conditioning DOFs after going through _CartesianToMixedFlow.
-        # conditioning_atom_indices must have the indices after the fixed atoms are removed.
-        conditioning_atom_indices = self.get_conditioning_indices(idx_type='atom', remove_fixed=True)
-
-        maf_conditioning_dof_indices = cartesian_to_mixed_flow.get_maf_conditioning_dof_indices(
-            conditioning_atom_indices=conditioning_atom_indices)
-
-        # Determine the angles degrees of freedom (i.e., angles and torsions)
-        # to pass to the MAF layer. Only torsions are periodic as angles are
-        # in [0, pi].
-        maf_angles_dof_indices, maf_periodic_dof_indices = cartesian_to_mixed_flow.get_maf_angles_dof_indices()
+        # Determine the various types of degrees of freedom after the
+        # conversion from Cartesian to mixed coordinates.
+        maf_dof_indices = cartesian_to_mixed_flow.get_dof_indices_by_type(conditioning_atom_indices)
 
         # Create the transformer.
         transformer = self._get_transformer(
             cartesian_to_mixed_flow=cartesian_to_mixed_flow,
             min_dof_vals=min_dof_vals,
             max_dof_vals=max_dof_vals,
-            maf_conditioning_dof_indices=maf_conditioning_dof_indices,
-            maf_angles_dof_indices=maf_angles_dof_indices,
-            maf_periodic_dof_indices=maf_periodic_dof_indices,
-            are_axes_atoms_bonded=are_axes_atoms_bonded,
+            dof_indices=maf_dof_indices,
+        )
+
+        # Create the degrees_in argument for ascending (index 0) and descending
+        # (index 1) order.
+        degrees_in = self._get_maf_degrees_in(
+            n_dofs_in=cartesian_to_mixed_flow.n_dofs_out,
+            maf_dof_indices=maf_dof_indices
         )
 
         # Build MAF layers.
         maf_layers = []
         for layer_idx in range(self.hparams.n_maf_layers):
             maf_layers.append(tfep.nn.flows.MAF(
-                degrees_in=tfep.nn.conditioners.made.generate_degrees(
-                    n_features=self.n_nonfixed_dofs,
-                    conditioning_indices=maf_conditioning_dof_indices,
-                    order='ascending' if (layer_idx%2 == 0) else 'descending',
-                ),
+                degrees_in=degrees_in[layer_idx%2],
                 transformer=transformer,
                 embedding=tfep.nn.embeddings.PeriodicEmbedding(
-                    n_features_in=self.n_nonfixed_dofs,
-                    periodic_indices=maf_periodic_dof_indices,
+                    n_features_in=cartesian_to_mixed_flow.n_dofs_out,
                     # The periodic limits are 0 to 1 if normalize_angles=True in _CartesianToMixedFlow
                     limits=[0, 1],
+                    periodic_indices=maf_dof_indices['torsions'],
                 ),
                 **self._kwargs,
             ))
@@ -339,29 +357,27 @@ class MixedMAFMap(TFEPMapBase):
         return cartesian_to_mixed_flow
 
     def _build_z_matrix(self):
-        """Determine the Z-matrix, the Cartesian atoms, and (optionally) the automatic frame of reference.
+        """Determine the Z-matrix, the Cartesian atoms, and (if not given) the reference frame atoms.
 
         See the class docstring for an overview of how the Z-matrix is determined.
 
         The Z-matrix is constructed so that the origin and axes atoms are always
         included among the Cartesian atoms.
 
-        If self._auto_reference_frame is True, this method also sets self._origin_atom_idx
+        If not given by the user, this method also sets self._origin_atom_idx
         and self._axes_atoms_indices.
 
         Returns
         -------
-        cartesian_atom_indices : numpy.ndarray
+        cartesian_atom_indices : list[int]
             Shape (n_cartesian_atoms,). The indices of the atoms represented by
             Cartesian coordinates (i.e., 3 reference atoms for each molecule,
             and all conditioning atoms). The array is sorted in ascending order.
-        z_matrix : numpy.ndarray
+        z_matrix : list[list[int]]
             Shape (n_ic_atoms, 4). The Z-matrix for the atoms represented by
             internal coordinates. E.g., ``z_matrix[i] == [7, 2, 4, 8]``
             means that the distance, angle, and dihedral for atom ``7`` must be
             computed between atoms ``7-2``, ``7-2-4``, and ``7-2-4-8`` respectively.
-        are_axes_atoms_bonded : List[bool] or None
-            Whether the first and second axes atoms are bonded to the origin atom.
 
         """
         # First we need to create a graph representation of all the molecules
@@ -385,95 +401,101 @@ class MixedMAFMap(TFEPMapBase):
             ref_atom_indices = []
         else:
             ref_atom_indices = ref_atom_indices.tolist()
-        ref_atoms = [self.dataset.universe.atoms[i] for i in ref_atom_indices]
+
+        nonfixed_atom_indices_w_fixed = nonfixed_atom_indices_w_fixed.tolist()
+        if not set(ref_atom_indices).issubset(set(nonfixed_atom_indices_w_fixed)):
+            raise ValueError('The origin and axes atoms must be mapped or conditioning.')
 
         # Only the mapped atoms are represented using internal coordinates
         # so we build a set to check for membership.
         mapped_atom_indices_w_fixed_set = set(mapped_atom_indices_w_fixed.tolist())
 
-        # Initialize returned values.
-        cartesian_atom_indices = []
-        system_z_matrix = []
-        are_axes_atoms_bonded = None
-
         # Build the Z-matrix for each connected subgraph.
+        frags_z_matrices = []
         for graph_nodes in nx.connected_components(system_graph):
             graph = system_graph.subgraph(graph_nodes).copy()
+            frags_z_matrices.append(self._build_connected_graph_z_matrix(graph, ref_atom_indices))
 
-            # Update are_axes_atoms_bonded. The origin atom can belong only to a molecule.
-            # Both origin and axes atoms need to be passed for this to be != None.
-            if are_axes_atoms_bonded is None and len(ref_atoms) == 3 and ref_atoms[0] in graph:
-                are_axes_atoms_bonded = [graph.has_edge(ref_atoms[0], ref_atoms[1]), graph.has_edge(ref_atoms[0], ref_atoms[2])]
+        # If not given, automatically determine the frame of reference. We need
+        # to do it before we shift the indices to account for the removed fixed
+        # atoms and before we remove the first three rows of the Z-matrix since
+        # in the 4th row the order of origin/axes atoms is scrambled.
+        z_matrix = frags_z_matrices[np.argmax([len(z) for z in frags_z_matrices])]
+        if self._origin_atom_idx is None:
+            self._origin_atom_idx = torch.tensor(z_matrix[0][0])
+        if self._axes_atoms_indices is None:
+            self._axes_atoms_indices = torch.tensor([z_matrix[1][0], z_matrix[2][0]])
 
-            # Check if this molecule is composed only by conditioning atoms.
-            graph_atom_indices = [node.ix for node in graph]
-            if len(set(graph_atom_indices).intersection(mapped_atom_indices_w_fixed_set)) == 0:
-                # Add everything to Cartesian atoms.
-                cartesian_atom_indices.extend(graph_atom_indices)
+        # Divide atoms treated as Cartesian and internal coords.
+        cartesian_atom_indices = []
+        ic_z_matrix = []
+        for z_matrix in frags_z_matrices:
+            # First three atoms of each Z-matrix are Cartesian.
+            cartesian_atom_indices.extend([row[0] for row in z_matrix[:3]])
 
-                # Skip to next molecule.
-                continue
-
-            # Build the Z-matrix for this molecule.
-            graph_z_matrix = self._build_connected_graph_z_matrix(graph, ref_atom_indices)
-
-            # If requested, automatically determine the frame of reference. We need
-            # to do it before we shift the indices to account for the removed fixed
-            # atoms and before we remove the first three rows of the Z-matrix since
-            # in the 4th row the order of origin/axes atoms is scrambled.
-            if self._auto_reference_frame and self._origin_atom_idx is None:
-                self._determine_reference_frame_atoms(graph_z_matrix, mapped_atom_indices_w_fixed_set)
-
-            # Now separate the Cartesian atoms from the Z-matrix ones. First three
-            # atoms are always Cartesian (or determine the automatic reference frame).
-            cartesian_atom_indices.extend([row[0] for row in graph_z_matrix[:3]])
-
-            # Only the mapped atoms are mapped as internal coordinates.
-            for z_matrix_row in graph_z_matrix[3:]:
+            # Only the mapped atoms are converted to internal coordinates.
+            # Conditioning atoms are kept as Cartesian.
+            is_mapped = False
+            for z_matrix_row in z_matrix[3:]:
                 if z_matrix_row[0] in mapped_atom_indices_w_fixed_set:
-                    system_z_matrix.append(z_matrix_row)
+                    ic_z_matrix.append(z_matrix_row)
+                    is_mapped = True
                 else:
                     cartesian_atom_indices.append(z_matrix_row[0])
 
-            # Test independence.
-            check_independent(graph_z_matrix)
+            # Test independence. No need to check purely conditioning fragments.
+            if is_mapped:
+                check_independent(z_matrix)
 
         # The atom indices and the Z-matrix so far use the atom indices of the
         # systems before the fixed and reference atoms have been removed. Now
         # we need to map the indices to those after they are removed since these
-        # are not passed to _CartesianToMixed._rel_ic.
-        nonfixed_atom_indices_w_fixed = nonfixed_atom_indices_w_fixed.tolist()
+        # are not passed to _CartesianToMixed.rel_ic.
         indices_map = {nonfixed_atom_indices_w_fixed[idx]: idx for idx in range(self.n_nonfixed_atoms)}
 
         # Log Z-matrix.
-        logger.info('Determined Z-Matrix:\n' + str(np.array(system_z_matrix)))
+        logger.info('Determined Z-Matrix:\n' + str(np.array(ic_z_matrix)))
 
         # Convert indices.
         cartesian_atom_indices = [indices_map[i] for i in cartesian_atom_indices]
-        for row_idx, z_matrix_row in enumerate(system_z_matrix):
-            system_z_matrix[row_idx] = [indices_map[i] for i in z_matrix_row]
+        for row_idx, z_matrix_row in enumerate(ic_z_matrix):
+            ic_z_matrix[row_idx] = [indices_map[i] for i in z_matrix_row]
 
         # Sort atom indices and convert everything to numpy array (for RelativeInternalCoordinateTransformation).
-        cartesian_atom_indices = np.array(cartesian_atom_indices)
-        cartesian_atom_indices.sort()
-        return cartesian_atom_indices, np.array(system_z_matrix), are_axes_atoms_bonded
+        cartesian_atom_indices = torch.tensor(cartesian_atom_indices).sort().values
+        return cartesian_atom_indices, torch.tensor(ic_z_matrix)
 
     def _create_networkx_graph(self, atom_indices):
         """Return a networkx graph representing the given atoms."""
         # Select only the bonds in which both atoms are in the atom group.
-        nonfixed_atoms = MDAnalysis.AtomGroup(atom_indices, self.dataset.universe)
-        internal_bonds = [bond for bond in nonfixed_atoms.bonds
-                          if (bond.atoms[0] in nonfixed_atoms and bond.atoms[1] in nonfixed_atoms)]
+        atoms = MDAnalysis.AtomGroup(atom_indices, self.dataset.universe)
+        bonds = [bond for bond in atoms.bonds
+                 if (bond.atoms[0] in atoms and bond.atoms[1] in atoms)]
 
         # Build a networkx graph representing the topology of all the nonfixed atoms.
-        system_graph = nx.Graph()
-        system_graph.add_nodes_from(nonfixed_atoms)
-        system_graph.add_edges_from(internal_bonds)
+        graph = nx.Graph()
+        graph.add_nodes_from(atoms)
+        graph.add_edges_from(bonds)
 
-        return system_graph
+        return graph
 
     def _build_connected_graph_z_matrix(self, graph, ref_atom_indices):
-        """Build the Z-matrix for a connected graph."""
+        """Build the Z-matrix for a connected graph.
+
+        Parameters
+        ----------
+        graph : networkx.Graph
+            The graph with nodes and edges representing atoms and bonds.
+        ref_atom_indices : list[int]
+            The user-given reference atoms. These are prioritized when
+            selecting the initial 3 atoms of the Z-matrix.
+
+        Returns
+        -------
+        z_matrix : list[list[int]]
+            The returned Z-matrix.
+
+        """
         # For the first three atoms, we give priority to the user-defined
         # origin/axes atoms as long as they are within the molecule.
         ref_atoms_in_graph = [self.dataset.universe.atoms[i] for i in ref_atom_indices
@@ -592,54 +614,9 @@ class MixedMAFMap(TFEPMapBase):
         priorities.sort(key=lambda k: tuple(k[1:]))
         return priorities
 
-    def _determine_reference_frame_atoms(self, z_matrix_w_fixed: List[int], mapped_atom_indices_w_fixed_set: Set[int]):
-        """If requested, determine the origin and axes atoms.
-
-        Both z_matrix and mapped_atom_indices must hold the indices of the atoms
-        before the fixed atoms are removed.
-
-        If the automatically-determined origin atom is a mapped atom, this converts
-        it to a conditioning atom and updates the self._mapped_atom_indices,
-        self._conditioning_atom_indices, and the argument mapped_atom_indices_w_fixed_set.
-
-        """
-        if not self._auto_reference_frame:
-            return
-        assert self._origin_atom_idx is None
-        assert self._axes_atoms_indices is None
-
-        # Set origin and axes atom indices as the first three atoms of the Z-matrix.
-        # Keep Python integer value of origin idx before converting to tensor.
-        origin_atom_idx = z_matrix_w_fixed[0][0]
-        self._origin_atom_idx = torch.tensor(origin_atom_idx)
-        self._axes_atoms_indices = torch.tensor([z_matrix_w_fixed[1][0], z_matrix_w_fixed[2][0]])
-
-        # If the origin atom is mapped, we move it to the conditioning atom for consistency.
-        if origin_atom_idx in mapped_atom_indices_w_fixed_set:
-            logger.warning(f'Converting atom {origin_atom_idx} from mapped to conditioning '
-                           'because it has been selected as the origin for the automatically '
-                           'determined relative frame of reference for the flow.')
-
-            # Remove from mapped.
-            self._mapped_atom_indices = self._mapped_atom_indices[self._mapped_atom_indices != self._origin_atom_idx]
-
-            # Insert in conditioning maintaining the order.
-            if self._conditioning_atom_indices is None:
-                self._conditioning_atom_indices = self._origin_atom_idx.unsqueeze(0).clone()
-            else:
-                insert_idx = torch.searchsorted(self._conditioning_atom_indices, self._origin_atom_idx)
-                self._conditioning_atom_indices = torch.concatenate([
-                    self._conditioning_atom_indices[:insert_idx],
-                    self._origin_atom_idx.unsqueeze(0),
-                    self._conditioning_atom_indices[insert_idx:],
-                ])
-
-            # Remove also from the set in place.
-            mapped_atom_indices_w_fixed_set.remove(origin_atom_idx)
-
     def _analyze_dataset(
             self,
-            z_matrix: np.ndarray,
+            z_matrix: Sequence[Sequence[int]],
             cartesian_to_mixed_flow: torch.nn.Module,
     ) -> Tuple[torch.Tensor]:
         """Check the Z-matrix robustness and compute the minimum and maximum value of each DOF in the trajectory.
@@ -649,8 +626,9 @@ class MixedMAFMap(TFEPMapBase):
         and to compute the min/max values of the DOFs.
 
         The returned min/max values are for the coordinates in the relative
-        frame of reference. This is useful to calculate appropriate values for
-        the left/rightmost nodes of the neural spline transformer.
+        frame of reference. This is useful to calculate appropriate initial
+        values for the left/rightmost nodes of the neural spline transformer
+        (e.g., for Cartesian coordinates).
 
         For this, we need to calculate the minimum and maximum dof AFTER it has
         gone through the partial flow removing the fixed atoms and the relative
@@ -659,9 +637,10 @@ class MixedMAFMap(TFEPMapBase):
 
         Parameters
         ----------
-        z_matrix: np.ndarray
-            The Z-matrix. The atom indices must refer to those after the fixed
-            atoms have been removed.
+        z_matrix : Sequence[Sequence[int]]
+            The Z-matrix in the same format passed to _CartesianToMixedFlow.
+            Atom indices must refer to those after the fixed atoms have been
+            removed.
         cartesian_to_mixed_flow : torch.nn.Module
             The flow used to convert Cartesian into mixed coordinates.
 
@@ -677,9 +656,6 @@ class MixedMAFMap(TFEPMapBase):
         """
         # This is needed to check for collinearity of the reference atoms.
         ref_atoms = self.get_reference_atoms_indices(remove_fixed=True)
-        # We don't need to check collinearity if only the origin or the axes atoms are given.
-        if (ref_atoms is not None) and (len(ref_atoms) < 3):
-            ref_atoms = None
 
         # We temporarily set the flow to the partial flow to process the positions.
         assert self._flow is None
@@ -709,11 +685,11 @@ class MixedMAFMap(TFEPMapBase):
                     raise RuntimeError(f'Row {row_idx+1} have collinear atoms.')
 
             # Test collinearity reference frame atoms.
-            if ref_atoms is not None and is_collinear(batch_atom_positions[:, ref_atoms]):
+            if is_collinear(batch_atom_positions[:, ref_atoms]):
                 raise RuntimeError('Axes atoms are collinear!')
 
             # Go through the coordinate conversion flow.
-            dofs = cartesian_to_mixed_flow._cartesian_to_mixed(batch_positions)[0]
+            dofs = cartesian_to_mixed_flow.cartesian_to_mixed(batch_positions)[0]
 
             # Take the min/max across the batch of the selected DOFs.
             batch_min = torch.min(dofs, dim=0).values
@@ -737,10 +713,7 @@ class MixedMAFMap(TFEPMapBase):
             cartesian_to_mixed_flow: torch.nn.Module,
             min_dof_vals: torch.Tensor,
             max_dof_vals: torch.Tensor,
-            maf_conditioning_dof_indices: Optional[torch.Tensor],
-            maf_angles_dof_indices: torch.Tensor,
-            maf_periodic_dof_indices: torch.Tensor,
-            are_axes_atoms_bonded: Optional[Tuple[bool]],
+            dof_indices: dict[str, Optional[torch.Tensor]],
     ) -> torch.nn.Module:
         """Return the transformer for the MAF.
 
@@ -752,94 +725,152 @@ class MixedMAFMap(TFEPMapBase):
             Minimum values observed in the trajectory for the DOFs in mixed coordinates.
         max_dof_vals : torch.Tensor
             Maximum values observed in the trajectory for the DOFs in mixed coordinates.
-        maf_conditioning_dof_indices : torch.Tensor or None
-            The indices of the conditioning DOFs after the conversion to mixed
-            coordinates.
-        maf_angles_dof_indices : torch.Tensor
-            The indices of all the angles (i.e., bond angles and torsions) DOFs
-            after the conversion to mixed coordinates.
-        maf_periodic_dof_indices : torch.Tensor
-            The indices of the periodic DOFs (i.e., torsions since bond angles
-            are defined in [0, pi]) after the conversion to mixed coordinates.
-        are_axes_atoms_bonded : Tuple[bool] or None
-            Whether the first and second axes atoms are bonded to the origin atom..
+        dof_indices : dict[str, Optional[torch.Tensor]]
+            The indices of the DOFs after the conversion to mixed coordinates
+            ``_CartesianToMixedFlow.get_dof_indices_by_type()``.
 
         """
         # We need to determine the limits only for the mapped (not conditioning)
-        # DOFs since that's what the NeuralSplineTransformer will act on. We compute
-        # the limits for all DOFs because it's easier and then filter out the
-        # conditioning DOFs. We assume everything is Cartesian and then we fix
-        # the limits for angles and distances.
-        x0 = min_dof_vals - self._max_cartesian_displacement
-        xf = max_dof_vals + self._max_cartesian_displacement
+        # DOFs since that's what the NeuralSplineTransformer will modify.
+        # Moreover, for angles, these limits are fixed. We still compute them
+        # for all DOFs because it's easier and then filter out conditioning and
+        # angle DOFs.
+        x0 = min_dof_vals
+        xf = max_dof_vals
 
-        # Set the limits for the angles.
-        assert cartesian_to_mixed_flow._rel_ic.normalize_angles
-        x0[maf_angles_dof_indices] = 0.0
-        xf[maf_angles_dof_indices] = 1.0
-
-        # Set the limits for the bonds. The distances DOFs of the axes atoms
-        # might not be bonds so we treat them separately.
-        dof_indices = cartesian_to_mixed_flow.get_maf_distance_dof_indices(return_axes=False)
-        x0[dof_indices] = self._bond_limits[0]
-        xf[dof_indices] = self._bond_limits[1]
-
-        # Set the limits for reference atom distance DOF (the angle has been taken
-        # care above). dof_indices is an empty list if there are no axes atoms.
-        dof_indices = cartesian_to_mixed_flow.get_maf_distance_dof_indices(return_bonds=False)
-        for i, dof_idx in enumerate(dof_indices):
-            if are_axes_atoms_bonded is not None and are_axes_atoms_bonded[i]:
-                x0[dof_idx] = self._bond_limits[0]
-                xf[dof_idx] = self._bond_limits[1]
-            else:
-                # The axis atom is not bonded to the origin but it's still a distance (i.e. > 0).
-                x0[dof_idx] = max(0.0, min_dof_vals[dof_idx] - self._max_cartesian_displacement)
+        # Set the limits for the bonds.
+        x0[dof_indices['distances']] = torch.max(
+            torch.tensor(0.0),
+            x0[dof_indices['distances']] - self.hparams.distance_lower_limit_displacement,
+        )
 
         # Now filter all conditioning dofs.
-        if maf_conditioning_dof_indices is not None:
-            maf_conditioning_dof_indices_set = set(maf_conditioning_dof_indices.tolist())
-            mask = [i not in maf_conditioning_dof_indices_set for i in range(self.n_nonfixed_dofs)]
+        if dof_indices['conditioning'] is not None:
+            mask = torch.isin(torch.arange(cartesian_to_mixed_flow.n_dofs_out),
+                              dof_indices['conditioning'], assume_unique=True, invert=True)
             x0 = x0[mask]
             xf = xf[mask]
 
-            # We need to filter also for the periodic DOF indices.
-            mask = [i not in maf_conditioning_dof_indices_set for i in maf_periodic_dof_indices.tolist()]
-            maf_periodic_dof_indices = maf_periodic_dof_indices[mask]
+            # We need to remove (and shift) the conditioning DOF from the type
+            # indices. Copy to avoid modifying the input argument.
+            dof_indices = dof_indices.copy()
+            for idx_type in ['distances', 'angles', 'torsions', 'cartesians', 'reference']:
+                dof_indices[idx_type] = remove_and_shift_sorted_indices(
+                    dof_indices[idx_type], removed_indices=dof_indices['conditioning'])
 
-            # The indices of circular refer to the indices of x0/xf. We need to
-            # shift them to account for the removal of the conditioning DOFs.
-            maf_periodic_dof_indices = maf_periodic_dof_indices - torch.searchsorted(
-                maf_conditioning_dof_indices, maf_periodic_dof_indices)
+        # Initialize the transformers. We set the limits of angles from 0 to 1
+        # since they are normalized. Only torsions are periodic since valence
+        # bond angles are [0, pi].
+        assert cartesian_to_mixed_flow.rel_ic.normalize_angles
+        transformer_indices = [
+            dof_indices['distances'],
+            dof_indices['angles'],
+            dof_indices['torsions'],
+        ]
+        transformers = [
+            tfep.nn.transformers.NeuralSplineTransformer(
+                x0=x0[dof_indices['distances']].detach(),
+                xf=xf[dof_indices['distances']].detach(),
+                n_bins=5,
+                circular=False,
+                identity_boundary_slopes=True,
+                learn_lower_bound=False,
+                learn_upper_bound=True,
+            ),
+            tfep.nn.transformers.NeuralSplineTransformer(
+                x0=torch.zeros(len(dof_indices['angles'])),
+                xf=torch.ones(len(dof_indices['angles'])),
+                n_bins=5,
+                circular=False,
+                identity_boundary_slopes=False,
+                learn_lower_bound=False,
+                learn_upper_bound=False,
+            ),
+            tfep.nn.transformers.NeuralSplineTransformer(
+                x0=torch.zeros(len(dof_indices['torsions'])),
+                xf=torch.ones(len(dof_indices['torsions'])),
+                n_bins=5,
+                circular=True,
+                identity_boundary_slopes=False,
+                learn_lower_bound=False,
+                learn_upper_bound=False,
+            ),
+        ]
 
-        # Find all non-periodic DOFs (after filtering the conditioning ones).
-        mask = torch.full(x0.shape, fill_value=True)
-        mask[maf_periodic_dof_indices] = False
-        maf_nonperiodic_dof_indices = torch.tensor(range(len(x0)))[mask]
+        # If there is only 1 fragment and rototranslational DOFs are removed
+        # there are no Cartesian coordinates.
+        if len(dof_indices['cartesians']) > 0:
+            transformers.append(tfep.nn.transformers.NeuralSplineTransformer(
+                x0=x0[dof_indices['cartesians']].detach(),
+                xf=xf[dof_indices['cartesians']].detach(),
+                n_bins=5,
+                circular=False,
+                identity_boundary_slopes=True,
+                learn_lower_bound=True,
+                learn_upper_bound=True,
+            ))
+            transformer_indices.append(dof_indices['cartesians'])
 
-        # Standard splines for non-periodic DOFs.
-        spline = tfep.nn.transformers.NeuralSplineTransformer(
-            x0=x0[maf_nonperiodic_dof_indices].detach(),
-            xf=xf[maf_nonperiodic_dof_indices].detach(),
-            n_bins=5,
-            circular=False,
-        )
-
-        # Circular splines for periodic DOFs.
-        circular_spline = tfep.nn.transformers.NeuralSplineTransformer(
-            x0=x0[maf_periodic_dof_indices].detach(),
-            xf=xf[maf_periodic_dof_indices].detach(),
-            n_bins=5,
-            circular=True,
-        )
+        # If rototranslational DOFs are removed, this is empty.
+        if len(dof_indices['reference']) > 0:
+            # The rototranslational DOFs are always 0. When this happen, a neural
+            # spline can learn an identity function with an arbitrary Jacobian
+            # adding a spurious contribution so we use a volume-preserving shift
+            # transformer.
+            transformers.append(tfep.nn.transformers.VolumePreservingShiftTransformer())
+            transformer_indices.append(dof_indices['reference'])
 
         return tfep.nn.transformers.MixedTransformer(
-            transformers=[spline, circular_spline],
-            indices=[maf_nonperiodic_dof_indices, maf_periodic_dof_indices],
+            transformers=transformers,
+            indices=transformer_indices,
         )
+
+    def _get_maf_degrees_in(self, n_dofs_in, maf_dof_indices):
+        """Assign degrees to each input DOFs.
+
+        Returns a pair [degrees_in_ascending, degrees_in_descending] input
+        arguments for MAF in the ascending and descending order.
+
+        The rototranslational DOFs (if not removed) are always assigned the
+        last degree, both in ascending and descending order, since they are
+        constant.
+
+        """
+        # If we don't remove translation/rotation, we assign their degree later.
+        # To make this work with generate_degrees() we set them as conditioning
+        # which makes it temporarily assign a -1 degree to them.
+        if len(maf_dof_indices['reference']) > 0:
+            # Avoid modifying the original maf_dof_indices variable.
+            maf_dof_indices = maf_dof_indices.copy()
+            if maf_dof_indices['conditioning'] is None:
+                maf_dof_indices['conditioning'] = torch.tensor([]).to(maf_dof_indices['reference'])
+
+            # We always remove translation/rotation when reference atoms are
+            # conditioning so these are not repeated indices.
+            maf_dof_indices['conditioning'] = torch.cat([
+                maf_dof_indices['conditioning'],
+                maf_dof_indices['reference'],
+            ])
+
+        # Create the degrees for the ascending and descending order.
+        degrees_in = []
+        for order in ['ascending', 'descending']:
+            degrees_in.append(tfep.nn.conditioners.made.generate_degrees(
+                n_features=n_dofs_in,
+                order=order,
+                conditioning_indices=maf_dof_indices['conditioning'],
+            ))
+
+        # Now add the degree of the reference.
+        last_degree = torch.max(degrees_in[0]) + 1
+        for degrees in degrees_in:
+            degrees[maf_dof_indices['reference']] = last_degree
+
+        return degrees_in
 
 
 # =============================================================================
-# HELPER CLASSES AND FUNCTIONS
+# HELPER CLASSES AND FUNCTIONS TO CONSTRUCT THE Z-MATRIX
 # =============================================================================
 
 def check_independent(z_matrix):
@@ -916,46 +947,54 @@ def _is_hydrogen(atom):
     return element == 'H'
 
 
-# TODO: MOVE TO tfep.nn.flows?
-class _CartesianToMixedFlow(torch.nn.Module):
-    """Utility flow to convert from Cartesian to mixed Cartesian/internal coordinates.
+# =============================================================================
+# COORDINATE CONVERSION
+# =============================================================================
 
-    This also sets the relative frame of reference if origin/axes_atoms_indices are passed.
+class _CartesianToMixedFlow(torch.nn.Module):
+    """Flow converting Cartesian to mixed (internal+Cartesian) coordinates.
+
+    This class 1) converts Cartesian coordinates to mixed coordinates, 2)
+    executes the wrapped flow, and 3) converts the coordinates back from mixed
+    to Cartesian.
+
+    While converting to mixed coordinates, the flow roto-translates the Cartesian
+    coordinates to a relative frame of reference defined by the origin and axes
+    atoms. Optionally, these roto-translational degrees of freedom can be removed
+    (e.g., if the mapped system has roto-translational symmetry).
 
     """
 
     def __init__(
             self,
             flow: torch.nn.Module,
-            cartesian_atom_indices: np.ndarray,
-            z_matrix: np.ndarray,
-            origin_atom_idx: Optional[torch.Tensor],
-            axes_atoms_indices: Optional[torch.Tensor],
+            cartesian_atom_indices: Sequence[int],
+            z_matrix: Sequence[Sequence[int]],
+            reference_atom_indices: torch.Tensor,
+            remove_ref_rototranslation: Sequence[bool],
     ):
         """Constructor.
-
-        All the indices must be after the fixed atoms have been removed.
 
         Parameters
         ----------
         flow : torch.nn.Module
-            The normalizing flow to wrap that takes as input mixed coordinates.
-        cartesian_atom_indices : np.ndarray
+            The wrapped normalizing flow that takes as input the mixed
+            coordinates.
+        cartesian_atom_indices : Sequence[int]
             Shape ``(n_cartesian_atoms,)``. Indices of the atoms represented as
-            Cartesian (both mapped and conditioning) after the fixed atoms have
-            been removed. This must be an ordered array.
+            Cartesian (both mapped and conditioning, and  after the fixed atoms
+            have been removed. The indices must be ordered.
         z_matrix : np.ndarray
             Shape ``(n_ic_atoms, 4)``. The Z-matrix for the atoms represented as
             internal coordinates.
-        origin_atom_idx : torch.Tensor or None
-            The index of the origin atom after the fixed atoms are removed. If
-            given, the Cartesian coordinates will be translated to have this
-            atom in the origin before being passed to the MAF.
-        axes_atoms_indices : torch.Tensor or None
-            The indices of the axes atoms determining the orientation of the
-            reference frame after the fixed atoms are removed. If passed, the
-            Cartesian coordinates will be rotated into this reference frame
-            before being passed to the MAF.
+        reference_atom_indices : torch.Tensor
+            The indices (after the fixed atoms are removed) of the origin, axis,
+            and plane atoms (in this order) used to determine the relative
+            frame of reference for the Cartesian coordinates.
+        remove_ref_rototranslation : Sequence[bool]
+            Shape (3,). Whether to remove the rototranslational degrees of
+            freedom of the 3 reference atoms from the coordinates passed to the
+            wrapped flow.
 
         """
         from bgflow.nn.flow.crd_transform.ic import RelativeInternalCoordinateTransformation
@@ -964,169 +1003,157 @@ class _CartesianToMixedFlow(torch.nn.Module):
 
         #: Wrapped flow.
         self.flow = flow
+        self.register_buffer('remove_ref_rototranslation', torch.tensor(remove_ref_rototranslation))
+
+        # Turn to tensor.
+        z_matrix = ensure_tensor_sequence(z_matrix)
+        cartesian_atom_indices = ensure_tensor_sequence(cartesian_atom_indices)
+        reference_atom_indices = ensure_tensor_sequence(reference_atom_indices)
+
+        # Move reference frame atoms at the end to simplify book-keeping.
+        # Reference frame atoms are always Cartesian so we can use searchsorted.
+        cartesian_atom_indices = remove_and_shift_sorted_indices(
+            cartesian_atom_indices,
+            removed_indices=reference_atom_indices.sort().values,
+            remove=True,
+            shift=False,
+        )
+        cartesian_atom_indices = torch.cat([cartesian_atom_indices, reference_atom_indices])
 
         # The modules performing the coordinate conversion.
-        self._rel_ic = RelativeInternalCoordinateTransformation(
+        self.rel_ic = RelativeInternalCoordinateTransformation(
             z_matrix=z_matrix,
             fixed_atoms=cartesian_atom_indices,
             normalize_angles=True,
         )
 
-        # Find the indices of the reference atoms in the cartesian tensor after
-        # cartesian_to_mixed() is called.
-        reference_atoms_indices_in_cartesian = []
-
-        # Reference atoms (if present) are always in cartesian_atom_indices so we can use searchsorted.
-        if origin_atom_idx is not None:
-            idx = np.searchsorted(cartesian_atom_indices, [origin_atom_idx.tolist()])
-            reference_atoms_indices_in_cartesian.append(idx[0])
-        if axes_atoms_indices is not None:
-            indices = np.searchsorted(cartesian_atom_indices, axes_atoms_indices.tolist())
-            reference_atoms_indices_in_cartesian.extend(indices)
-
-        # Convert to tensor.
-        self.register_buffer('_reference_atoms_indices_in_cartesian',
-                             torch.tensor(reference_atoms_indices_in_cartesian, dtype=int))
-
     @property
-    def has_origin_atom(self) -> bool:
-        """True if there is an origin atom for the relative frame of reference."""
-        return len(self._reference_atoms_indices_in_cartesian) in {1, 3}
-
-    @property
-    def has_axes_atoms(self) -> bool:
-        """True if there are axes atoms for the relative frame of reference."""
-        return len(self._reference_atoms_indices_in_cartesian) > 1
-
-    @property
-    def cartesian_atom_indices(self) -> Optional[np.ndarray]:
+    def cartesian_atom_indices(self) -> torch.Tensor:
         """The atom indices of the atoms treated in Cartesian coordinates."""
-        return self._rel_ic.fixed_atoms
+        return self.rel_ic.fixed_atoms
 
     @property
-    def z_matrix(self) -> np.ndarray:
-        """The Z-matrix."""
-        return self._rel_ic.z_matrix
+    def z_matrix(self) -> torch.Tensor:
+        """torch.Tensor: The Z-matrix."""
+        return self.rel_ic.z_matrix
 
     @property
     def n_ic_atoms(self) -> int:
-        """Number of atoms represented in internal coordinates."""
+        """int: Total number of atoms represented in internal coordinates (excluding reference atoms)."""
         return len(self.z_matrix)
 
-    def get_maf_conditioning_dof_indices(self, conditioning_atom_indices: Optional[torch.Tensor]) -> torch.Tensor:
-        """Return the indices of the conditioning DOFs after going through _CartesianToMixedFlow.
+    @property
+    def n_dofs_out(self) -> int:
+        """int: Number of degrees of freedom after the conversion to mixed coordinates."""
+        return self._get_coords_indices_by_type()[-1].tolist()
+
+    def _get_coords_indices_by_type(self):
+        """The first index in the mixed coordinates for each type of coordinate."""
+        # Cartesian atoms include also the 6 rototranslational DOFs.
+        n_cartesians = 3 * len(self.cartesian_atom_indices) - 3
+        if self.remove_ref_rototranslation[0]:
+            n_cartesians -= 3
+        if self.remove_ref_rototranslation[1]:
+            n_cartesians -= 2
+        if self.remove_ref_rototranslation[2]:
+            n_cartesians -= 1
+
+        # Mixed coordinates are obtained by concatenating coord types in this order:
+        coords_sizes = [
+            self.n_ic_atoms,  # bonds
+            self.n_ic_atoms,  # angles
+            self.n_ic_atoms,  # torsions
+            1,  # d01
+            1,  # d02
+            1,  # a102
+            n_cartesians, # cartesian (including rototranslational)
+        ]
+        return torch.cumsum(torch.tensor(coords_sizes), dim=0)
+
+    def get_dof_indices_by_type(
+            self,
+            conditioning_atom_indices: Optional[torch.Tensor] = None,
+    ) -> dict[str, torch.Tensor]:
+        """Return the indices of the different types of DOFs after conversion to mixed coordinates.
 
         Parameters
         ----------
         conditioning_atom_indices : torch.Tensor or None
-            Shape (n_atoms,). The indices of the conditioning atoms (including
-            the reference atoms) after the fixed atoms have been removed.
+            Shape (n_atoms,). The indices of the conditioning atoms (after the
+            fixed atoms have been removed).
 
         Returns
         -------
-        maf_conditioning_dof_indices : torch.Tensor or None
-            The DOF indices after going through _CartesianToMixedFlow.
+        indices_by_type : dict[str, torch.Tensor]
+            A dict of indices grouped by type of DOF with keys: 'distances',
+            'angles', 'torsions', 'cartesians', 'conditioning', and 'reference'
+            (non-empty only if ``(~remove_ref_rototranslation).any()`` is
+            ``True``). Note that the indices in 'conditioning' and the other
+            types will overlap (i.e., both mapped and conditioning DOF indices
+            are included in 'distances', 'angles', etc.).
 
         """
-        # If there are no conditioning atoms or if the only conditioning atom is
-        # the origin atom, return None. The origin atom has no unconstrained DOFs
-        # and it is removed by _CartesianToMixedFlow.
-        if ((conditioning_atom_indices is None) or
-                (len(conditioning_atom_indices) == 0) or
-                (len(conditioning_atom_indices) == 1 and self.has_origin_atom)):
-            return None
+        coords_indices = self._get_coords_indices_by_type()
+        indices_by_type = {
+            'distances': torch.arange(coords_indices[0]),
+            'angles': torch.arange(coords_indices[0], coords_indices[1]),
+            'torsions': torch.arange(coords_indices[1], coords_indices[2]),
+            'd01': torch.arange(coords_indices[2], coords_indices[3]),
+            'd02': torch.arange(coords_indices[3], coords_indices[4]),
+            'a102': torch.arange(coords_indices[4], coords_indices[5]),
+            'cartesians': torch.arange(coords_indices[5], coords_indices[6]),
+        }
 
-        # Convert the conditioning atom indices to their respective index in cartesian_atom_indices.
-        conditioning_atom_indices_set = set(conditioning_atom_indices.tolist())
-        conditioning_atom_indices_in_cartesian = [i for i, v in enumerate(self.cartesian_atom_indices)
-                                                  if v in conditioning_atom_indices_set]
+        # Distances and angles must include also the reference frame atom IC coords.
+        indices_by_type['distances'] = torch.cat([indices_by_type['distances'],
+                                                  indices_by_type['d01'],
+                                                  indices_by_type['d02']])
+        indices_by_type['angles'] = torch.cat([indices_by_type['angles'],
+                                               indices_by_type['a102']])
 
-        # We need to treat reference atoms specially because _cartesian_to_mixed()
-        # removes them from the cartesian atoms and places the unconstrained DOFs
-        # of the axes atoms between the internal and the Cartesian coordinates.
-        reference_atoms_indices_in_cartesian_set = set(self._reference_atoms_indices_in_cartesian.tolist())
-        conditioning_atom_indices_in_cartesian_no_ref = [i for i in conditioning_atom_indices_in_cartesian
-                                                         if i not in reference_atoms_indices_in_cartesian_set]
-        conditioning_atom_indices_in_cartesian_no_ref = torch.tensor(
-            conditioning_atom_indices_in_cartesian_no_ref).to(self._reference_atoms_indices_in_cartesian)
+        # Rototranslational degrees of freedom, if not removed, are always 0.0
+        # and must be treated specially by the flow. These are at the end of cartesians.
+        n_refs_in_cartesians = 0
+        if not self.remove_ref_rototranslation[0]:
+            n_refs_in_cartesians += 3
+        if not self.remove_ref_rototranslation[1]:
+            n_refs_in_cartesians += 2
+        if not self.remove_ref_rototranslation[2]:
+            n_refs_in_cartesians += 1
 
-        # Shift indices due to the removed reference atoms. searchsorted requires sorted tensor.
-        # We eventually will shift the indices to the right for the axes atoms DOFs later.
-        reference_atoms_indices_in_cartesian_sorted = self._reference_atoms_indices_in_cartesian.sort()[0]
-        conditioning_atom_indices_in_cartesian_no_ref = conditioning_atom_indices_in_cartesian_no_ref - torch.searchsorted(
-            reference_atoms_indices_in_cartesian_sorted, conditioning_atom_indices_in_cartesian_no_ref)
-
-        # Shift indices by the number of internal coordinates before the Cartesian ones.
-        maf_conditioning_dof_indices = conditioning_atom_indices_in_cartesian_no_ref + self.n_ic_atoms
-
-        # Convert from atom to DOF indices.
-        maf_conditioning_dof_indices = atom_to_flattened_indices(maf_conditioning_dof_indices)
-
-        # Axes atoms can be either mapped or conditioning. The DOFs of the axes
-        # atoms are placed between the internal coordinates and the Cartesian atoms.
-        if self.has_axes_atoms:
-            # Whether the axes atoms are mapped or not, they have three degrees of
-            # freedom that shift to the right the conditioning DOF indices.
-            maf_conditioning_dof_indices = maf_conditioning_dof_indices + 3
-
-            # We need to know whether the axes atoms are conditioning.
-            conditioning_atom_indices_in_cartesian_set = set(conditioning_atom_indices_in_cartesian)
-            axes_atoms_indices_in_cartesian = self._reference_atoms_indices_in_cartesian[-2:].tolist()
-
-            # Collect the axes atoms DOFs that are conditioning.
-            to_concatenate = []
-            if axes_atoms_indices_in_cartesian[0] in conditioning_atom_indices_in_cartesian_set:
-                to_concatenate.append(3*self.n_ic_atoms)
-            if axes_atoms_indices_in_cartesian[1] in conditioning_atom_indices_in_cartesian_set:
-                to_concatenate.extend([3*self.n_ic_atoms+1, 3*self.n_ic_atoms+2])
-
-            # Concatenate reference and other conditioning DOFs.
-            if len(to_concatenate) > 0:
-                to_concatenate = torch.tensor(to_concatenate).to(maf_conditioning_dof_indices)
-                maf_conditioning_dof_indices = torch.cat([to_concatenate, maf_conditioning_dof_indices])
-
-        return maf_conditioning_dof_indices
-
-    def get_maf_angles_dof_indices(self) -> Tuple[torch.Tensor]:
-        """
-        Return the indices of all angles (i.e., bond angles and torsions) and
-        periodic angles (i.e., only torsions since bond angles are in [0, pi])
-        after the conversion from Cartesian to mixed.
-        """
-        # Except for the single angle defining the reference frame atoms, all
-        # angles and torsions are placed right after the bonds.
-        maf_angles_dof_indices = list(range(self.n_ic_atoms, 3*self.n_ic_atoms))
-
-        # Only torsions are periodic since bond angles are defined in [0, pi].
-        maf_periodic_dof_indices = list(range(2*self.n_ic_atoms, 3*self.n_ic_atoms))
-
-        # Check if there are axes atoms, whose DOFs are placed between the
-        # internal and Cartesian coordinates after the conversion.
-        if self.has_axes_atoms:
-            # The axes atoms are defined by two distances and 1 angle.
-            maf_angles_dof_indices.append(3*self.n_ic_atoms+2)
-
-        return torch.tensor(maf_angles_dof_indices), torch.tensor(maf_periodic_dof_indices)
-
-    def get_maf_distance_dof_indices(self, return_bonds: bool = True, return_axes: bool = True) -> torch.Tensor:
-        """Return the indices of the bond DOFs after the conversion from Cartesian to mixed.
-
-        These do not include the two distances defining the coordinates of the axes atoms.
-
-        """
-        # The bonds are placed at the beginning.
-        if return_bonds:
-            maf_distance_dof_indices = list(range(self.n_ic_atoms))
+        if n_refs_in_cartesians > 0:
+            indices_by_type['reference'] = indices_by_type['cartesians'][-n_refs_in_cartesians:]
+            indices_by_type['cartesians'] = indices_by_type['cartesians'][:-n_refs_in_cartesians]
         else:
-            maf_distance_dof_indices = []
+            indices_by_type['reference'] = torch.tensor([]).to(indices_by_type['cartesians'])
 
-        # Check if there are axes atoms, whose DOFs are placed between the
-        # internal and Cartesian coordinates after the conversion.
-        if self.has_axes_atoms and return_axes:
-            # The axes atoms are defined by two distances and 1 angle.
-            maf_distance_dof_indices.extend([3*self.n_ic_atoms, 3*self.n_ic_atoms+1])
+        # Check if there are no conditioning atoms.
+        if conditioning_atom_indices is None:
+            indices_by_type['conditioning'] = None
+        else:
+            conditioning_atom_indices_set = set(conditioning_atom_indices.tolist())
 
-        return torch.tensor(maf_distance_dof_indices)
+            # Conditioning atoms are always Cartesian. Find their DOF indices
+            # in indices_by_type['cartesians'] (excluding reference atoms).
+            indices = [i for i, v in enumerate(self.cartesian_atom_indices[:-3].tolist())
+                       if v in conditioning_atom_indices_set]
+            indices = atom_to_flattened_indices(torch.tensor(indices).to(indices_by_type['cartesians']))
+            cond_dof_indices = indices_by_type['cartesians'][indices]
+
+            # Rototranslational DOFs of conditioning reference atoms are always
+            # removed so we need to check only their internal coords.
+            cond_dof_indices = [cond_dof_indices]
+            axis_atom_idx, plane_atom_idx = self.cartesian_atom_indices[-2:].tolist()
+            if axis_atom_idx in conditioning_atom_indices_set:
+                cond_dof_indices.append(indices_by_type['d01'])
+            if plane_atom_idx in conditioning_atom_indices_set:
+                cond_dof_indices.extend([indices_by_type['d02'], indices_by_type['a102']])
+            indices_by_type['conditioning'] = torch.cat(cond_dof_indices).sort().values
+
+            if len(indices_by_type['conditioning']) == 0:
+                indices_by_type['conditioning'] = None
+
+        return indices_by_type
 
     def forward(self, x):
         return self._pass(x, inverse=False)
@@ -1136,7 +1163,7 @@ class _CartesianToMixedFlow(torch.nn.Module):
 
     def _pass(self, x, inverse):
         # Convert from Cartesian to mixed coordinates.
-        y, cumulative_log_det_J, origin_atom_position, rotation_matrix = self._cartesian_to_mixed(x)
+        y, cumulative_log_det_J, origin_atom_position, rotation_matrix = self.cartesian_to_mixed(x)
 
         # Run flow.
         if inverse:
@@ -1146,15 +1173,42 @@ class _CartesianToMixedFlow(torch.nn.Module):
         cumulative_log_det_J = cumulative_log_det_J + log_det_J
 
         # Convert from mixed to Cartesian coordinates.
-        y, log_det_J = self._mixed_to_cartesian(y, origin_atom_position, rotation_matrix)
+        y, log_det_J = self.mixed_to_cartesian(y, origin_atom_position, rotation_matrix)
         cumulative_log_det_J = cumulative_log_det_J + log_det_J
 
         return y, cumulative_log_det_J
 
-    def _cartesian_to_mixed(self, x: torch.Tensor) -> Tuple[torch.Tensor]:
-        """Convert from Cartesian to mixed coordinates."""
+    def cartesian_to_mixed(self, x: torch.Tensor) -> Tuple[torch.Tensor]:
+        """Convert from Cartesian to mixed coordinates.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Shape ``(batch_size, n_atoms*3)`` or ``(batch_size, n_atoms, 3)``.
+            The Cartesian coordinates.
+
+        Returns
+        -------
+        y : torch.Tensor
+            Shape ``(batch_size, n_atoms*3 - fixed_dofs)`` where ``fixed_dof``
+            can be 0, 3, or 6 depending on the value of ``self.remove_ref_rototranslation``
+            The mixed coordinates.
+        log_det_J : torch.Tensor
+            Shape ``(batch_size,)``. The logarithm of the absolute Jacobian
+            determinant of the coordinate transformation.
+        origin_atom_position : torch.Tensor
+            Shape ``(batch_size, 1, 3)``. The position of the origin of the
+            relative frame of reference in the original coordinate system.
+        rotation_matrix : torch.Tensor
+            Shape ``(batch_size, 1, 4)``. A rotation matrix representing the
+            rotation performed to transform the original coordinate system into
+            the relative one.
+
+        """
+        from bgflow.nn.flow.crd_transform.ic import normalize_torsions
+
         # Convert to mixed coordinates.
-        bonds, angles, torsions, x_cartesian, cumulative_log_det_J = self._rel_ic(x)
+        bonds, angles, torsions, x_cartesian, cumulative_log_det_J = self.rel_ic(x)
 
         # From (batch, 1) to (batch,).
         cumulative_log_det_J = cumulative_log_det_J.squeeze(-1)
@@ -1163,165 +1217,165 @@ class _CartesianToMixedFlow(torch.nn.Module):
         x_cartesian = flattened_to_atom(x_cartesian)
         batch_size, n_cartesian_atoms, _ = x_cartesian.shape
 
-        # We'll have to remove the reference atoms from the cartesian atoms using a mask.
-        if self.has_origin_atom or self.has_axes_atoms:
-            kept_atoms_mask = torch.full((n_cartesian_atoms,), True).to(
-                self._reference_atoms_indices_in_cartesian.device)
-
         # Center the Cartesian coordinates on the origin atom.
-        if not self.has_origin_atom:
-            origin_atom_position = None
-        else:
-            # Flag origin atom to be removed.
-            origin_atom_idx = self._reference_atoms_indices_in_cartesian[0]
-            kept_atoms_mask[origin_atom_idx] = False
+        origin_atom_idx, axis_atom_idx, plane_atom_idx = -3, -2, -1
+        origin_atom_position = x_cartesian[:, origin_atom_idx]
+        x_cartesian = x_cartesian - origin_atom_position.unsqueeze(1)
 
-            # Save the position to restore it later.
-            origin_atom_position = x_cartesian[:, origin_atom_idx]
-            x_cartesian = x_cartesian - origin_atom_position.unsqueeze(1)
+        # Find rotation matrix to re-orient the frame of reference.
+        rotation_matrix = reference_frame_rotation_matrix(
+            axis_atom_positions=x_cartesian[:, axis_atom_idx],
+            plane_atom_positions=x_cartesian[:, plane_atom_idx],
+            axis=get_axis_from_name('x').to(x_cartesian),
+            plane_axis=get_axis_from_name('y').to(x_cartesian),
+            # We can project on positive axis since the neural spline
+            # never makes the coordinate negative.
+            project_on_positive_axis=True,
+        )
 
-        # Re-orient the frame of reference.
-        if not self.has_axes_atoms:
-            rotation_matrix = None
-            axes_atoms_dof = [torch.empty(0).to(self._reference_atoms_indices_in_cartesian)]
-        else:
-            axis_atom_idx = self._reference_atoms_indices_in_cartesian[-2]
-            plane_atom_idx = self._reference_atoms_indices_in_cartesian[-1]
-            axis_atom_pos = x_cartesian[:, axis_atom_idx]
-            plane_atom_pos = x_cartesian[:, plane_atom_idx]
+        # Rotate all Cartesian coordinates.
+        x_cartesian = batchwise_rotate(x_cartesian, rotation_matrix)
 
-            # Find rotation matrix.
-            rotation_matrix = reference_frame_rotation_matrix(
-                axis_atom_positions=axis_atom_pos,
-                plane_atom_positions=plane_atom_pos,
-                axis=get_axis_from_name('x').to(x_cartesian),
-                plane_axis=get_axis_from_name('y').to(x_cartesian),
-                # We can project on positive axis since the neural spline
-                # never makes the coordinate negative.
-                project_on_positive_axis=True,
-            )
+        # The (positive) x-coordinate of the axis atom is the distance from the origin.
+        d01 = x_cartesian[:, axis_atom_idx, 0]
 
-            # Rotate all Cartesian coordinates.
-            x_cartesian = batchwise_rotate(x_cartesian, rotation_matrix)
+        # Transform the coordinates on the x-y plane to polar (distance, angle) from the origin.
+        d02, a102, log_det_J = cartesian_to_polar(
+            x_cartesian[:, plane_atom_idx, 0],
+            x_cartesian[:, plane_atom_idx, 1],
+            return_log_det_J=True
+        )
+        cumulative_log_det_J = cumulative_log_det_J + log_det_J
 
-            # The (positive) x-coordinate of the axis atom is the distance from the origin.
-            dist_axis_atom = x_cartesian[:, axis_atom_idx, 0]
-
-            # Transform the coordinates on the x-y plane to polar (distance, angle) from the origin.
-            dist_plane_atom, angle, log_det_J = cartesian_to_polar(
-                x_cartesian[:, plane_atom_idx, 0],
-                x_cartesian[:, plane_atom_idx, 1],
-                return_log_det_J=True
-            )
-            cumulative_log_det_J = cumulative_log_det_J + log_det_J
-
-            # Normalize the angle. angle is in [-pi, pi] so we use normalize_torsions().
-            # Normalize torsion takes and return shape (batch_size, 1), not (batch_size,).
-            from bgflow.nn.flow.crd_transform.ic import normalize_torsions
-            angle, log_det_J = normalize_torsions(angle.unsqueeze(-1))
-            angle = angle.squeeze(-1)
-            cumulative_log_det_J = cumulative_log_det_J + log_det_J.squeeze(-1)
-
-            # Group the axes atoms DOFs. From shape (batch,) to (batch, 1).
-            axes_atoms_dof = [dist_axis_atom.unsqueeze(1), dist_plane_atom.unsqueeze(1), angle.unsqueeze(1)]
-
-            # Flag axes atoms to be removed.
-            kept_atoms_mask[self._reference_atoms_indices_in_cartesian[-2:]] = False
-
-        # Remove reference atoms.
-        if self.has_origin_atom or self.has_axes_atoms:
-            x_cartesian = x_cartesian[:, kept_atoms_mask]
+        # Normalize the angle. angle is in [-pi, pi] so we use normalize_torsions().
+        # Normalize torsion takes and return shape (batch_size, 1), not (batch_size,).
+        a102, log_det_J = normalize_torsions(a102.unsqueeze(-1))
+        a102 = a102.squeeze(-1)
+        cumulative_log_det_J = cumulative_log_det_J + log_det_J.squeeze(-1)
 
         # From (batch, n_atoms, 3) to (batch, n_atoms*3).
         x_cartesian = atom_to_flattened(x_cartesian)
 
+        # Remove rototranslational DOFs.
+        mask = torch.full((x_cartesian.shape[1],), True).to(x_cartesian.device)
+        if self.remove_ref_rototranslation[0]:
+            mask[-9:-6] = False
+        if self.remove_ref_rototranslation[1]:
+            mask[-6:-3] = False
+        else:
+            mask[-6:-5] = False
+        if self.remove_ref_rototranslation[2]:
+            mask[-3:] = False
+        else:
+            mask[-3:-1] = False
+        x_cartesian = x_cartesian[:, mask]
+
         # Concatenate all DOFs.
-        y = torch.cat([bonds, angles, torsions] + axes_atoms_dof + [x_cartesian], dim=-1)
+        y = torch.cat([
+            bonds,
+            angles,
+            torsions,
+            d01.unsqueeze(1),
+            d02.unsqueeze(1),
+            a102.unsqueeze(1),
+            x_cartesian,
+        ], dim=-1)
 
         return y, cumulative_log_det_J, origin_atom_position, rotation_matrix
 
-    def _mixed_to_cartesian(
+    def mixed_to_cartesian(
             self,
             y: torch.Tensor,
             origin_atom_position: torch.Tensor,
             rotation_matrix: torch.Tensor,
     ) -> Tuple[torch.Tensor]:
-        """Convert from mixed to Cartesian."""
-        cumulative_log_det_J = 0
+        """Convert from mixed to Cartesian.
 
-        # Separate the IC and Cartesian DOFs.
-        bonds = y[:, :self.n_ic_atoms]
-        angles = y[:, self.n_ic_atoms:2*self.n_ic_atoms]
-        torsions = y[:, 2*self.n_ic_atoms:3*self.n_ic_atoms]
-        y_cartesian = y[:, 3*self.n_ic_atoms:]
+        Parameters
+        ----------
+        y : torch.Tensor
+            Shape ``(batch_size, n_atoms*3 - fixed_dofs)`` where ``fixed_dof``
+            can be 0, 3, or 6 depending on the value of ``self.remove_ref_rototranslation``
+            The mixed coordinates.
+        origin_atom_position : torch.Tensor
+            Shape ``(batch_size, 1, 3)``. The position of the origin of the
+            relative frame of reference in the original coordinate system.
+        rotation_matrix : torch.Tensor
+            Shape ``(batch_size, 1, 4)``. A rotation matrix representing the
+            rotation performed to transform the original coordinate system into
+            the relative one.
 
-        # Separate the axes atoms DOFs.
-        if self.has_axes_atoms:
-            dist_axis_atom, dist_plane_atom, angle, y_cartesian = y_cartesian.split(
-                [1, 1, 1, y_cartesian.shape[-1]-3], dim=-1)
+        Returns
+        -------
+        x : torch.Tensor
+            Shape ``(batch_size, n_atoms*3)`` or ``(batch_size, n_atoms, 3)``.
+            The Cartesian coordinates.
+        log_det_J : torch.Tensor
+            Shape ``(batch_size,)``. The logarithm of the absolute Jacobian
+            determinant of the coordinate transformation.
 
-            # Unnormalize the angle.
-            from bgflow.nn.flow.crd_transform.ic import unnormalize_torsions
-            angle, log_det_J = unnormalize_torsions(angle)
-            cumulative_log_det_J = cumulative_log_det_J + log_det_J
+        """
+        from bgflow.nn.flow.crd_transform.ic import unnormalize_torsions
+        batch_size = y.shape[0]
 
-            # From shape (batch_size, 1) to (batch_size,).
-            dist_axis_atom = dist_axis_atom.squeeze(-1)
-            dist_plane_atom = dist_plane_atom.squeeze(-1)
-            angle = angle.squeeze(-1)
+        # Separate the different types of coordinates.
+        bonds, angles, torsions, d01, d02, a102, y_cartesian = torch.tensor_split(
+            y, self._get_coords_indices_by_type()[:-1], dim=-1)
 
-        # From (batch, n_atoms*3) to (batch, n_atoms, 3).
-        y_cartesian = flattened_to_atom(y_cartesian)
+        # Unnormalize the angle.
+        a102, cumulative_log_det_J = unnormalize_torsions(a102)
 
-        # Find the positions of the reference atoms.
-        batch_size, n_cartesian_atoms, _ = y_cartesian.shape
-        reference_atom_positions = []
-        if self.has_origin_atom:
-            # We insert the origin since we'll translate also this later.
-            reference_atom_positions.append(torch.zeros_like(origin_atom_position))
-        if self.has_axes_atoms:
-            # The axis atom lies on the x-axis.
-            axis_atom_pos = torch.zeros(batch_size, 3).to(y_cartesian)
-            axis_atom_pos[:, 0] = dist_axis_atom
+        # From shape (batch_size, 1) to (batch_size,).
+        d01 = d01.squeeze(-1)
+        d02 = d02.squeeze(-1)
+        a102 = a102.squeeze(-1)
 
-            # The plane atom lies on the xy-plane.
-            x, y, log_det_J = polar_to_cartesian(
-                dist_plane_atom,
-                angle,
-                return_log_det_J=True,
-            )
-            plane_atom_pos = torch.zeros_like(axis_atom_pos)
-            plane_atom_pos[:, 0] = x
-            plane_atom_pos[:, 1] = y
+        # Create an array that includes the removed rototranslational DOFs.
+        n_cartesian_atoms_full = len(self.cartesian_atom_indices)
+        y_cartesian_full = torch.empty(batch_size, n_cartesian_atoms_full, 3).to(y_cartesian)
 
-            # Update.
-            reference_atom_positions.extend([axis_atom_pos, plane_atom_pos])
-            cumulative_log_det_J = cumulative_log_det_J + log_det_J
+        # Convert internal coords of the axes atoms to Cartesian.
+        origin_atom_idx, axis_atom_idx, plane_atom_idx = -3, -2, -1
+        y_cartesian_full[:, axis_atom_idx, 0] = d01
 
-        # Insert back into y_cartesian the reference atoms.
-        if len(reference_atom_positions) > 0:
-            y_cartesian_tmp = torch.empty(batch_size, n_cartesian_atoms+len(reference_atom_positions), 3).to(y_cartesian)
+        # The plane atom lies on the xy-plane.
+        plane_atom_x, plane_atom_y, log_det_J = polar_to_cartesian(
+            d02,
+            a102,
+            return_log_det_J=True,
+        )
+        y_cartesian_full[:, plane_atom_idx, 0] = plane_atom_x
+        y_cartesian_full[:, plane_atom_idx, 1] = plane_atom_y
+        cumulative_log_det_J = cumulative_log_det_J + log_det_J
 
-            # Start by setting the reference atom positions.
-            for idx, ref_atom_idx in enumerate(self._reference_atoms_indices_in_cartesian):
-                y_cartesian_tmp[:, ref_atom_idx] = reference_atom_positions[idx]
+        # Add back the translational DOFs.
+        mask = torch.full((n_cartesian_atoms_full, 3), True).to(y_cartesian.device)
+        if self.remove_ref_rototranslation[0]:
+            y_cartesian_full[:, origin_atom_idx] = 0.0
+            mask[origin_atom_idx] = False
 
-            # Now set the other Cartesian coordinates.
-            mask = torch.full(y_cartesian_tmp.shape[1:2], fill_value=True).to(
-                self._reference_atoms_indices_in_cartesian.device)
-            mask[self._reference_atoms_indices_in_cartesian] = False
-            y_cartesian_tmp[:, mask] = y_cartesian
+        # Add back the rotational DOFs.
+        if self.remove_ref_rototranslation[1]:
+            y_cartesian_full[:, axis_atom_idx, 1:] = 0.0
+            mask[axis_atom_idx] = False
+        else:
+            mask[axis_atom_idx, 0] = False
+        if self.remove_ref_rototranslation[2]:
+            y_cartesian_full[:, plane_atom_idx, 2] = 0.0
+            mask[plane_atom_idx] = False
+        else:
+            mask[plane_atom_idx, :2] = False
 
-            y_cartesian = y_cartesian_tmp
+        # Forward all other coordinates. Applying a 2d mask flattens that dimension.
+        y_cartesian_full[:, mask] = y_cartesian
+        y_cartesian_full = y_cartesian_full.reshape(batch_size, -1, 3)
 
         # Rotate and translate the Cartesian back to the global frame of reference.
-        if self.has_axes_atoms:
-            y_cartesian = batchwise_rotate(y_cartesian, rotation_matrix, inverse=True)
-        if self.has_origin_atom:
-            y_cartesian = y_cartesian + origin_atom_position.unsqueeze(1)
+        y_cartesian_full = batchwise_rotate(y_cartesian_full, rotation_matrix, inverse=True)
+        y_cartesian_full = y_cartesian_full + origin_atom_position.unsqueeze(1)
 
         # Convert internal coords back to Cartesian.
-        x, log_det_J = self._rel_ic(bonds, angles, torsions, y_cartesian, inverse=True)
+        x, log_det_J = self.rel_ic(bonds, angles, torsions, y_cartesian_full, inverse=True)
         cumulative_log_det_J = cumulative_log_det_J + log_det_J.squeeze(-1)
 
         return x, cumulative_log_det_J

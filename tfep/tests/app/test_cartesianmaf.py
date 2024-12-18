@@ -105,3 +105,18 @@ def test_atom_groups(
         temperature=298*UNITS.kelvin,
         batch_size=2,
     )
+
+
+def test_error_origin_atom_not_conditioning():
+    """An error is raised if the origin atom is not a conditioning atom."""
+    tfep_map = CartesianMAFMap(
+        mapped_atoms=range(6),
+        origin_atom=1,
+        potential_energy_func=MockPotential(),
+        topology_file_path=CHLOROMETHANE_PDB_FILE_PATH,
+        coordinates_file_path=CHLOROMETHANE_PDB_FILE_PATH,
+        temperature=298*UNITS.kelvin,
+        batch_size=2,
+    )
+    with pytest.raises(ValueError, match="is not a conditioning atom"):
+        tfep_map.setup()

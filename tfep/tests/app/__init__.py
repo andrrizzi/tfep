@@ -28,7 +28,7 @@ def check_atom_groups(
         expected_fixed: Optional[List[int]],
         expected_mapped_fixed_removed: Optional[List[int]],
         expected_conditioning_fixed_removed: Optional[List[int]],
-        is_deterministic_flow: bool = True,
+        round_trip: bool = True,
         **kwargs,
 ):
     """Test selection of mapped, conditioning, fixed, and reference frame atoms.
@@ -40,9 +40,9 @@ def check_atom_groups(
 
     Parameters
     ----------
-    is_deterministic_flow : bool, optional
-        If ``False``, this will not check that a forward-inverse round trip yields
-        the original input.
+    round_trip : bool, optional
+        If ``False``, this will not check that a forward-inverse round trip
+        yields the original input.
 
     """
     import lightning
@@ -128,7 +128,7 @@ def check_atom_groups(
     result = tfep_map({'positions': x})
     y, log_det_J = result['positions'], result['log_det_J']
     result = tfep_map.inverse({'positions': y})
-    if is_deterministic_flow:
+    if round_trip:
         x_inv, log_det_J_inv = result['positions'], result['log_det_J']
         assert torch.allclose(x, x_inv)
 

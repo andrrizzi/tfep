@@ -167,10 +167,10 @@ def reference_symmetrized_moebius_transformer(x, w, dimension):
     (4, 4),
     (8, 4),
 ])
-@pytest.mark.parametrize('unit_sphere', [True, False])
-@pytest.mark.parametrize('transformer_cls', [
-    MoebiusTransformer,
-    SymmetrizedMoebiusTransformer
+@pytest.mark.parametrize('unit_sphere,transformer_cls', [
+    (True, MoebiusTransformer),
+    (False, MoebiusTransformer),
+    (None, SymmetrizedMoebiusTransformer),
 ])
 def test_moebius_transformer_reference(batch_size, n_features, dimension, unit_sphere, transformer_cls):
     """Compare PyTorch and reference implementation of MoebiusTransformer."""
@@ -207,17 +207,14 @@ def test_moebius_transformer_reference(batch_size, n_features, dimension, unit_s
     (4, 4),
     (8, 4),
 ])
-@pytest.mark.parametrize('unit_sphere', [True, False])
-@pytest.mark.parametrize('transformer_cls', [
-    MoebiusTransformer,
-    SymmetrizedMoebiusTransformer
+@pytest.mark.parametrize('unit_sphere,transformer_cls', [
+    (True, MoebiusTransformer),
+    (False, MoebiusTransformer),
+    (None, SymmetrizedMoebiusTransformer),
 ])
 def test_moebius_transformer_identity(batch_size, n_features, dimension, unit_sphere, transformer_cls):
     """The MoebiusTransform can implement the identity function correctly."""
     x, _ = create_moebius_random_input(batch_size, n_features, dimension, unit_sphere)
-
-    # The identity should be encoded with parameters w = 0.
-    w = torch.zeros_like(x)
 
     # Compare PyTorch and reference.
     if transformer_cls == MoebiusTransformer:
@@ -225,7 +222,15 @@ def test_moebius_transformer_identity(batch_size, n_features, dimension, unit_sp
     else:
         transformer = transformer_cls(dimension=dimension)
 
+    # The identity should be encoded with parameters w = 0.
+    w = transformer.get_identity_parameters(x.shape[1]).expand(batch_size, -1)
+
     y, log_det_J = transformer(x, w)
+    assert torch.allclose(x, y)
+    assert torch.allclose(log_det_J, torch.zeros_like(log_det_J))
+
+    # Test also inverse.
+    y, log_det_J = transformer.inverse(x, w)
     assert torch.allclose(x, y)
     assert torch.allclose(log_det_J, torch.zeros_like(log_det_J))
 
@@ -239,10 +244,10 @@ def test_moebius_transformer_identity(batch_size, n_features, dimension, unit_sp
     (4, 4),
     (8, 4),
 ])
-@pytest.mark.parametrize('unit_sphere', [True, False])
-@pytest.mark.parametrize('transformer_cls', [
-    MoebiusTransformer,
-    SymmetrizedMoebiusTransformer
+@pytest.mark.parametrize('unit_sphere,transformer_cls', [
+    (True, MoebiusTransformer),
+    (False, MoebiusTransformer),
+    (None, SymmetrizedMoebiusTransformer),
 ])
 def test_moebius_transformer_inverse(batch_size, n_features, dimension, unit_sphere, transformer_cls):
     """Compare PyTorch and reference implementation of MoebiusTransformer."""

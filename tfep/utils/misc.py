@@ -259,6 +259,73 @@ def forces_array_to_tensor(forces, distance_unit=None, energy_unit=None, dtype=N
     return torch.tensor(forces.magnitude, dtype=dtype)
 
 
+def remove_and_shift_sorted_indices(
+        indices: torch.Tensor,
+        removed_indices: torch.Tensor,
+        remove: bool = True,
+        shift: bool = True,
+) -> torch.Tensor:
+    """Remove from ``indices`` the indices in ``removed_indices`` (by value).
+
+    Both ``indices`` and ``removed_indices`` must be sorted tensors of
+    non-negative integers. The indices in ``indices`` are (optionally) shifted
+    so that it can be used to point to elements of an array where
+    ``removed_indices`` have been removed.
+
+    Parameters
+    ----------
+    indices : torch.Tensor
+        The tensor from which to remove indices.
+    removed_indices : torch.Tensor
+        The indices that must be removed from ``indices``.
+    remove : bool, optional
+        If ``indices`` and ``removed_indices`` do not overlap, and only
+        shifting is necessary, this can be set to ``False``. Default ``True``.
+    shift : bool, optional
+        If ``False`` shifting the indices is not performed.
+
+    Returns
+    -------
+    out : torch.Tensor
+        The ``indices`` tensor after removing and shifting the elements.
+
+    Examples
+    --------
+    >>> remove_and_shift_sorted_indices(
+    ...     indices=torch.tensor([0, 3, 9, 13]),
+    ...     removed_indices=torch.tensor([3, 12]),
+    ...     shift=False,
+    ... ).tolist()
+    [0, 9, 13]
+
+    >>> remove_and_shift_sorted_indices(
+    ...     indices=torch.tensor([0, 3, 9, 13]),
+    ...     removed_indices=torch.tensor([3, 12]),
+    ...     shift=True,
+    ... ).tolist()
+    [0, 8, 11]
+
+    """
+    insert_indices = torch.searchsorted(removed_indices, indices)
+
+    # Remove.
+    if remove:
+        # The maximum index returned by searchsorted is len(removed_indices) so
+        # we pad to avoid IndexErrors. We use a -1 since all elements of
+        # indices must be non-negative
+        padded_removed_indices = torch.nn.functional.pad(
+            removed_indices, pad=(0, 1), value=-1)
+        mask = padded_removed_indices[insert_indices] != indices
+        indices = indices[mask]
+        insert_indices = insert_indices[mask]
+
+    # Shift.
+    if shift:
+        indices = indices - insert_indices
+
+    return indices
+
+
 # =============================================================================
 # I/O
 # =============================================================================
