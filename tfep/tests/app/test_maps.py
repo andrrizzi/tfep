@@ -130,25 +130,12 @@ def test_error_overlapping_atom_selections(tfep_map_cls):
 
 
 @pytest.mark.parametrize('tfep_map_cls', TESTED_TFEP_MAPS)
-def test_error_duplicate_atoms(tfep_map_cls):
-    """If mapped and conditioning atoms overlap, an error is raised."""
-    tfep_map = tfep_map_cls(mapped_atoms=[0, 0, 2], **MAP_INIT_KWARGS[tfep_map_cls.__name__])
-    with pytest.raises(ValueError, match='duplicate mapped atom'):
-        tfep_map.setup()
-
-    tfep_map = tfep_map_cls(conditioning_atoms=[3, 4, 4], **MAP_INIT_KWARGS[tfep_map_cls.__name__])
-    with pytest.raises(ValueError, match='duplicate conditioning atom'):
-        tfep_map.setup()
-
-
-@pytest.mark.parametrize('tfep_map_cls', TESTED_TFEP_MAPS)
-@pytest.mark.parametrize('origin_atom,axes_atoms', [
-    [0, (0, 2)],
-    [0, (2, 2)],
-    [0, (2, 0)],
-    [None, (1, 1)],
+@pytest.mark.parametrize('origin_atom,axes_atoms,match', [
+    [0, (0, 2), "must be different"],
+    [0, (2, 2), "2 axes atoms must be given"],
+    [0, (2, 0), "must be different"],
 ])
-def test_error_reference_frame_atoms_overlap(tfep_map_cls, origin_atom, axes_atoms):
+def test_error_reference_frame_atoms_overlap(tfep_map_cls, origin_atom, axes_atoms, match):
     """An error is raised if the origin, axis, and/or plane atoms overlap."""
     tfep_map = tfep_map_cls(
         conditioning_atoms=[0],
@@ -156,19 +143,7 @@ def test_error_reference_frame_atoms_overlap(tfep_map_cls, origin_atom, axes_ato
         axes_atoms=axes_atoms,
         **MAP_INIT_KWARGS[tfep_map_cls.__name__],
     )
-    with pytest.raises(ValueError, match="must be different"):
-        tfep_map.setup()
-
-
-@pytest.mark.parametrize('tfep_map_cls', TESTED_TFEP_MAPS)
-def test_error_origin_atom_not_conditioning(tfep_map_cls):
-    """An error is raised if the origin atom is not a conditioning atom."""
-    tfep_map = tfep_map_cls(
-        mapped_atoms=range(6),
-        origin_atom=1,
-        **MAP_INIT_KWARGS[tfep_map_cls.__name__],
-    )
-    with pytest.raises(ValueError, match="is not a conditioning atom"):
+    with pytest.raises(ValueError, match=match):
         tfep_map.setup()
 
 

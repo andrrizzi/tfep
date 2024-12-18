@@ -685,12 +685,6 @@ class TFEPMapBase(ABC, lightning.LightningModule):
                     raise ValueError('Selected multiple atoms as the origin atom')
                 origin_atom_idx = origin_atom_idx[0]
 
-            # Make sure origin is a fixed atom.
-            if (conditioning_atom_indices is None or
-                        origin_atom_idx not in conditioning_atom_indices):
-                raise ValueError("origin_atom is not a conditioning atom. origin_atom "
-                                 "affects the mapping but its position is constrained.")
-
         # Select axes atoms.
         if axes is None:
             axes_atoms_indices = None
