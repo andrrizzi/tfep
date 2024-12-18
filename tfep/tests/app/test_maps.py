@@ -164,6 +164,8 @@ def test_error_axes_atom_fixed(tfep_map_cls):
     """An error is raised if the origin atom is not a conditioning atom."""
     tfep_map = tfep_map_cls(
         mapped_atoms=range(1, 6),
+        conditioning_atoms=[7],
+        origin_atom=7,
         axes_atoms=[0, 2],
         **MAP_INIT_KWARGS[tfep_map_cls.__name__],
     )
