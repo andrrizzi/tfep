@@ -315,8 +315,9 @@ class CartesianMAFMap(TFEPMapBase):
         super().determine_atom_indices()
 
         # Make sure origin is a fixed atom.
-        if (self._conditioning_atom_indices is None or
-                    self._origin_atom_idx not in self._conditioning_atom_indices):
+        if self._origin_atom_idx is not None and (
+                        self._conditioning_atom_indices is None or
+                        self._origin_atom_idx not in self._conditioning_atom_indices):
             raise ValueError("origin_atom is not a conditioning atom. origin_atom "
                              "affects the mapping but its position is constrained.")
 
