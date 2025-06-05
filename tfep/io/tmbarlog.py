@@ -1,39 +1,13 @@
-#!/usr/bin/env python
-
-
-# =============================================================================
-# MODULE DOCSTRING
-# =============================================================================
-
-"""
-Utility classes to store potential energies and CVs necessary for TFEP.
-
-The module provides a class :class:`.TFEPLogger` that provides an interface to
-store on/read from disk the potentials energies and CVs quantities that enter
-the TFEP equations.
-
-"""
-
-
-# =============================================================================
-# GLOBAL IMPORTS
-# =============================================================================
-
-import json
 import os
-import warnings
-from typing import List, Tuple, Optional, Union
-
+import h5py
 import numpy as np
 import torch
-import h5py
+from typing import Optional, List, Tuple, Union
+import json
+from tfep.io.log import TFEPLogger
 
 
-# =============================================================================
-# TFEP LOGGER
-# =============================================================================
-
-class TFEPLogger:
+class TMBARLogger(TFEPLogger):
     """Store and retrieve potential energies and CVs during training/evaluations.
 
     The user can use this to easily store and retrieve arbitrary per-sample
@@ -46,23 +20,34 @@ class TFEPLogger:
     Current database format
     -----------------------
 
-    Currently, the data is stored in compressed numpy format with a different
-    format depending on whether the data was generated during training set or
-    evaluation. In both cases, the data is store as an ``.npz`` numpy compressed
-    archive of named numpy 1D arrays. However, training and evaluation data differ
-    in the array dimensions and file naming.
+    The data is stored in HDF5 format with one file per epoch/step, containing groups
+    for different state mappings. The data is organized in the following structure:
 
-    For training, each ``.npz`` file is saved in a ``train/`` subdirectory with
-    name ``epoch-X.npz``, where ``X`` correspond to the training epoch index used
-    for the data. Each array in the archive has length ``n_samples_per_epoch``,
-    whose value takes into account whether ``drop_last`` is set in the PyTorch
-    ``DataLoader``). In each array in the archive ``archive['name'][i]`` is the
-    quantity corresponding to the ``i%batch_size`` data point in the
-    ``i//batch_size``-th batch.
+    ```
+    tfep_logs/
+    ├── train/
+    │   ├── epoch-0.h5
+    │   │   ├── 0_1/  # Mapping from state 0 to state 1
+    │   │   │   ├── potential_energy
+    │   │   │   ├── cv_values
+    │   │   │   └── ...
+    │   │   ├── 0_2/  # Mapping from state 0 to state 2
+    │   │   └── ...
+    │   ├── epoch-1.h5
+    │   └── ...
+    ├── eval/
+    │   ├── step-0.h5
+    │   │   ├── 0_1/
+    │   │   ├── 0_2/
+    │   │   └── ...
+    │   └── ...
+    └── metadata.json
+    ```
 
-    For the evaluation data, each ``.npz`` file is saved in a ``eval/`` subdirectory
-    with name ``step-X.npz``, which correspond to the quantities evaluated using
-    the neural network optimized for ``X`` steps.
+    Each HDF5 file contains groups for each state mapping, with datasets for the
+    various quantities. The data is organized hierarchically:
+    - First level: state mapping groups (e.g., "0_1" for mapping from state 0 to state 1)
+    - Second level: datasets (potential_energy, cv_values, etc.)
 
     Finally, a JSON file is used to store metadata about the experiment such as
     batch and epoch sizes.
@@ -80,6 +65,8 @@ class TFEPLogger:
             data_loader=None,
             train_subdir_name='train',
             eval_subdir_name='eval',
+            n_states=2,
+            state_names: Optional[List[str]] = None,
     ):
         """Constructor.
 
@@ -96,12 +83,27 @@ class TFEPLogger:
             The name of the subdirectory where the training data is stored.
         eval_subdir_name : str, optional
             The name of the subdirectory where the evaluation data is stored.
+        n_states : int, optional
+            The number of states in the system. Default is 2.
+        state_names : List[str], optional
+            Names for each state. If None, defaults to ['state_0', 'state_1', ...].
 
         """
         self._save_dir_path = os.path.realpath(save_dir_path)
         self._train_dir_path = os.path.join(save_dir_path, train_subdir_name)
         self._eval_dir_path = os.path.join(save_dir_path, eval_subdir_name)
-
+        
+        # Initialize state parameters
+        self._n_states = n_states
+        self._state_names = state_names if state_names is not None else [f'state_{i}' for i in range(n_states)]
+        
+        # Generate all possible state mappings
+        self._state_mappings = []
+        for i in range(n_states):
+            for j in range(n_states):
+                if i != j:  # Exclude self-mappings
+                    self._state_mappings.append((i, j))
+        
         # This keep track of the currently in-memory training/evaluation data.
         self._loaded_train_idx = None
         self._loaded_train_data = None  # Dict[name, Tensor].
@@ -156,15 +158,31 @@ class TFEPLogger:
         """The path to the main directory where the data is stored."""
         return self._save_dir_path
 
+    @property
+    def n_states(self):
+        """The number of states in the system."""
+        return self._n_states
+
+    @property
+    def state_names(self):
+        """The list of state names."""
+        return self._state_names
+
+    @property
+    def state_mappings(self):
+        """List of all possible state mappings as tuples (from_state, to_state)."""
+        return self._state_mappings
+
     def read_eval_tensors(
             self,
-            names=None,
-            step_idx=None,
-            epoch_idx=None,
-            batch_idx=None,
-            remove_nans=False,
-            sort_by=None,
-            as_numpy=False,
+            names: Optional[List[str]] = None,
+            step_idx: Optional[int] = None,
+            epoch_idx: Optional[int] = None,
+            batch_idx: Optional[int] = None,
+            remove_nans: Union[bool, str] = False,
+            sort_by: Optional[str] = None,
+            as_numpy: bool = False,
+            state_mapping: Optional[Tuple[int, int]] = None,
     ):
         """Read the tensors generated with the NN model trained for the given number of epoch/batch/step.
 
@@ -196,19 +214,27 @@ class TFEPLogger:
         as_numpy : bool, optional
             If ``True``, the tensors are returned as a numpy array rather than
             PyTorch ``Tensors``.
+        state_mapping : Tuple[int, int], optional
+            A tuple (from_state, to_state) indicating the state mapping.
+            If None, defaults to the first available mapping.
 
         Returns
         -------
         tensors : Dict[str, torch.Tensor]
             A dictionary mapping the name of the saved tensors to their values.
-
         """
         # Validate input arguments.
         step_idx, _, _ = self._validate_indices(
             step_idx, epoch_idx, batch_idx, need_batch=True)
 
+        # Use default state mapping if none provided
+        if state_mapping is None:
+            state_mapping = self._state_mappings[0]
+        elif state_mapping not in self._state_mappings:
+            raise ValueError(f"Invalid state mapping {state_mapping}. Must be one of {self._state_mappings}")
+
         # Load in memory the data of this NN.
-        self._load_data(step_idx, data_type='eval')
+        self._load_data(step_idx, data_type='eval', state_mapping=state_mapping)
 
         # Sort the data if requested.
         if sort_by is not None:
@@ -216,7 +242,7 @@ class TFEPLogger:
             self._loaded_eval_data = {k: v[sort_indices] for k, v in self._loaded_eval_data.items()}
 
             # Update the data on disk.
-            self._dump_data(data_type='eval')
+            self._dump_data(data_type='eval', state_mapping=state_mapping)
 
         # Remove undesired names.
         if names is None:
@@ -237,20 +263,15 @@ class TFEPLogger:
 
     def read_train_tensors(
             self,
-            names=None,
-            step_idx=None,
-            epoch_idx=None,
-            batch_idx=None,
-            remove_nans=False,
-            as_numpy=False
+            names: Optional[List[str]] = None,
+            step_idx: Optional[int] = None,
+            epoch_idx: Optional[int] = None,
+            batch_idx: Optional[int] = None,
+            remove_nans: Union[bool, str] = False,
+            as_numpy: bool = False,
+            state_mapping: Optional[Tuple[int, int]] = None,
     ):
         """Read the tensors saved with ``save_train_tensors``.
-
-        At least one between ``step_idx`` and ``epoch_idx`` must be passed.
-        Note that only the data for the batches that have been saved are returned.
-        As a consequence, the returned tensors might be smaller than the
-        number of samples per epoch if the training was interrupted before the
-        end of the epoch.
 
         Parameters
         ----------
@@ -273,19 +294,27 @@ class TFEPLogger:
         as_numpy : bool, optional
             If ``True``, the tensors are returned as a numpy array rather than
             PyTorch ``Tensors``.
+        state_mapping : Tuple[int, int], optional
+            A tuple (from_state, to_state) indicating the state mapping.
+            If None, defaults to the first available mapping.
 
         Returns
         -------
         tensors : Dict[str, torch.Tensor]
             A dictionary mapping the name of the saved tensors to their values.
-
         """
         # Check input arguments.
         _, epoch_idx, batch_idx = self._validate_indices(
             step_idx, epoch_idx, batch_idx, need_batch=False)
 
+        # Use default state mapping if none provided
+        if state_mapping is None:
+            state_mapping = self._state_mappings[0]
+        elif state_mapping not in self._state_mappings:
+            raise ValueError(f"Invalid state mapping {state_mapping}. Must be one of {self._state_mappings}")
+
         # Load in memory the data of this epoch.
-        self._load_data(epoch_idx, data_type='train')
+        self._load_data(epoch_idx, data_type='train', state_mapping=state_mapping)
 
         # Determine which names have to be returned.
         if names is None:
@@ -314,11 +343,12 @@ class TFEPLogger:
 
     def save_eval_tensors(
             self,
-            tensors,
-            step_idx=None,
-            epoch_idx=None,
-            batch_idx=None,
-            update=False,
+            tensors: dict,
+            step_idx: Optional[int] = None,
+            epoch_idx: Optional[int] = None,
+            batch_idx: Optional[int] = None,
+            update: bool = False,
+            state_mapping: Optional[Tuple[int, int]] = None,
     ):
         """Save the tensors generated with the NN model trained for the given number of epoch/batch/step.
 
@@ -356,7 +386,9 @@ class TFEPLogger:
             If ``True``, data points corresponding to already stored sample
             indices are updated (this slows down the method). If ``False``, this
             check is not performed and all tensors are simply added to the logger.
-
+        state_mapping : Tuple[int, int], optional
+            A tuple (from_state, to_state) indicating the state mapping.
+            If None, defaults to the first available mapping.
         """
         # Warn the user about missing dataset_sample_index nor trajectory_sample_index.
         self._warn_if_no_indices(tensors)
@@ -365,8 +397,14 @@ class TFEPLogger:
         step_idx, _, _ = self._validate_indices(
             step_idx, epoch_idx, batch_idx, need_batch=True)
 
+        # Use default state mapping if none provided
+        if state_mapping is None:
+            state_mapping = self._state_mappings[0]
+        elif state_mapping not in self._state_mappings:
+            raise ValueError(f"Invalid state mapping {state_mapping}. Must be one of {self._state_mappings}")
+
         # Load in memory the data of this NN.
-        self._load_data(step_idx, data_type='eval')
+        self._load_data(step_idx, data_type='eval', state_mapping=state_mapping)
 
         # Make sure all known tensors are updated.
         if len(self._loaded_eval_data) == 0:
@@ -422,13 +460,17 @@ class TFEPLogger:
                 self._loaded_eval_data[name] = np.concatenate((current_arr, value))
 
         # Update file on disk.
-        self._dump_data(data_type='eval')
+        self._dump_data(data_type='eval', state_mapping=state_mapping)
 
-    def save_train_tensors(self, tensors, step_idx=None, epoch_idx=None, batch_idx=None):
+    def save_train_tensors(
+            self,
+            tensors: dict,
+            step_idx: Optional[int] = None,
+            epoch_idx: Optional[int] = None,
+            batch_idx: Optional[int] = None,
+            state_mapping: Optional[Tuple[int, int]] = None,
+    ):
         """Save the tensors generated during the given epoch/batch/step of training.
-
-        At least one between ``step_idx`` and ``epoch_idx``/``batch_idx`` must
-        be passed.
 
         Parameters
         ----------
@@ -443,7 +485,9 @@ class TFEPLogger:
         batch_idx : int or None
             If given together with ``epoch_idx``, the tensors for this epoch/batch
             are saved. Otherwise, the data is assumed to be for the entire epoch.
-
+        state_mapping : Tuple[int, int], optional
+            A tuple (from_state, to_state) indicating the state mapping.
+            If None, defaults to the first available mapping.
         """
         # Warn the user about missing dataset_sample_index nor trajectory_sample_index.
         self._warn_if_no_indices(tensors)
@@ -451,9 +495,15 @@ class TFEPLogger:
         # Validate input arguments.
         _, epoch_idx, batch_idx = self._validate_indices(
             step_idx, epoch_idx, batch_idx, need_batch=False)
+        
+        # Use default state mapping if none provided
+        if state_mapping is None:
+            state_mapping = self._state_mappings[0]
+        elif state_mapping not in self._state_mappings:
+            raise ValueError(f"Invalid state mapping {state_mapping}. Must be one of {self._state_mappings}")
 
         # Load in memory the data of this epoch.
-        self._load_data(epoch_idx, data_type='train')
+        self._load_data(epoch_idx, data_type='train', state_mapping=state_mapping)
 
         # Update all tensors.
         mask = self._loaded_train_data[self.MASK_NAME]
@@ -479,115 +529,124 @@ class TFEPLogger:
                 mask[first:first+len(value)] = True
 
         # Update file on disk.
-        self._dump_data(data_type='train')
+        self._dump_data(data_type='train', state_mapping=state_mapping)
 
-    # --------------------- #
-    # Private class members #
-    # --------------------- #
 
-    @classmethod
-    def _warn_if_no_indices(cls, tensors):
-        """Raise a warning if tensors does not contain dataset or trajectory sample indices."""
-        for index_name in cls.INDEX_NAMES:
-            if index_name in tensors:
-                return  # Found.
-        warnings.warn(("tensors does not contain any sample indices among the "
-                       "following attributes: {}. Without it, it might be "
-                       "difficult to match training and evaluation configurations "
-                       "to their reference potential.").format(cls.INDEX_NAMES))
+    def _dump_data(self, data_type: str, state_mapping: Tuple[int, int]):
+        """Dump the currently loaded data to the HDF5 file.
 
-    def _build_mask(self, remove_nans, data_type):
-        """Return a boolean mask to select the data elements to mask.
-
-        If no mask must be used, returns None.
-
-        data_type can be 'train' or 'eval'.
+        Parameters
+        ----------
+        data_type : str
+            Either 'train' or 'eval'
+        state_mapping : Tuple[int, int]
+            The state mapping (from_state, to_state)
         """
-        # Shortcut.
-        is_eval = data_type == 'eval'
-
-        # Load the data to build the NaN mask.
-        data_attr = '_loaded_' + data_type + '_data'  # e.g., _loaded_train_data
-        loaded_data = getattr(self, data_attr)
-
-        # No need to use a mask for eval data if remove_nans is False.
-        if remove_nans is False:
-            if is_eval:
-                return None
+        data_attr = '_loaded_' + data_type + '_data'
+        idx_attr = '_loaded_' + data_type + '_idx'
+        idx = getattr(self, idx_attr)
+        
+        file_path = self._get_data_file_path(data_type, idx)
+        group_name = self._get_group_name(state_mapping)
+        
+        with h5py.File(file_path, 'a') as f:
+            # Create group if it doesn't exist
+            if group_name not in f:
+                group = f.create_group(group_name)
+                # Store state mapping as attributes
+                from_state, to_state = state_mapping
+                group.attrs['from_state'] = from_state
+                group.attrs['to_state'] = to_state
+                group.attrs['from_state_name'] = self._state_names[from_state]
+                group.attrs['to_state_name'] = self._state_names[to_state]
             else:
-                return loaded_data[self.MASK_NAME]
+                group = f[group_name]
+            
+            # Store the data
+            for name, data in getattr(self, data_attr).items():
+                if name in group:
+                    del group[name]  # Delete existing dataset if it exists
+                group.create_dataset(name, data=data, compression='gzip')
 
-        # Build the NaN mask.
-        if remove_nans is True:
-            mask = None
-            for name, value in loaded_data.items():
-                if name != self.MASK_NAME:
-                    if mask is None:
-                        mask = ~np.isnan(value)
-                    else:
-                        mask &= ~np.isnan(value)
-        else:
-            # Then assume it is a key.
-            mask = ~np.isnan(loaded_data[remove_nans])
+    def _get_data_file_path(self, data_type: str, idx: int) -> str:
+        """Get the path to the HDF5 file for the given data type and index.
 
-        # Add the invalid training data mask.
-        if not is_eval:
-            mask &= loaded_data[self.MASK_NAME]
+        Parameters
+        ----------
+        data_type : str
+            Either 'train' or 'eval'
+        idx : int
+            The epoch or step index
 
-        return mask
-
-    def _dump_data(self, data_type):
-        """Dump on disk the currently loaded training data."""
-        data_attr = '_loaded_' + data_type + '_data'  # e.g., _loaded_train_data
-        file_path = self._get_data_file_path(data_type)
-        np.savez_compressed(file_path, **getattr(self, data_attr))
-
-    def _get_data_file_path(self, data_type):
-        """The file path where the currently loaded training/evaluation data is stored.
-
-        data_type can be 'train' or 'eval'.
+        Returns
+        -------
+        str
+            The path to the HDF5 file
         """
-        idx_attr = '_loaded_' + data_type + '_idx'  # e.g., _loaded_train_idx
-        idx_str = str(getattr(self, idx_attr))
-
         if data_type == 'eval':
-            file_name = 'step-' + idx_str
+            file_name = f'step-{idx}.h5'
             dir_path = self._eval_dir_path
         else:  # train
-            file_name = 'epoch-' + idx_str
+            file_name = f'epoch-{idx}.h5'
             dir_path = self._train_dir_path
 
-        return os.path.join(dir_path, file_name + '.npz')
+        return os.path.join(dir_path, file_name)
 
-    def _load_data(self, idx, data_type):
+    def _get_group_name(self, state_mapping: Tuple[int, int]) -> str:
+        """Get the HDF5 group name for the given state mapping.
+
+        Parameters
+        ----------
+        state_mapping : Tuple[int, int]
+            The state mapping (from_state, to_state)
+
+        Returns
+        -------
+        str
+            The group name in format "state_X_state_Y"
+        """
+        from_state, to_state = state_mapping
+        return f"{self._state_names[from_state]}_{self._state_names[to_state]}"
+
+    def _load_data(self, idx: int, data_type: str, state_mapping: Tuple[int, int]):
         """Load/initialize the training/evaluation data in memory.
 
-        data_type can be 'train' or 'eval'.
+        Parameters
+        ----------
+        idx : int
+            The index of the data to load
+        data_type : str
+            Either 'train' or 'eval'
+        state_mapping : Tuple[int, int]
+            The state mapping (from_state, to_state)
         """
-        # Check if we have already loaded the data.
-        idx_attr = '_loaded_' + data_type + '_idx'  # e.g., _loaded_train_idx
+        # Check if we have already loaded the data
+        idx_attr = '_loaded_' + data_type + '_idx'
         if getattr(self, idx_attr) == idx:
             return
 
-        # Point to new data file.
+        # Point to new data
         setattr(self, idx_attr, idx)
 
-        # Check if there is data on disk.
-        data_attr = '_loaded_' + data_type + '_data'  # e.g., _loaded_train_data
-        file_path = self._get_data_file_path(data_type)
+        # Check if there is data in the HDF5 file
+        file_path = self._get_data_file_path(data_type, idx)
+        group_name = self._get_group_name(state_mapping)
+        
         if os.path.isfile(file_path):
-            # NpzFile offers lazy loading, but we load everything into memory
-            # for now to avoid having to deal with correctly closing the file.
-            npz_file = np.load(file_path)
-            setattr(self, data_attr, {k: v for k, v in npz_file.items()})
+            with h5py.File(file_path, 'r') as f:
+                if group_name in f:
+                    # Load data from HDF5
+                    data_attr = '_loaded_' + data_type + '_data'
+                    setattr(self, data_attr, {k: v[()] for k, v in f[group_name].items()})
+                    return
+
+        # Initialize new data if file or group doesn't exist
+        if data_type == 'eval':
+            data = {}
         else:
-            # Initialize the data for this epoch.
-            if data_type == 'eval':
-                data = {}
-            else:
-                # Training data requires a mask.
-                data = {self.MASK_NAME: np.full(self.n_samples_per_epoch, fill_value=False)}
-            setattr(self, data_attr, data)
+            # Training data requires a mask
+            data = {self.MASK_NAME: np.full(self.n_samples_per_epoch, fill_value=False)}
+        setattr(self, '_loaded_' + data_type + '_data', data)
 
     def _metadata_from_data(self, data_loader):
         """Load metadata from the DataLoader."""
@@ -607,39 +666,53 @@ class TFEPLogger:
             self._n_samples_per_epoch = n_dataset_samples
 
     def _metadata_from_file(self, file_path):
-        """Load batch and epoch size from disk."""
+        """Load metadata from disk.
+
+        Parameters
+        ----------
+        file_path : str
+            Path to the metadata file.
+        """
         with open(file_path, 'r') as f:
             metadata = json.load(f)
+        
+        # Load basic metadata
         self._batch_size = metadata['batch_size']
         self._n_samples_per_epoch = metadata['n_samples_per_epoch']
+        
+        # Load state-related metadata
+        self._n_states = metadata.get('n_states', 2)
+        self._state_names = metadata.get('state_names', [f'state_{i}' for i in range(self._n_states)])
+        
+        # Load state mappings
+        state_mappings = metadata.get('state_mappings', [])
+        if state_mappings:
+            # Convert string mappings back to tuples
+            self._state_mappings = [tuple(map(int, mapping.split('_'))) for mapping in state_mappings]
+        else:
+            # Generate default mappings if not found
+            self._state_mappings = []
+            for i in range(self._n_states):
+                for j in range(self._n_states):
+                    if i != j:  # Exclude self-mappings
+                        self._state_mappings.append((i, j))
 
     def _save_metadata(self, file_path):
-        """Save metadata to disk."""
+        """Save metadata to disk.
+
+        Parameters
+        ----------
+        file_path : str
+            Path to the metadata file.
+        """
         metadata = {
             'batch_size': self.batch_size,
             'n_samples_per_epoch': self.n_samples_per_epoch,
-            'version': self.VERSION
+            'version': self.VERSION,
+            'n_states': self._n_states,
+            'state_names': self._state_names,
+            'state_mappings': [f"{i}_{j}" for i, j in self._state_mappings]
         }
         with open(file_path, 'w') as f:
             json.dump(metadata, f)
 
-    def _validate_indices(self, step_idx, epoch_idx, batch_idx, need_batch):
-        """Check and return step epoch and batch indices.
-
-        If need_batch is True, an error is raised if the batch cannot be determined.
-        """
-        n_batches_per_epoch = self.n_batches_per_epoch
-
-        if step_idx is not None:
-            # Both epoch and batch can be determined.
-            epoch_idx, batch_idx = divmod(step_idx, n_batches_per_epoch)
-        elif epoch_idx is None:
-            raise ValueError("Either step_idx or epoch_idx must be passed.")
-        elif batch_idx is None:
-            if need_batch:
-                raise ValueError("To save tensors either 'step_idx' or both "
-                                 "'epoch_idx' and 'batch_idx' must be passed.")
-        else:
-            step_idx = epoch_idx * n_batches_per_epoch + batch_idx
-
-        return step_idx, epoch_idx, batch_idx
