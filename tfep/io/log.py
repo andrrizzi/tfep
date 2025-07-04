@@ -85,6 +85,8 @@ class BaseLogger:
         return self._save_dir_path
 
     def _metadata_from_data(self, data_loader):
+        """Load metadata from the DataLoader."""
+        # batch_size and drop_last could be in DataLoader or in a batch sampler.
         self._batch_size = data_loader.batch_size
         if self._batch_size is None:
             self._batch_size = data_loader.batch_sampler.batch_size
@@ -98,12 +100,14 @@ class BaseLogger:
             self._n_samples_per_epoch = n_dataset_samples
 
     def _metadata_from_file(self, file_path):
+        """Load batch and epoch size from disk."""
         with open(file_path, 'r') as f:
             metadata = json.load(f)
         self._batch_size = metadata['batch_size']
         self._n_samples_per_epoch = metadata['n_samples_per_epoch']
 
     def _save_metadata(self, file_path):
+        """Save metadata to disk."""
         metadata = {
             'batch_size': self.batch_size,
             'n_samples_per_epoch': self.n_samples_per_epoch,
@@ -124,6 +128,10 @@ class BaseLogger:
                        "to their reference potential.").format(cls.INDEX_NAMES))
         
     def _validate_indices(self, step_idx, epoch_idx, batch_idx, need_batch):
+        """Check and return step epoch and batch indices.
+
+        If need_batch is True, an error is raised if the batch cannot be determined.
+        """
         n_batches_per_epoch = self.n_batches_per_epoch
         if step_idx is not None:
             epoch_idx, batch_idx = divmod(step_idx, n_batches_per_epoch)
