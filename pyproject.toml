@@ -26,6 +26,7 @@ dependencies = [
     "numpy<2.0",
     "pint",
     "lightning>=2.0",
+    "h5py>=3.8",
 ]
 
 # Update the urls once the hosting is set up.
