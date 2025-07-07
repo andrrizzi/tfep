@@ -44,6 +44,9 @@ class BaseLogger:
         self._train_dir_path = os.path.join(save_dir_path, train_subdir_name)
         self._eval_dir_path = os.path.join(save_dir_path, eval_subdir_name)
 
+        self._train_subdir_name = train_subdir_name
+        self._eval_subdir_name = eval_subdir_name
+
         metadata_file_path = os.path.join(save_dir_path, self.METADATA_FILE_NAME)
         resume = os.path.isfile(metadata_file_path)
         if resume:
@@ -83,6 +86,16 @@ class BaseLogger:
     def save_dir_path(self):
         """The path to the main directory where the data is stored."""
         return self._save_dir_path
+    
+    @property
+    def train_dir_path(self):
+        """The path to the training directory."""
+        return self._train_dir_path
+
+    @property
+    def eval_dir_path(self):
+        """The path to the evaluation directory."""
+        return self._eval_dir_path
 
     def _metadata_from_data(self, data_loader):
         """Load metadata from the DataLoader."""
