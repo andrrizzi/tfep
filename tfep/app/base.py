@@ -25,6 +25,7 @@ import torch
 import tfep.loss
 import tfep.io.sampler
 from tfep.utils.misc import atom_to_flattened_indices, remove_and_shift_sorted_indices
+from tfep.io.log import TMBARLogger
 
 
 # =============================================================================
@@ -973,3 +974,309 @@ class TFEPMapBase(ABC, lightning.LightningModule):
             indices = atom_to_flattened_indices(indices)
 
         return indices
+
+
+class TMBARMapBase(TFEPMapBase):
+    """
+    Base class for multi-directional TFEP maps using TMBARLogger for bidirectional training.
+    
+    This class extends TFEPMapBase to support training a single model in both forward and reverse 
+    directions simultaneously. It takes two datasets (one for each direction) and in each training 
+    step performs both forward (0→1) and reverse (1→0) mappings, computing and logging losses 
+    for both directions.
+    
+    Key Features:
+    - Takes two coordinate file paths for bidirectional training
+    - Uses TMBARLogger for multi-state logging with proper state mappings
+    - Combines losses from both directions for optimization
+    - Supports all TFEPMapBase features (mapped/conditioning/fixed atoms, reference frames, etc.)
+    
+    Subclasses should implement configure_flow() to define the specific flow architecture.
+    
+    Examples
+    --------
+    >>> from tfep.potentials.psi4 import Psi4Potential
+    >>> units = pint.UnitRegistry()
+    >>>
+    >>> class CartesianTBARMap(TMBARMapBase):
+    ...     def configure_flow(self):
+    ...         # Your flow configuration here
+    ...         pass
+    >>>
+    >>> tfep_map = CartesianTBARMap(
+    ...     potential_energy_func=Psi4Potential(name='mp2'),
+    ...     topology_file_path='path/to/topology.psf',
+    ...     coordinates_file_path='path/to/forward_trajectory.dcd',
+    ...     coordinates_file_path_2='path/to/reverse_trajectory.dcd',
+    ...     temperature=300*units.kelvin,
+    ...     batch_size=64,
+    ...     mapped_atoms='resname MOL',
+    ...     conditioning_atoms=range(10, 20),
+    ... )
+    >>>
+    >>> # Train the flow in both directions
+    >>> import lightning
+    >>> trainer = lightning.Trainer()
+    >>> trainer.fit(tfep_map)
+    """
+    def __init__(
+        self,
+        potential_energy_func: torch.nn.Module,
+        topology_file_path: str,
+        coordinates_file_path: Union[str, Sequence[str]],
+        coordinates_file_path_2: Union[str, Sequence[str]],  # Second dataset for reverse direction
+        temperature: pint.Quantity,
+        batch_size: int = 1,
+        mapped_atoms: Optional[Union[Sequence[int], str]] = None,
+        conditioning_atoms: Optional[Union[Sequence[int], str]] = None,
+        origin_atom: Optional[Union[int, str]] = None,
+        axes_atoms: Optional[Union[Sequence[int], str]] = None,
+        tfep_logger_dir_path: str = 'tfep_logs',
+        dataloader_kwargs: Optional[Dict] = None,
+        n_states: int = 2,
+        state_names: Optional[list[str]] = None,
+        **kwargs,
+    ):
+        super().__init__(
+            potential_energy_func=potential_energy_func,
+            topology_file_path=topology_file_path,
+            coordinates_file_path=coordinates_file_path,
+            temperature=temperature,
+            batch_size=batch_size,
+            mapped_atoms=mapped_atoms,
+            conditioning_atoms=conditioning_atoms,
+            origin_atom=origin_atom,
+            axes_atoms=axes_atoms,
+            tfep_logger_dir_path=tfep_logger_dir_path,
+            dataloader_kwargs=dataloader_kwargs,
+        )
+        self.n_states = n_states
+        self.state_names = state_names if state_names is not None else [f'state_{i}' for i in range(n_states)]
+        self.state_mappings = [(i, j) for i in range(n_states) for j in range(n_states) if i != j]
+        self._tmb_logger = None  # Will be initialized in train_dataloader
+        self._extra_kwargs = kwargs
+        
+        # Store the second dataset path
+        self._coordinates_file_path_2 = coordinates_file_path_2
+        self.dataset_2 = None  # Second dataset
+
+    def setup(self, stage: str = 'fit'):
+        """Lightning method. Create both datasets."""
+        # Create first dataset (from parent)
+        self.dataset = self.create_dataset()
+        
+        # Create second dataset
+        self.dataset_2 = self.create_dataset_2()
+        
+        # Identify mapped, conditioning, and fixed atom indices (using first dataset)
+        self.determine_atom_indices()
+
+        # Create model.
+        flow = self.configure_flow()
+
+        # Wrap in partial flow(s) to carry over the fixed degrees of freedom.
+        self._flow = self.create_partial_flow(flow)
+
+    def create_dataset_2(self):
+        """Create and return the second Dataset object."""
+        universe = self.create_universe_2()
+        return tfep.io.TrajectoryDataset(universe=universe)
+
+    def create_universe_2(self):
+        """Create and return the second MDAnalysis Universe."""
+        return MDAnalysis.Universe(self._topology_file_path, *self._coordinates_file_path_2)
+
+    def train_dataloader(self):
+        """Create a dataloader that yields batches from both datasets."""
+        # Create dataloaders for both datasets
+        if self._dataloader_kwargs is None:
+            dataloader_kwargs = {}
+        else:
+            dataloader_kwargs = self._dataloader_kwargs.copy()
+
+        # Create batch samplers for both datasets
+        batch_sampler_1 = tfep.io.StatefulBatchSampler(
+            self.dataset,
+            batch_size=self.hparams.batch_size,
+            shuffle=True,
+            drop_last=False,
+            trainer=self.trainer,
+        )
+        
+        batch_sampler_2 = tfep.io.StatefulBatchSampler(
+            self.dataset_2,
+            batch_size=self.hparams.batch_size,
+            shuffle=True,
+            drop_last=False,
+            trainer=self.trainer,
+        )
+
+        # Create dataloaders
+        data_loader_1 = torch.utils.data.DataLoader(
+            self.dataset,
+            batch_sampler=batch_sampler_1,
+            **dataloader_kwargs,
+        )
+        
+        data_loader_2 = torch.utils.data.DataLoader(
+            self.dataset_2,
+            batch_sampler=batch_sampler_2,
+            **dataloader_kwargs,
+        )
+
+        # Create a combined dataloader that yields batches from both datasets
+        combined_loader = self._create_combined_dataloader(data_loader_1, data_loader_2)
+        
+        # Initialize TMBARLogger with the combined loader
+        self._tmb_logger = TMBARLogger(
+            save_dir_path=self._tfep_logger_dir_path,
+            data_loader=combined_loader,
+            n_states=self.n_states,
+            state_names=self.state_names,
+        )
+        
+        return combined_loader
+
+    def _create_combined_dataloader(self, data_loader_1, data_loader_2):
+        """Create a dataloader that yields batches from both datasets."""
+        class CombinedDataLoader:
+            def __init__(self, dl1, dl2):
+                self.dl1 = dl1
+                self.dl2 = dl2
+                self.dl1_iter = iter(dl1)
+                self.dl2_iter = iter(dl2)
+                
+            def __iter__(self):
+                self.dl1_iter = iter(self.dl1)
+                self.dl2_iter = iter(self.dl2)
+                return self
+                
+            def __next__(self):
+                try:
+                    batch_1 = next(self.dl1_iter)
+                    batch_2 = next(self.dl2_iter)
+                    return {'batch_1': batch_1, 'batch_2': batch_2}
+                except StopIteration:
+                    raise StopIteration
+                    
+            def __len__(self):
+                return min(len(self.dl1), len(self.dl2))
+        
+        return CombinedDataLoader(data_loader_1, data_loader_2)
+
+    def _compute_direction_loss(self, batch_data, direction_func, state_mapping, batch_idx):
+        """
+        Compute loss for a single direction (forward or reverse).
+        
+        Parameters
+        ----------
+        batch_data : dict
+            Batch data for this direction
+        direction_func : callable
+            Function to call (self.forward or self.inverse)
+        state_mapping : tuple
+            State mapping tuple (i, j)
+        batch_idx : int
+            Current batch index
+            
+        Returns
+        -------
+        loss : torch.Tensor
+            Computed loss for this direction
+        """
+        # Apply the direction function (forward or inverse)
+        result = direction_func(batch_data)
+        
+        # Compute potential energy
+        try:
+            potential = self._potential_energy_func(result['positions'], batch_data['dimensions'])
+        except KeyError:
+            potential = self._potential_energy_func(result['positions'])
+        log_det_J = result['log_det_J']
+        
+        # Convert potentials to units of kT
+        potential = potential / self._kT
+        
+        # Convert bias to units of kT
+        try:
+            log_weights = batch_data['log_weights']
+        except KeyError:
+            try:
+                log_weights = batch_data['bias'] / self._kT
+            except KeyError:
+                log_weights = None
+                
+        # Compute loss
+        loss = self._loss_func(
+            target_potentials=potential,
+            log_det_J=log_det_J,
+            log_weights=log_weights,
+        )
+        
+        # Add regularization for continuous flows
+        if 'regularization' in result:
+            loss = loss + result['regularization'].mean()
+        
+        # Log with TMBARLogger
+        self._tmb_logger.save_train_tensors(
+            tensors={
+                'dataset_sample_index': batch_data['dataset_sample_index'],
+                'trajectory_sample_index': batch_data['trajectory_sample_index'],
+                'potential': potential,
+                'log_det_J': log_det_J,
+                **{k: v for k, v in result.items() if v.shape == log_det_J.shape},
+            },
+            epoch_idx=self.trainer.current_epoch,
+            batch_idx=batch_idx,
+            state_mapping=state_mapping,
+        )
+        
+        # Log loss for this direction
+        self.log(f'loss_{state_mapping[0]}_{state_mapping[1]}', loss)
+        
+        return loss
+
+    def training_step(self, batch, batch_idx):
+        """
+        Perform training for both forward and reverse directions.
+        
+        For each batch, this method:
+        1. Computes forward direction loss (0→1) using batch_1 data
+        2. Computes reverse direction loss (1→0) using batch_2 data  
+        3. Logs both directions separately with TMBARLogger
+        4. Returns the average loss over both directions
+        
+        Parameters
+        ----------
+        batch : dict
+            Dictionary containing 'batch_1' and 'batch_2' data
+        batch_idx : int
+            Current batch index
+            
+        Returns
+        -------
+        total_loss : torch.Tensor
+            Average loss over both directions
+        """
+        total_loss = 0
+        n_directions = 0
+        
+        # Forward direction (0 -> 1)
+        loss_forward = self._compute_direction_loss(
+            batch['batch_1'], self.forward, (0, 1), batch_idx
+        )
+        total_loss += loss_forward
+        n_directions += 1
+        
+        # Reverse direction (1 -> 0)
+        loss_reverse = self._compute_direction_loss(
+            batch['batch_2'], self.inverse, (1, 0), batch_idx
+        )
+        total_loss += loss_reverse
+        n_directions += 1
+        
+        # Average loss over both directions
+        if n_directions > 0:
+            total_loss = total_loss / n_directions
+        self.log('loss', total_loss)
+        return total_loss
