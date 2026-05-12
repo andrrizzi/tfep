@@ -108,3 +108,44 @@ class PotentialBase(torch.nn.Module):
         if self._energy_unit is not None:
             return self._energy_unit._REGISTRY
         return pint.UnitRegistry()
+
+
+# =============================================================================
+# MULTI-STATE POTENTIAL WRAPPER
+# =============================================================================
+
+class MultiStatePotential(torch.nn.Module):
+    """A simple container for multiple :class:`~tfep.potentials.base.PotentialBase` objects.
+
+    This is useful for multi-state training/evaluation (e.g., bidirectional
+    TMBAR/TFEP demos) where the caller wants a single module exposing
+    ``energy(state, positions, dimensions=None)``.
+
+    Notes
+    -----
+    - The wrapped potentials are stored in a :class:`torch.nn.ModuleList` so
+      their parameters move with `.to(device)`.
+    - All potentials are assumed to use consistent units.
+    """
+
+    def __init__(self, *potentials: torch.nn.Module):
+        super().__init__()
+        self.potentials = torch.nn.ModuleList(list(potentials))
+
+    @property
+    def energy_unit(self):
+        return getattr(self.potentials[0], "energy_unit", None)
+
+    @property
+    def positions_unit(self):
+        return getattr(self.potentials[0], "positions_unit", None)
+
+    def energy(self, state: int, positions: torch.Tensor, dimensions: Optional[torch.Tensor] = None) -> torch.Tensor:
+        pot = self.potentials[int(state)]
+        if dimensions is None:
+            return pot(positions)
+        try:
+            return pot(positions, dimensions)
+        except TypeError:
+            # Some potentials ignore periodic box vectors.
+            return pot(positions)

@@ -370,7 +370,9 @@ def reference_frame_rotation_matrix(
 
     # If axis_atom_positions lies exactly on axis, any perpendicular vector
     # will do. Shape (batch_size,).
-    is_parallel = torch.isclose(rotation_vectors, torch.zeros(1)).all(dim=1)
+    # NOTE: be device-safe (avoid creating CPU tensors when the flow runs on CUDA).
+    z = torch.zeros(1, device=rotation_vectors.device, dtype=rotation_vectors.dtype)
+    is_parallel = torch.isclose(rotation_vectors, z).all(dim=1)
     rotation_vectors[is_parallel] = torch.cross(plane_axis, axis, dim=0)
 
     # Find the first rotation angle. r1_angle has shape (batch_size,).

@@ -976,55 +976,97 @@ class TFEPMapBase(ABC, lightning.LightningModule):
         return indices
 
 
+
+
+# =============================================================================
+# TMBAR HELPERS
+# =============================================================================
+
+class _LenDataset:
+    """A minimal object implementing only ``__len__``.
+
+    Used to provide a ``dataset`` attribute for dataloaders that are not real
+    ``torch.utils.data.DataLoader`` instances (e.g., combined loaders).
+    """
+
+    def __init__(self, n: int):
+        self._n = int(n)
+
+    def __len__(self):
+        return self._n
+
+
+class CombinedDataLoaderCompat:
+    """A minimal combined dataloader that exposes metadata used by TFEP/TMBAR loggers.
+
+    Lightning supports returning arbitrary iterables from ``train_dataloader``.
+    However, :class:`tfep.io.TMBARLogger` expects the object passed as
+    ``data_loader`` to expose ``batch_size``, ``drop_last``, and ``dataset``.
+
+    This wrapper yields a dict with keys ``'batch_1'`` and ``'batch_2'`` and
+    iterates for ``min(len(loader0), len(loader1))`` batches.
+    """
+
+    def __init__(self, loader0, loader1):
+        self.loader0 = loader0
+        self.loader1 = loader1
+
+        # Prefer explicit batch_size; fall back to batch_sampler metadata.
+        bs = getattr(loader0, 'batch_size', None)
+        if bs is None and getattr(loader0, 'batch_sampler', None) is not None:
+            bs = getattr(loader0.batch_sampler, 'batch_size', None)
+        self.batch_size = bs
+
+        drop_last = getattr(loader0, 'drop_last', None)
+        if drop_last is None and getattr(loader0, 'batch_sampler', None) is not None:
+            drop_last = getattr(loader0.batch_sampler, 'drop_last', None)
+        self.drop_last = bool(drop_last)
+
+        # The logger uses len(dataset) to compute buffer sizes; use the min.
+        n0 = len(getattr(loader0, 'dataset', _LenDataset(len(loader0))))
+        n1 = len(getattr(loader1, 'dataset', _LenDataset(len(loader1))))
+        self.dataset = _LenDataset(min(n0, n1))
+
+    def __len__(self):
+        return min(len(self.loader0), len(self.loader1))
+
+    def __iter__(self):
+        it0 = iter(self.loader0)
+        it1 = iter(self.loader1)
+        for _ in range(len(self)):
+            yield {'batch_1': next(it0), 'batch_2': next(it1)}
+
+
+# =============================================================================
+# TMBAR MAP BASE CLASS
+# =============================================================================
+
 class TMBARMapBase(TFEPMapBase):
+    """Base class for bidirectional TFEP maps logged with :class:`tfep.io.TMBARLogger`.
+
+    This class extends :class:`~tfep.app.base.TFEPMapBase` to support training a
+    **single** invertible model in both directions (0→1 and 1→0) using two
+    independent datasets (typically trajectories sampled at two different
+    potentials).
+
+    Key guarantees (to match the historical monolithic scripts):
+    - Correct **target** potential is used for each direction.
+    - The combined dataloader exposes metadata required by :class:`TMBARLogger`.
+    - Batch samplers use ``drop_last=True`` so logger preallocation matches
+      the number of samples actually produced.
+
+    To compute generalized works outside the model, you typically use the saved
+    tensors ``potential`` (destination reduced potential) and ``log_det_J`` and
+    subtract the appropriate source reduced potentials computed on the original
+    frames.
     """
-    Base class for multi-directional TFEP maps using TMBARLogger for bidirectional training.
-    
-    This class extends TFEPMapBase to support training a single model in both forward and reverse 
-    directions simultaneously. It takes two datasets (one for each direction) and in each training 
-    step performs both forward (0→1) and reverse (1→0) mappings, computing and logging losses 
-    for both directions.
-    
-    Key Features:
-    - Takes two coordinate file paths for bidirectional training
-    - Uses TMBARLogger for multi-state logging with proper state mappings
-    - Combines losses from both directions for optimization
-    - Supports all TFEPMapBase features (mapped/conditioning/fixed atoms, reference frames, etc.)
-    
-    Subclasses should implement configure_flow() to define the specific flow architecture.
-    
-    Examples
-    --------
-    >>> from tfep.potentials.psi4 import Psi4Potential
-    >>> units = pint.UnitRegistry()
-    >>>
-    >>> class CartesianTBARMap(TMBARMapBase):
-    ...     def configure_flow(self):
-    ...         # Your flow configuration here
-    ...         pass
-    >>>
-    >>> tfep_map = CartesianTBARMap(
-    ...     potential_energy_func=Psi4Potential(name='mp2'),
-    ...     topology_file_path='path/to/topology.psf',
-    ...     coordinates_file_path='path/to/forward_trajectory.dcd',
-    ...     coordinates_file_path_2='path/to/reverse_trajectory.dcd',
-    ...     temperature=300*units.kelvin,
-    ...     batch_size=64,
-    ...     mapped_atoms='resname MOL',
-    ...     conditioning_atoms=range(10, 20),
-    ... )
-    >>>
-    >>> # Train the flow in both directions
-    >>> import lightning
-    >>> trainer = lightning.Trainer()
-    >>> trainer.fit(tfep_map)
-    """
+
     def __init__(
         self,
         potential_energy_func: torch.nn.Module,
         topology_file_path: str,
         coordinates_file_path: Union[str, Sequence[str]],
-        coordinates_file_path_2: Union[str, Sequence[str]],  # Second dataset for reverse direction
+        coordinates_file_path_2: Union[str, Sequence[str]],
         temperature: pint.Quantity,
         batch_size: int = 1,
         mapped_atoms: Optional[Union[Sequence[int], str]] = None,
@@ -1035,6 +1077,15 @@ class TMBARMapBase(TFEPMapBase):
         dataloader_kwargs: Optional[Dict] = None,
         n_states: int = 2,
         state_names: Optional[list[str]] = None,
+        bar_regularizer: Optional[object] = None,
+        *,
+        objective: Literal['kl', 'bar', 'hybrid'] = 'kl',
+        lambda_bar: float = 1.0,
+        bar_detach_df: bool = True,
+        bar_warm_start: bool = True,
+        bar_max_iter: int = 25,
+        bar_tol: float = 1e-10,
+        logJ_penalty_weight: float = 0.0,
         **kwargs,
     ):
         super().__init__(
@@ -1050,233 +1101,368 @@ class TMBARMapBase(TFEPMapBase):
             tfep_logger_dir_path=tfep_logger_dir_path,
             dataloader_kwargs=dataloader_kwargs,
         )
-        self.n_states = n_states
-        self.state_names = state_names if state_names is not None else [f'state_{i}' for i in range(n_states)]
-        self.state_mappings = [(i, j) for i in range(n_states) for j in range(n_states) if i != j]
-        self._tmb_logger = None  # Will be initialized in train_dataloader
-        self._extra_kwargs = kwargs
-        
-        # Store the second dataset path
-        self._coordinates_file_path_2 = coordinates_file_path_2
-        self.dataset_2 = None  # Second dataset
 
+        if n_states != 2:
+            raise ValueError(
+                'TMBARMapBase currently supports exactly two states (n_states=2). '
+                'For >2 states, use/implement a multi-dataset variant.'
+            )
+
+        self.n_states = int(n_states)
+        self.state_names = state_names if state_names is not None else [f'state_{i}' for i in range(self.n_states)]
+        self.state_mappings = [(0, 1), (1, 0)]
+
+        self._coordinates_file_path_2 = coordinates_file_path_2
+        self.dataset_2 = None
+
+        self._tmb_logger: Optional[TMBARLogger] = None
+
+        # Mid-epoch resuming: we need one sampler per dataset.
+        self._stateful_batch_sampler_0 = None
+        self._stateful_batch_sampler_1 = None
+
+        # Optional minibatch regularizer (e.g., BAR-like consistency term).
+        self._bar_regularizer = bar_regularizer
+
+        # Keep extra kwargs for child classes.
+        self._extra_kwargs = kwargs
+
+        self._objective = str(objective)
+
+        if self._objective not in ('kl', 'bar', 'hybrid'):
+            raise ValueError(
+                f"Unsupported objective {self._objective!r}. "
+                "Expected one of: 'kl', 'bar', 'hybrid'."
+            )
+
+        self._lambda_bar = float(lambda_bar)
+        self._bar_detach_df = bool(bar_detach_df)
+        self._bar_warm_start = bool(bar_warm_start)
+        self._bar_max_iter = int(bar_max_iter)
+        self._bar_tol = float(bar_tol)
+        self._logJ_penalty_weight = float(logJ_penalty_weight)
+        self.register_buffer('_last_df_bar_obj', torch.zeros(()), persistent=False)
+
+        if self._objective in ('bar', 'hybrid') and bar_regularizer is not None:
+            raise ValueError(
+                "bar_regularizer is set but objective is 'bar'/'hybrid'. "
+                "This would double-count a BAR-like term. Set bar_regularizer=None."
+            )
+        self._bar_regularizer = bar_regularizer
+    
     def setup(self, stage: str = 'fit'):
-        """Lightning method. Create both datasets."""
-        # Create first dataset (from parent)
+        """Lightning method. Create both datasets and the flow."""
         self.dataset = self.create_dataset()
-        
-        # Create second dataset
         self.dataset_2 = self.create_dataset_2()
-        
-        # Identify mapped, conditioning, and fixed atom indices (using first dataset)
+
+        # Identify mapped/conditioning/fixed indices using the first dataset.
         self.determine_atom_indices()
 
-        # Create model.
         flow = self.configure_flow()
-
-        # Wrap in partial flow(s) to carry over the fixed degrees of freedom.
         self._flow = self.create_partial_flow(flow)
 
     def create_dataset_2(self):
-        """Create and return the second Dataset object."""
         universe = self.create_universe_2()
         return tfep.io.TrajectoryDataset(universe=universe)
 
     def create_universe_2(self):
-        """Create and return the second MDAnalysis Universe."""
-        return MDAnalysis.Universe(self._topology_file_path, *self._coordinates_file_path_2)
+        if isinstance(self._coordinates_file_path_2, str):
+            coords = [self._coordinates_file_path_2]
+        else:
+            coords = list(self._coordinates_file_path_2)
+        return MDAnalysis.Universe(self._topology_file_path, *coords)
+
+    @staticmethod
+    def _strip_batch_sampler_kwargs(d: Dict) -> Dict:
+        """Remove DataLoader kwargs that conflict with passing ``batch_sampler``."""
+        out = d.copy()
+        for bad in ('batch_size', 'shuffle', 'sampler', 'drop_last', 'batch_sampler'):
+            out.pop(bad, None)
+        return out
 
     def train_dataloader(self):
-        """Create a dataloader that yields batches from both datasets."""
-        # Create dataloaders for both datasets
-        if self._dataloader_kwargs is None:
-            dataloader_kwargs = {}
-        else:
-            dataloader_kwargs = self._dataloader_kwargs.copy()
+        """Lightning method. Return a combined loader (state0/state1) with logger metadata."""
+        # Restore sampler states if loaded from checkpoint.
+        state0 = self._stateful_batch_sampler_0 if isinstance(self._stateful_batch_sampler_0, dict) else None
+        state1 = self._stateful_batch_sampler_1 if isinstance(self._stateful_batch_sampler_1, dict) else None
 
-        # Create batch samplers for both datasets
-        batch_sampler_1 = tfep.io.StatefulBatchSampler(
+        dataloader_kwargs = {} if self._dataloader_kwargs is None else self._strip_batch_sampler_kwargs(self._dataloader_kwargs)
+
+        self._stateful_batch_sampler_0 = tfep.io.StatefulBatchSampler(
             self.dataset,
             batch_size=self.hparams.batch_size,
             shuffle=True,
-            drop_last=False,
+            drop_last=True,
             trainer=self.trainer,
         )
-        
-        batch_sampler_2 = tfep.io.StatefulBatchSampler(
+        self._stateful_batch_sampler_1 = tfep.io.StatefulBatchSampler(
             self.dataset_2,
             batch_size=self.hparams.batch_size,
             shuffle=True,
-            drop_last=False,
+            drop_last=True,
             trainer=self.trainer,
         )
+        if state0 is not None:
+            self._stateful_batch_sampler_0.load_state_dict(state0)
+        if state1 is not None:
+            self._stateful_batch_sampler_1.load_state_dict(state1)
 
-        # Create dataloaders
-        data_loader_1 = torch.utils.data.DataLoader(
-            self.dataset,
-            batch_sampler=batch_sampler_1,
-            **dataloader_kwargs,
-        )
-        
-        data_loader_2 = torch.utils.data.DataLoader(
-            self.dataset_2,
-            batch_sampler=batch_sampler_2,
-            **dataloader_kwargs,
-        )
+        loader0 = torch.utils.data.DataLoader(self.dataset, batch_sampler=self._stateful_batch_sampler_0, **dataloader_kwargs)
+        loader1 = torch.utils.data.DataLoader(self.dataset_2, batch_sampler=self._stateful_batch_sampler_1, **dataloader_kwargs)
 
-        # Create a combined dataloader that yields batches from both datasets
-        combined_loader = self._create_combined_dataloader(data_loader_1, data_loader_2)
-        
-        # Initialize TMBARLogger with the combined loader
+        combined_loader = CombinedDataLoaderCompat(loader0, loader1)
+
         self._tmb_logger = TMBARLogger(
             save_dir_path=self._tfep_logger_dir_path,
             data_loader=combined_loader,
             n_states=self.n_states,
             state_names=self.state_names,
         )
-        
+
         return combined_loader
 
-    def _create_combined_dataloader(self, data_loader_1, data_loader_2):
-        """Create a dataloader that yields batches from both datasets."""
-        class CombinedDataLoader:
-            def __init__(self, dl1, dl2):
-                self.dl1 = dl1
-                self.dl2 = dl2
-                self.dl1_iter = iter(dl1)
-                self.dl2_iter = iter(dl2)
-                
-            def __iter__(self):
-                self.dl1_iter = iter(self.dl1)
-                self.dl2_iter = iter(self.dl2)
-                return self
-                
-            def __next__(self):
-                try:
-                    batch_1 = next(self.dl1_iter)
-                    batch_2 = next(self.dl2_iter)
-                    return {'batch_1': batch_1, 'batch_2': batch_2}
-                except StopIteration:
-                    raise StopIteration
-                    
-            def __len__(self):
-                return min(len(self.dl1), len(self.dl2))
-        
-        return CombinedDataLoader(data_loader_1, data_loader_2)
+    def on_load_checkpoint(self, checkpoint: Dict[str, Any]):
+        """Lightning hook. Used to restore batch sampler state for mid-epoch resuming."""
+        # Backward compatibility: accept either the new two-sampler key or the old single one.
+        if 'stateful_batch_samplers' in checkpoint:
+            s = checkpoint['stateful_batch_samplers']
+            self._stateful_batch_sampler_0 = s.get('state0')
+            self._stateful_batch_sampler_1 = s.get('state1')
+        else:
+            # Old checkpoints (if any) stored a single sampler; treat it as state0.
+            self._stateful_batch_sampler_0 = checkpoint.get('stateful_batch_sampler', None)
+            self._stateful_batch_sampler_1 = None
 
-    def _compute_direction_loss(self, batch_data, direction_func, state_mapping, batch_idx):
+    def on_save_checkpoint(self, checkpoint: Dict[str, Any]):
+        """Lightning hook. Store batch sampler state for mid-epoch resuming."""
+        checkpoint['stateful_batch_samplers'] = {
+            'state0': (self._stateful_batch_sampler_0.state_dict() if hasattr(self._stateful_batch_sampler_0, 'state_dict') else self._stateful_batch_sampler_0),
+            'state1': (self._stateful_batch_sampler_1.state_dict() if hasattr(self._stateful_batch_sampler_1, 'state_dict') else self._stateful_batch_sampler_1),
+        }
+
+    def _eval_potential(self, state: int, positions: torch.Tensor, dimensions: Optional[torch.Tensor]):
+        """Evaluate the potential for a specific state.
+
+        Supports:
+        - modules exposing ``energy(state, positions, dimensions=None)``;
+        - indexable containers of per-state potentials (list/tuple/dict);
+        - plain single-state potentials (state is ignored).
         """
-        Compute loss for a single direction (forward or reverse).
-        
-        Parameters
-        ----------
-        batch_data : dict
-            Batch data for this direction
-        direction_func : callable
-            Function to call (self.forward or self.inverse)
-        state_mapping : tuple
-            State mapping tuple (i, j)
-        batch_idx : int
-            Current batch index
-            
-        Returns
-        -------
-        loss : torch.Tensor
-            Computed loss for this direction
-        """
-        # Apply the direction function (forward or inverse)
-        result = direction_func(batch_data)
-        
-        # Compute potential energy
-        try:
-            potential = self._potential_energy_func(result['positions'], batch_data['dimensions'])
-        except KeyError:
-            potential = self._potential_energy_func(result['positions'])
-        log_det_J = result['log_det_J']
-        
-        # Convert potentials to units of kT
-        potential = potential / self._kT
-        
-        # Convert bias to units of kT
-        try:
-            log_weights = batch_data['log_weights']
-        except KeyError:
+        pot = self._potential_energy_func
+
+        if hasattr(pot, 'energy'):
             try:
-                log_weights = batch_data['bias'] / self._kT
-            except KeyError:
-                log_weights = None
-                
-        # Compute loss
+                return pot.energy(state, positions, dimensions)
+            except TypeError:
+                try:
+                    return pot.energy(state, positions)
+                except TypeError:
+                    return pot.energy(positions)
+
+        # Indexable container of potentials.
+        if isinstance(pot, (list, tuple)):
+            pot_state = pot[int(state)]
+        elif isinstance(pot, dict):
+            pot_state = pot[int(state)]
+        else:
+            pot_state = pot
+
+        if dimensions is None:
+            return pot_state(positions)
+        try:
+            return pot_state(positions, dimensions)
+        except TypeError:
+            return pot_state(positions)
+
+    def _compute_direction_step(self, batch_data, direction_func, state_mapping, batch_idx):
+        """Compute loss and log tensors for a single direction."""
+        result = direction_func(batch_data)
+        from_state, to_state = int(state_mapping[0]), int(state_mapping[1])
+        dims = batch_data.get('dimensions', None)
+
+        u_to = self._eval_potential(to_state, result['positions'], dims) / self._kT
+        log_det_J = result['log_det_J']
+
+        # Optional: for BAR-like minibatch penalties.
+        u_from = None
+        need_u_from = (self._bar_regularizer is not None) or (self._objective in ('bar', 'hybrid'))
+        if need_u_from:
+            u_from = self._eval_potential(from_state, batch_data['positions'], dims) / self._kT
+
+
+        # Convert bias to units of kT.
+        if 'log_weights' in batch_data:
+            log_weights = batch_data['log_weights']
+        elif 'bias' in batch_data:
+            log_weights = batch_data['bias'] / self._kT
+        else:
+            log_weights = None
+
         loss = self._loss_func(
-            target_potentials=potential,
+            target_potentials=u_to,
             log_det_J=log_det_J,
             log_weights=log_weights,
         )
-        
-        # Add regularization for continuous flows
+
+        # Add regularization for continuous flows.
         if 'regularization' in result:
             loss = loss + result['regularization'].mean()
-        
-        # Log with TMBARLogger
-        self._tmb_logger.save_train_tensors(
-            tensors={
-                'dataset_sample_index': batch_data['dataset_sample_index'],
-                'trajectory_sample_index': batch_data['trajectory_sample_index'],
-                'potential': potential,
-                'log_det_J': log_det_J,
-                **{k: v for k, v in result.items() if v.shape == log_det_J.shape},
-            },
-            epoch_idx=self.trainer.current_epoch,
-            batch_idx=batch_idx,
-            state_mapping=state_mapping,
+
+        # Log tensors.
+        if self._tmb_logger is not None:
+            self._tmb_logger.save_train_tensors(
+                tensors={
+                    'dataset_sample_index': batch_data['dataset_sample_index'],
+                    'trajectory_sample_index': batch_data['trajectory_sample_index'],
+                    'potential': u_to,
+                    'log_det_J': log_det_J,
+                    **{k: v for k, v in result.items() if hasattr(v, 'shape') and v.shape == log_det_J.shape},
+                },
+                epoch_idx=self.trainer.current_epoch,
+                batch_idx=batch_idx,
+                state_mapping=state_mapping,
+            )
+
+        self.log(f'loss_{from_state}_{to_state}', loss)
+        return loss, u_to, log_det_J, u_from
+
+    @staticmethod
+    def _compute_bidirectional_works(
+            u1_y0: torch.Tensor,
+            logJ01: torch.Tensor,
+            u0_x0: torch.Tensor,
+            u0_y1: torch.Tensor,
+            logJ10: torch.Tensor,
+            u1_x1: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return forward/reverse generalized works in dimensionless kT units."""
+        w01 = (u1_y0 - logJ01) - u0_x0
+        w10 = (u0_y1 - logJ10) - u1_x1
+        return w01, w10
+
+    @staticmethod
+    def _log_sample_ratio(n0: int, n1: int, *, device, dtype) -> torch.Tensor:
+        """Return ``log(n1 / n0)`` as a tensor in the target device/dtype."""
+        return torch.log(
+            torch.as_tensor(float(n1), device=device, dtype=dtype)
+            / torch.as_tensor(float(n0), device=device, dtype=dtype)
         )
-        
-        # Log loss for this direction
-        self.log(f'loss_{state_mapping[0]}_{state_mapping[1]}', loss)
-        
-        return loss
+
+    def _bar_objective_term(
+            self,
+            *,
+            w01: torch.Tensor,
+            w10: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compute BAR objective and detached df estimate for objective=bar/hybrid."""
+        from tfep.regularizers import bar as barlib
+
+        n0 = int(w01.numel())
+        n1 = int(w10.numel())
+        log_ratio = self._log_sample_ratio(n0, n1, device=w01.device, dtype=w01.dtype)
+
+        # Detached Newton solve (optionally warm-started).
+        df_init = self._last_df_bar_obj if self._bar_warm_start else None
+        df_bar = barlib._bar_newton_solve_detached(
+            w01.detach(),
+            w10.detach(),
+            log_ratio=log_ratio.detach(),
+            df_init=df_init.detach() if df_init is not None else None,
+            max_iter=self._bar_max_iter,
+            tol=self._bar_tol,
+        ).detach()
+        self._last_df_bar_obj = df_bar
+
+        df_for_obj = df_bar.detach() if self._bar_detach_df else df_bar
+        bar_obj = barlib.bar_objective(w01, w10, df_for_obj, log_ratio)
+        return bar_obj, df_bar
+
+    def _jacobian_penalty_term(self, logJ01: torch.Tensor, logJ10: torch.Tensor) -> torch.Tensor:
+        """Quadratic penalty guarding against runaway Jacobian magnitudes."""
+        logJ_sq = 0.5 * (logJ01.pow(2).mean() + logJ10.pow(2).mean())
+        return torch.as_tensor(
+            self._logJ_penalty_weight,
+            device=logJ_sq.device,
+            dtype=logJ_sq.dtype,
+        ) * logJ_sq
 
     def training_step(self, batch, batch_idx):
-        """
-        Perform training for both forward and reverse directions.
+        """Lightning method. Compute forward + reverse losses (and optional minibatch regularizer)."""
+        loss_01, u1_y0, logJ01, u0_x0 = self._compute_direction_step(batch['batch_1'], self.forward, (0, 1), batch_idx)
+        loss_10, u0_y1, logJ10, u1_x1 = self._compute_direction_step(batch['batch_2'], self.inverse, (1, 0), batch_idx)
+
+        total_loss = 0.5 * (loss_01 + loss_10)
         
-        For each batch, this method:
-        1. Computes forward direction loss (0→1) using batch_1 data
-        2. Computes reverse direction loss (1→0) using batch_2 data  
-        3. Logs both directions separately with TMBARLogger
-        4. Returns the average loss over both directions
         
-        Parameters
-        ----------
-        batch : dict
-            Dictionary containing 'batch_1' and 'batch_2' data
-        batch_idx : int
-            Current batch index
-            
-        Returns
-        -------
-        total_loss : torch.Tensor
-            Average loss over both directions
-        """
-        total_loss = 0
-        n_directions = 0
-        
-        # Forward direction (0 -> 1)
-        loss_forward = self._compute_direction_loss(
-            batch['batch_1'], self.forward, (0, 1), batch_idx
-        )
-        total_loss += loss_forward
-        n_directions += 1
-        
-        # Reverse direction (1 -> 0)
-        loss_reverse = self._compute_direction_loss(
-            batch['batch_2'], self.inverse, (1, 0), batch_idx
-        )
-        total_loss += loss_reverse
-        n_directions += 1
-        
-        # Average loss over both directions
-        if n_directions > 0:
-            total_loss = total_loss / n_directions
+        if self._objective in ('bar', 'hybrid'):
+            b0 = batch['batch_1']
+            b1 = batch['batch_2']
+
+            # (Optional) for now, refuse biased batches unless you implement weighted-BAR.
+            if ('log_weights' in b0) or ('bias' in b0) or ('log_weights' in b1) or ('bias' in b1):
+                raise NotImplementedError(
+                    "BAR-matched objective currently assumes unbiased sampling in each state. "
+                    "If you need reweighting (bias/log_weights), implement weighted-BAR/MBAR."
+                )
+
+            # Safety if u_from wasn't returned for some reason
+            if u0_x0 is None or u1_x1 is None:
+                u0_x0 = self._eval_potential(0, b0['positions'], b0.get('dimensions', None)) / self._kT
+                u1_x1 = self._eval_potential(1, b1['positions'], b1.get('dimensions', None)) / self._kT
+
+            w01, w10 = self._compute_bidirectional_works(
+                u1_y0=u1_y0,
+                logJ01=logJ01,
+                u0_x0=u0_x0,
+                u0_y1=u0_y1,
+                logJ10=logJ10,
+                u1_x1=u1_x1,
+            )
+            bar_obj, df_bar = self._bar_objective_term(w01=w01, w10=w10)
+
+            self.log('df_bar_obj', df_bar)
+            self.log('bar_obj', bar_obj)
+
+            if self._objective == 'bar':
+                total_loss = bar_obj
+            else:  # hybrid
+                total_loss = total_loss + torch.as_tensor(self._lambda_bar, device=bar_obj.device, dtype=bar_obj.dtype) * bar_obj
+
+        # Jacobian penalty: penalise large |log det J| to prevent Jacobian hacking.
+        # When the BAR/hybrid objective is used, the gradient w.r.t. log|J| is
+        # antisymmetric between forward and reverse directions.  Without a guard
+        # the optimizer can exploit this by driving <log|J|> to ±∞, collapsing
+        # the overlap to zero while the per-direction work variances shrink.
+        # A penalty lambda_J * mean(logJ^2) keeps the Jacobian bounded.
+        if self._logJ_penalty_weight > 0.0:
+            logJ_pen = self._jacobian_penalty_term(logJ01, logJ10)
+            total_loss = total_loss + logJ_pen
+            self.log('logJ_penalty', logJ_pen)
+            self.log('logJ01_rms', logJ01.pow(2).mean().sqrt())
+            self.log('logJ10_rms', logJ10.pow(2).mean().sqrt())
+
+        # Optional BAR-like minibatch penalty.
+        if self._bar_regularizer is not None:
+            # u_from tensors were computed in _compute_direction_step when regularizer is enabled.
+            if u0_x0 is None or u1_x1 is None:
+                # Safety: compute if not provided.
+                b0 = batch['batch_1']
+                b1 = batch['batch_2']
+                u0_x0 = self._eval_potential(0, b0['positions'], b0.get('dimensions', None)) / self._kT
+                u1_x1 = self._eval_potential(1, b1['positions'], b1.get('dimensions', None)) / self._kT
+
+            w01, w10 = self._compute_bidirectional_works(
+                u1_y0=u1_y0,
+                logJ01=logJ01,
+                u0_x0=u0_x0,
+                u0_y1=u0_y1,
+                logJ10=logJ10,
+                u1_x1=u1_x1,
+            )
+            reg = self._bar_regularizer(w01, w10)
+            total_loss = total_loss + reg
+            self.log('bar_reg', reg)
+
         self.log('loss', total_loss)
         return total_loss
+        

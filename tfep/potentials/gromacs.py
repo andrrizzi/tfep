@@ -652,13 +652,18 @@ def _run_gromacs_task(
         g96_file_path = _create_g96_file(working_dir_path, positions_nm, box_vectors_nm)
 
         # Run the mdrun command.
-        edr_file_path = os.path.join(working_dir_path, 'energy.edr')
-        traj_file_path = os.path.join(working_dir_path, 'traj.trr')
+        #
+        # IMPORTANT: run with cwd=working_dir_path and pass *relative* output filenames.
+        # In rerun mode, GROMACS may accept absolute paths for -o/-e but not create them.
+        edr_file_name = 'energy.edr'
+        traj_file_name = 'traj.trr'
+        edr_file_path = os.path.join(working_dir_path, edr_file_name)
+        traj_file_path = os.path.join(working_dir_path, traj_file_name)
         mdrun_cmd = GmxMdrun(
             tpr_file_path=tpr_file_path,  # input
             rerun_traj_file_path=g96_file_path,  # input
-            traj_file_path=traj_file_path,  # output
-            edr_file_path=edr_file_path,  # output
+            traj_file_path=traj_file_name,  # output (relative to cwd)
+            edr_file_path=edr_file_name,  # output (relative to cwd)
             **mdrun_kwargs,
         )
 
@@ -679,6 +684,13 @@ def _run_gromacs_task(
             # Read energies and forces.
             energy_kJ_mol = _read_energy(edr_file_path)
             if return_forces:
+                # Sanity check: if GROMACS did not write the trajectory, force extraction cannot proceed.
+                if not os.path.exists(traj_file_path):
+                    raise RuntimeError(
+                        f"GROMACS rerun finished but did not produce '{traj_file_path}'. "
+                        "This often means your .tpr is not configured to write forces (e.g., nstfout=0) "
+                        "or GROMACS refused the output path."
+                    )
                 forces_kJ_mol_nm = _read_forces(traj_file_path, tpr_file_path, working_dir_path)
     finally:
         if tmp_dir is None and cleanup_working_dir:
@@ -773,12 +785,26 @@ def _read_forces(traj_file_path, tpr_file_path, working_dir_path):
         full_precision=True,
     )
 
-    # echo "System" | gmx traj -f traj.trr -s gromacs.tpr -fp -of forces.xvg
-    echo_cmd = ['echo', 'System']
+    # Extract forces from the single-frame TRR using gmx traj in full precision.
+    # Use group index 0 (System) rather than the localized name string.
     gmx_traj_cmd = gmx_traj.to_subprocess()
-    with subprocess.Popen(echo_cmd, stdout=subprocess.PIPE) as p1:
-        with subprocess.Popen(gmx_traj_cmd, stdin=p1.stdout) as p2:
-            p2.communicate()
+    completed = subprocess.run(
+        gmx_traj_cmd,
+        input='0\n',
+        text=True,
+        cwd=working_dir_path,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            'gmx traj failed while extracting forces.\n'
+            f"Command: {' '.join(gmx_traj_cmd)}\n"
+            f"stdout:\n{completed.stdout}\n"
+            f"stderr:\n{completed.stderr}"
+        )
+    if not os.path.exists(xvg_file_path):
+        raise FileNotFoundError(f"{xvg_file_path} not found after gmx traj.")
 
     # Read the resulting xvg file. The first column is always the time.
     forces = flattened_to_atom(np.loadtxt(xvg_file_path, comments=['#', '@'])[1:])

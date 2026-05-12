@@ -16,3 +16,31 @@ from tfep.nn.flows.oriented import OrientedFlow
 from tfep.nn.flows.partial import PartialFlow
 from tfep.nn.flows.pca import PCAWhitenedFlow
 from tfep.nn.flows.sequential import SequentialFlow
+
+# Optional developer-facing utilities.
+from tfep.nn.flows.factory import FlowFactory, FlowSpec
+from tfep.nn.flows.triatomic_zmatrix import TriatomicZMatrixFlow, VectorCouplingFlow
+from tfep.nn.flows.shell_water import (
+    JointSoluteMAFAndShellWaterInternalFlow,
+    ShellEquivariantWaterFlatFlow,
+    ShellEquivariantWaterInternalFlow,
+    SoluteAutoregressiveMAFFlow,
+)
+
+__all__ = [
+    "CenteredCentroidFlow",
+    "MAF",
+    "ContinuousFlow",
+    "OrientedFlow",
+    "PartialFlow",
+    "PCAWhitenedFlow",
+    "SequentialFlow",
+    "FlowFactory",
+    "FlowSpec",
+    "TriatomicZMatrixFlow",
+    "VectorCouplingFlow",
+    "JointSoluteMAFAndShellWaterInternalFlow",
+    "ShellEquivariantWaterFlatFlow",
+    "ShellEquivariantWaterInternalFlow",
+    "SoluteAutoregressiveMAFFlow",
+]
