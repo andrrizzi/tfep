@@ -114,7 +114,7 @@ def atom_to_flattened_indices(atom_indices, space_dimension=3):
     The function works both with ``Tensor``s and numpy arrays.
 
     >>> atom_indices_np = np.array([0, 2])
-    >>> list(atom_to_flattened_indices(atom_indices_np))
+    >>> list(map(int, atom_to_flattened_indices(atom_indices_np)))
     [0, 1, 2, 6, 7, 8]
 
     >>> atom_indices_torch = torch.tensor(atom_indices_np)

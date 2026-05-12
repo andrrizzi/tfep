@@ -110,3 +110,12 @@ ENV/
 
 # PyCharm project
 .idea/
+
+# Local historical archives/backups from solvated refactor work
+/tfep.bak/
+/tfep.tar.xz
+/tfep_*.zip
+/tfep_back_*.tar.xz
+/tfep_contrib.tar.xz
+/tfep_coremerged.zip
+/tfep_patch1.tar.xz
