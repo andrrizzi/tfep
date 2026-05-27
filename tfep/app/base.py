@@ -1086,6 +1086,7 @@ class TMBARMapBase(TFEPMapBase):
         bar_max_iter: int = 25,
         bar_tol: float = 1e-10,
         logJ_penalty_weight: float = 0.0,
+        stochastic_training_config: Optional[Any] = None,
         **kwargs,
     ):
         super().__init__(
@@ -1141,6 +1142,13 @@ class TMBARMapBase(TFEPMapBase):
         self._bar_max_iter = int(bar_max_iter)
         self._bar_tol = float(bar_tol)
         self._logJ_penalty_weight = float(logJ_penalty_weight)
+        from tfep.stochastic.training import StochasticTrainingConfig
+        self._stochastic_training_config = StochasticTrainingConfig.from_any(stochastic_training_config)
+        self._stochastic_training_config.validate()
+        if self._stochastic_training_config.enabled and self._objective not in ('bar', 'hybrid'):
+            raise ValueError(
+                "stochastic_training_config.enabled=True requires objective='bar' or objective='hybrid'."
+            )
         self.register_buffer('_last_df_bar_obj', torch.zeros(()), persistent=False)
 
         if self._objective in ('bar', 'hybrid') and bar_regularizer is not None:
@@ -1324,7 +1332,7 @@ class TMBARMapBase(TFEPMapBase):
             )
 
         self.log(f'loss_{from_state}_{to_state}', loss)
-        return loss, u_to, log_det_J, u_from
+        return loss, u_to, log_det_J, u_from, result
 
     @staticmethod
     def _compute_bidirectional_works(
@@ -1388,8 +1396,17 @@ class TMBARMapBase(TFEPMapBase):
 
     def training_step(self, batch, batch_idx):
         """Lightning method. Compute forward + reverse losses (and optional minibatch regularizer)."""
-        loss_01, u1_y0, logJ01, u0_x0 = self._compute_direction_step(batch['batch_1'], self.forward, (0, 1), batch_idx)
-        loss_10, u0_y1, logJ10, u1_x1 = self._compute_direction_step(batch['batch_2'], self.inverse, (1, 0), batch_idx)
+        step01 = self._compute_direction_step(batch['batch_1'], self.forward, (0, 1), batch_idx)
+        step10 = self._compute_direction_step(batch['batch_2'], self.inverse, (1, 0), batch_idx)
+        if len(step01) == 4:
+            loss_01, u1_y0, logJ01, u0_x0 = step01
+            result01 = None
+        else:
+            loss_01, u1_y0, logJ01, u0_x0, result01 = step01
+        if len(step10) == 4:
+            loss_10, u0_y1, logJ10, u1_x1 = step10
+        else:
+            loss_10, u0_y1, logJ10, u1_x1, _ = step10
 
         total_loss = 0.5 * (loss_01 + loss_10)
         
@@ -1410,18 +1427,39 @@ class TMBARMapBase(TFEPMapBase):
                 u0_x0 = self._eval_potential(0, b0['positions'], b0.get('dimensions', None)) / self._kT
                 u1_x1 = self._eval_potential(1, b1['positions'], b1.get('dimensions', None)) / self._kT
 
-            w01, w10 = self._compute_bidirectional_works(
-                u1_y0=u1_y0,
-                logJ01=logJ01,
-                u0_x0=u0_x0,
-                u0_y1=u0_y1,
-                logJ10=logJ10,
-                u1_x1=u1_x1,
-            )
+            snf_training = None
+            if self._stochastic_training_config.enabled:
+                if result01 is None:
+                    raise RuntimeError("Stochastic training requires _compute_direction_step to return mapped forward results.")
+                from tfep.stochastic.training import compute_bidirectional_stochastic_training_works
+                snf_training = compute_bidirectional_stochastic_training_works(
+                    model=self,
+                    batch0=b0,
+                    batch1=b1,
+                    mapped01=result01,
+                    u0_x0=u0_x0,
+                    u1_x1=u1_x1,
+                    config=self._stochastic_training_config,
+                )
+                w01, w10 = snf_training.w01, snf_training.w10
+                for metric_name, metric_value in snf_training.metrics().items():
+                    self.log(metric_name, metric_value)
+            else:
+                w01, w10 = self._compute_bidirectional_works(
+                    u1_y0=u1_y0,
+                    logJ01=logJ01,
+                    u0_x0=u0_x0,
+                    u0_y1=u0_y1,
+                    logJ10=logJ10,
+                    u1_x1=u1_x1,
+                )
             bar_obj, df_bar = self._bar_objective_term(w01=w01, w10=w10)
 
             self.log('df_bar_obj', df_bar)
             self.log('bar_obj', bar_obj)
+            if snf_training is not None:
+                self.log('snf_df_bar_obj', df_bar)
+                self.log('snf_bar_obj', bar_obj)
 
             if self._objective == 'bar':
                 total_loss = bar_obj
