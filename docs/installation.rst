@@ -17,6 +17,7 @@ and the following optional dependencies
 .. code-block::
 
     openmm         # To evaluate the target potentials using the OpenMM Python library.
+    matplotlib     # To generate packaged TMBAR workflow plots.
     tblite-python  # To evaluate the target potentials using the tblite Python library.
     psi4           # To evaluate the target potentials using the psi4 Python library.
     ase            # To evaluate the target potentials using the Atomistic Simulation Environment (ASE) Python library.
@@ -51,5 +52,19 @@ example that creates a separate conda environment with all the dependencies and 
     cd tfep
     pip install .
 
+    # Or install optional dependencies for the packaged OpenMM small-molecule workflows.
+    # pip install ".[small-molecule]"
+
     # Or if you want to modify the source code, install it in editable mode.
     # pip install -e .
+
+The packaged small-molecule workflow commands are:
+
+.. code-block:: bash
+
+    tfep-small-molecule-tmbar --help
+    tfep-tbar-cv-bootstrap --help
+    tfep-tbar-holdout --help
+    tfep-tbar-plots --help
+
+OpenMM is optional at import time. Commands that need OpenMM raise an install message if the dependency is absent.

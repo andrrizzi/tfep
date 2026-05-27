@@ -28,6 +28,7 @@ The library also includes several utilities:
 - A PyTorch-accelerated (T)FEP estimator.
 - A PyTorch-accelerated bootstrap analysis utility.
 - A simple storage utility class to save potential energies and log training information.
+- Packaged small-molecule TMBAR workflow entrypoints for OpenMM training, CV/bootstrap, holdout analysis, and diagnostic plotting.
 
 
 ### Installation
@@ -44,6 +45,7 @@ lightning >= 2.0
 and the following optional dependencies
 ```
 openmm         # To evaluate the target potentials using the OpenMM Python library.
+matplotlib     # To generate packaged TMBAR workflow plots.
 tblite-python  # To evaluate the target potentials using the tblite Python library.
 psi4           # To evaluate the target potentials using the psi4 Python library.
 ase            # To evaluate the target potentials using the Atomistic Simulation Environment (ASE) Python library.
@@ -78,9 +80,23 @@ git clone https://github.com/andrrizzi/tfep.git
 cd tfep
 pip install .
 
+# Or install optional dependencies for the packaged OpenMM small-molecule workflows.
+# pip install ".[small-molecule]"
+
 # Or if you want to modify the source code, install it in editable mode.
 # pip install -e .
 ```
+
+The packaged small-molecule workflow commands are:
+
+```bash
+tfep-small-molecule-tmbar --help
+tfep-tbar-cv-bootstrap --help
+tfep-tbar-holdout --help
+tfep-tbar-plots --help
+```
+
+OpenMM is optional at import time. Commands that need OpenMM raise an install message if the dependency is absent.
 
 
 ### Citation
@@ -111,5 +127,4 @@ Andrea Rizzi, Paolo Carloni, Michele Parrinello. *Multimap targeted free energy 
 
 Project based on the 
 [Computational Molecular Science Python Cookiecutter](https://github.com/molssi/cookiecutter-cms) version 1.5.
-
 

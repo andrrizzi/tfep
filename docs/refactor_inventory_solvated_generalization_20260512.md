@@ -16,8 +16,9 @@ This matrix maps implementation snippets from local bromomethane workflows to th
 | Ozone contrib duplicated dataloader/loss logic | `tfep/contrib/ozone/tmbar_map.py` | Shimmed | Compatibility wrapper now delegates to canonical map. |
 | Legacy contrib losses import path | `tfep/contrib/losses/__init__.py` | Shimmed | Deprecation shim to `tfep.regularizers`. |
 | Legacy contrib triatomic flow module | `tfep/contrib/flows/triatomic_zmat.py` | Shimmed | Deprecation shim to `tfep.nn.flows.triatomic_zmatrix`. |
-| Bromomethane run scripts / holdout wrappers | External project tree | Intentionally external | Library now provides template entrypoint only. |
+| Generic small-molecule TMBAR training wrapper | `tfep/app/small_molecule_tmbar.py` + `tfep-small-molecule-tmbar` | Packaged | Former methane/bromomethane training logic is now a reusable OpenMM workflow module. |
+| Generic TMBAR CV/holdout/plot wrappers | `tfep/analysis/tbar_cv_bootstrap.py`, `tfep/analysis/tbar_holdout.py`, `tfep/analysis/tbar_plots.py` + console scripts | Packaged | Cross-validation, single holdout, and plot/report generation install with the library. |
 
 ## Scope boundary kept intentionally external
-- Bromomethane-specific launch orchestration, folder conventions, and campaign scripts remain outside the library.
-- `tfep` now exposes reusable building blocks + example template, not project-specific runners.
+- Bromomethane-specific launch orchestration, folder conventions, endpoint campaign scripts, and generated simulation outputs remain outside the library.
+- The packaged wrappers are generic small-molecule workflows. Local project scripts may remain as compatibility shims that delegate to these modules.

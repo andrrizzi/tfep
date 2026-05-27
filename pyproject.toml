@@ -34,9 +34,21 @@ dependencies = [
 "Source" = "https://github.com/andrrizzi/tfep/"
 "Documentation" = "https://tfep.readthedocs.io/"
 
+[project.scripts]
+tfep-small-molecule-tmbar = "tfep.app.small_molecule_tmbar:main"
+tfep-tbar-cv-bootstrap = "tfep.analysis.tbar_cv_bootstrap:main"
+tfep-tbar-holdout = "tfep.analysis.tbar_holdout:main"
+tfep-tbar-plots = "tfep.analysis.tbar_plots:main"
+
 [project.optional-dependencies]
 ase = ["ase"]
+analysis = ["matplotlib"]
+openmm = ["openmm"]
 psi4 = ["psi4"]
+small-molecule = [
+    "openmm",
+    "matplotlib",
+]
 torchdiffeq = ["torchdiffeq"]
 test = [
     "pytest",
