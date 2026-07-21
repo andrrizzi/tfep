@@ -163,6 +163,10 @@ class TrajectoryDataset(torch.utils.data.Dataset):
         # selection. None means all atoms.
         self._selected_atom_group = None
 
+        # Optional per-trajectory-frame log weights used to reweight biased
+        # enhanced-sampling trajectories back to an unbiased ensemble.
+        self._log_weights = None
+
     @property
     def n_atoms(self):
         """Number of selected atoms in the dataset."""
@@ -178,6 +182,7 @@ class TrajectoryDataset(torch.utils.data.Dataset):
         )
         copied_dataset.trajectory_sample_indices = copy.copy(self.trajectory_sample_indices)
         copied_dataset._selected_atom_group = copy.copy(self._selected_atom_group)
+        copied_dataset._log_weights = None if self._log_weights is None else self._log_weights.copy()
         return copied_dataset
 
     def __getitem__(self, idx):
@@ -219,13 +224,40 @@ class TrajectoryDataset(torch.utils.data.Dataset):
         # Return the requested indices.
         if self.return_dataset_sample_index:
             sample['dataset_sample_index'] = idx
+        trajectory_sample_index = None
         if self.return_trajectory_sample_index:
             if self.trajectory_sample_indices is None:
                 # We have selected all frames. Trajectory and dataset indices are the same.
-                sample['trajectory_sample_index'] = idx
+                trajectory_sample_index = idx
             else:
-                sample['trajectory_sample_index'] = self.trajectory_sample_indices[idx]
+                trajectory_sample_index = self.trajectory_sample_indices[idx]
+            sample['trajectory_sample_index'] = trajectory_sample_index
+        elif self._log_weights is not None:
+            trajectory_sample_index = idx if self.trajectory_sample_indices is None else self.trajectory_sample_indices[idx]
+        if self._log_weights is not None:
+            sample['log_weights'] = torch.tensor(
+                self._log_weights[int(trajectory_sample_index)],
+                dtype=torch.get_default_dtype(),
+            )
         return sample
+
+    def set_log_weights(self, log_weights):
+        """Attach per-frame dimensionless log weights to the dataset.
+
+        ``log_weights[i]`` must correspond to frame ``i`` of the underlying
+        trajectory before any dataset-level subsampling or ``TrajectorySubset``
+        selection. This keeps weights aligned through ``trajectory_sample_index``.
+        """
+        log_weights = np.asarray(log_weights, dtype=float)
+        if log_weights.ndim != 1:
+            raise ValueError("log_weights must be a 1D array")
+        if len(log_weights) != len(self.universe.trajectory):
+            raise ValueError(
+                "log_weights length must match the underlying trajectory length "
+                f"({len(log_weights)} != {len(self.universe.trajectory)})"
+            )
+        self._log_weights = log_weights
+        return self
 
     def __len__(self):
         """Number of samples in the dataset (i.e., selected trajectory frames)."""
@@ -642,4 +674,3 @@ def get_subsampled_indices(
     if (step is None) and (n_frames is None):
         step = 1
     return np.arange(start, stop+1, step, dtype=int)
-

@@ -21,3 +21,6 @@ def check_plumed_is_installed():
     if shutil.which('plumed') is None:
         raise RuntimeError(f'Cannot find the plumed program installed. Please check '
                             'that it is installed correctly and the $PLUMED_KERNEL is set.')
+
+
+from tfep.utils.plumed.reweighting import PlumedLogWeights, read_plumed_log_weights

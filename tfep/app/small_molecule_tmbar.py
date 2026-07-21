@@ -66,6 +66,8 @@ from tfep.analysis.short_relaxation import (
     run_short_relaxation_diagnostic,
     write_relaxation_outputs,
 )
+from tfep.analysis import reweighting as rwlib
+from tfep.utils.plumed.reweighting import read_plumed_log_weights
 from tfep.stochastic.cli import add_stochastic_tfep_args
 from tfep.stochastic.molecular import (
     MolecularStochasticConfig,
@@ -946,6 +948,79 @@ def _subset_dataset(dataset, subset_indices: Optional[Sequence[int]], label: str
     return TrajectorySubset(dataset, idx)
 
 
+def _attach_log_weights(dataset, log_weights: Optional[np.ndarray], label: str):
+    if log_weights is None:
+        return dataset
+    try:
+        dataset.set_log_weights(log_weights)
+    except AttributeError as exc:
+        raise TypeError(f"{label}: dataset does not support log_weights") from exc
+    return dataset
+
+
+def _load_state_log_weights_from_args(args: argparse.Namespace, state: int) -> Tuple[Optional[np.ndarray], Optional[Dict[str, Any]]]:
+    prefix = f"state{int(state)}"
+    file_path = getattr(args, f"{prefix}_reweight_file", None)
+    if not file_path:
+        return None, None
+    result = read_plumed_log_weights(
+        file_path,
+        kind=getattr(args, f"{prefix}_reweight_kind"),
+        column=getattr(args, f"{prefix}_reweight_column"),
+        offset_column=getattr(args, f"{prefix}_reweight_offset_column", None),
+        temperature_k=float(args.temperature),
+        energy_unit=str(getattr(args, "reweight_energy_unit", "kJ/mol")),
+    )
+    return result.log_weights, result.metadata
+
+
+def _global_training_weight_stats(
+    log_weights: Optional[np.ndarray],
+    train_indices: Optional[Sequence[int]],
+    *,
+    label: str,
+) -> Optional[Dict[str, Any]]:
+    """Compute normalization and ESS over the exact training population."""
+    if log_weights is None and train_indices is None:
+        return None
+
+    if log_weights is None:
+        n = int(len(np.asarray(train_indices).reshape(-1)))
+        if n <= 0:
+            raise ValueError(f"{label}: empty training population")
+        return {
+            "population_size": n,
+            "log_normalizer": float(np.log(float(n))),
+            "ess": float(n),
+            "ess_ratio": 1.0,
+            "weighted": False,
+        }
+
+    all_logw = np.asarray(log_weights, dtype=np.float64).reshape(-1)
+    if train_indices is None:
+        selected = all_logw
+    else:
+        indices = _normalize_subset_indices(train_indices, len(all_logw), f"{label} train indices")
+        selected = all_logw[indices]
+    if selected.size == 0 or not np.all(np.isfinite(selected)):
+        raise ValueError(f"{label}: global weighted BAR requires finite weights in a nonempty training population")
+    maximum = float(np.max(selected))
+    log_normalizer = maximum + float(np.log(np.sum(np.exp(selected - maximum))))
+    ess = float(rwlib.effective_sample_size(selected))
+    if not np.isfinite(ess) or ess <= 0.0:
+        raise ValueError(f"{label}: invalid global training ESS {ess}")
+    return {
+        "population_size": int(selected.size),
+        "log_normalizer": float(log_normalizer),
+        "ess": ess,
+        "ess_ratio": float(ess / selected.size),
+        "weighted": True,
+        "log_weight_min": float(np.min(selected)),
+        "log_weight_max": float(np.max(selected)),
+        "log_weight_span": float(np.max(selected) - np.min(selected)),
+    }
+
+
 # -----------------------------------------------------------------------------
 # Bonds helper for MixedMAF
 # -----------------------------------------------------------------------------
@@ -1099,6 +1174,8 @@ class SmallMolBidirectionalTMBARMapCartesian(NoFixedBoxResidueWrapMixin, TMBARMa
         shell_oxygen_names: Sequence[str] = ("O", "OW"),
         train_indices_0: Optional[Sequence[int]] = None,
         train_indices_1: Optional[Sequence[int]] = None,
+        state0_log_weights: Optional[Sequence[float]] = None,
+        state1_log_weights: Optional[Sequence[float]] = None,
         wrap_box_eval: bool = False,
         wrap_residue_blocks: Optional[Sequence[Sequence[int]]] = None,
         **kwargs,
@@ -1116,6 +1193,8 @@ class SmallMolBidirectionalTMBARMapCartesian(NoFixedBoxResidueWrapMixin, TMBARMa
         self._shell_oxygen_names = list(shell_oxygen_names)
         self._train_indices_0 = None if train_indices_0 is None else np.asarray(train_indices_0, dtype=int)
         self._train_indices_1 = None if train_indices_1 is None else np.asarray(train_indices_1, dtype=int)
+        self._state0_log_weights = None if state0_log_weights is None else np.asarray(state0_log_weights, dtype=float)
+        self._state1_log_weights = None if state1_log_weights is None else np.asarray(state1_log_weights, dtype=float)
         self._init_box_eval_wrap(wrap_box_eval=wrap_box_eval, wrap_residue_blocks=wrap_residue_blocks)
 
         super().__init__(
@@ -1134,6 +1213,7 @@ class SmallMolBidirectionalTMBARMapCartesian(NoFixedBoxResidueWrapMixin, TMBARMa
             n_states=2,
             state_names=["state0", "state1"],
             bar_regularizer=bar_reg,
+            allow_reweighted_bar=bool(kwargs.pop("allow_reweighted_bar", False)),
             **kwargs,
         )
 
@@ -1163,6 +1243,11 @@ class SmallMolBidirectionalTMBARMapCartesian(NoFixedBoxResidueWrapMixin, TMBARMa
             shell_oxygen_names=self._shell_oxygen_names,
             shell_k1=self._shell_k1,
             shell_k2=self._shell_k2,
+        )
+        dataset = _attach_log_weights(
+            dataset,
+            self._state0_log_weights if int(state) == 0 else self._state1_log_weights,
+            label=label,
         )
         return _subset_dataset(dataset, subset_indices, label=label)
 
@@ -1298,6 +1383,8 @@ class SmallMolBidirectionalTMBARMapMixed(NoFixedBoxResidueWrapMixin, TMBARMapBas
         shell_oxygen_names: Sequence[str] = ("O", "OW"),
         train_indices_0: Optional[Sequence[int]] = None,
         train_indices_1: Optional[Sequence[int]] = None,
+        state0_log_weights: Optional[Sequence[float]] = None,
+        state1_log_weights: Optional[Sequence[float]] = None,
         wrap_box_eval: bool = False,
         wrap_residue_blocks: Optional[Sequence[Sequence[int]]] = None,
         **kwargs,
@@ -1315,6 +1402,8 @@ class SmallMolBidirectionalTMBARMapMixed(NoFixedBoxResidueWrapMixin, TMBARMapBas
         self._shell_oxygen_names = list(shell_oxygen_names)
         self._train_indices_0 = None if train_indices_0 is None else np.asarray(train_indices_0, dtype=int)
         self._train_indices_1 = None if train_indices_1 is None else np.asarray(train_indices_1, dtype=int)
+        self._state0_log_weights = None if state0_log_weights is None else np.asarray(state0_log_weights, dtype=float)
+        self._state1_log_weights = None if state1_log_weights is None else np.asarray(state1_log_weights, dtype=float)
         self._init_box_eval_wrap(wrap_box_eval=wrap_box_eval, wrap_residue_blocks=wrap_residue_blocks)
 
         super().__init__(
@@ -1333,6 +1422,7 @@ class SmallMolBidirectionalTMBARMapMixed(NoFixedBoxResidueWrapMixin, TMBARMapBas
             n_states=2,
             state_names=["state0", "state1"],
             bar_regularizer=bar_reg,
+            allow_reweighted_bar=bool(kwargs.pop("allow_reweighted_bar", False)),
             **kwargs,
         )
 
@@ -1378,6 +1468,11 @@ class SmallMolBidirectionalTMBARMapMixed(NoFixedBoxResidueWrapMixin, TMBARMapBas
             shell_k1=self._shell_k1,
             shell_k2=self._shell_k2,
         )
+        dataset = _attach_log_weights(
+            dataset,
+            self._state0_log_weights if int(state) == 0 else self._state1_log_weights,
+            label=label,
+        )
         return _subset_dataset(dataset, subset_indices, label=label)
 
     def create_dataset(self):
@@ -1418,6 +1513,29 @@ def build_argparser() -> argparse.ArgumentParser:
                    help="Optional file containing the subset of state0 frames to use for training")
     p.add_argument("--state1-train-indices-file", type=str, default=None,
                    help="Optional file containing the subset of state1 frames to use for training")
+    p.add_argument("--state0-reweight-file", type=str, default=None,
+                   help="Optional PLUMED/COLVAR-like table with state0 enhanced-sampling weights")
+    p.add_argument("--state1-reweight-file", type=str, default=None,
+                   help="Optional PLUMED/COLVAR-like table with state1 enhanced-sampling weights")
+    p.add_argument("--state0-reweight-kind", choices=["log_weight", "bias", "rbias", "bias_minus_offset"], default="rbias")
+    p.add_argument("--state1-reweight-kind", choices=["log_weight", "bias", "rbias", "bias_minus_offset"], default="rbias")
+    p.add_argument("--state0-reweight-column", type=str, default="rbias")
+    p.add_argument("--state1-reweight-column", type=str, default="rbias")
+    p.add_argument("--state0-reweight-offset-column", type=str, default=None)
+    p.add_argument("--state1-reweight-offset-column", type=str, default=None)
+    p.add_argument("--reweight-energy-unit", choices=["kT", "kJ/mol", "kcal/mol"], default="kJ/mol",
+                   help="Unit of bias/rbias columns before dividing by kT; ignored for kind=log_weight")
+    p.add_argument("--allow-reweighted-bar", action="store_true",
+                   help="Enable experimental weighted BAR/TBAR objective/evaluation for biased trajectories")
+    p.add_argument(
+        "--reweighted-bar-weight-normalization",
+        choices=["global", "minibatch"],
+        default="global",
+        help=(
+            "Normalize training importance weights over the complete train split and use its fixed ESS ratio, "
+            "or retain the legacy per-minibatch softmax/ESS behavior"
+        ),
+    )
 
     p.add_argument(
     "--flow-space",
@@ -1437,6 +1555,21 @@ def build_argparser() -> argparse.ArgumentParser:
 
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--weight-decay", type=float, default=0.0)
+    p.add_argument(
+        "--gradient-clip-val",
+        type=float,
+        default=0.0,
+        help=(
+            "Lightning gradient clipping value. Default 0.0 preserves existing "
+            "behavior with clipping disabled."
+        ),
+    )
+    p.add_argument(
+        "--gradient-clip-algorithm",
+        choices=["norm", "value"],
+        default="norm",
+        help="Lightning gradient clipping algorithm used when --gradient-clip-val > 0.",
+    )
     p.add_argument("--objective", choices=["kl", "bar", "hybrid"], default="kl")
     p.add_argument("--lambda-bar", type=float, default=1.0)
     p.add_argument("--bar-lambda", type=float, default=0.0,
@@ -1447,6 +1580,15 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--bar-no-warm-start", action="store_true")
     p.add_argument("--bar-max-iter", type=int, default=25)
     p.add_argument("--bar-tol", type=float, default=1e-10)
+    p.add_argument(
+        "--bar-df-solver",
+        choices=["newton", "robust"],
+        default="newton",
+        help=(
+            "Detached minibatch BAR df solver. Default 'newton' preserves existing "
+            "behavior; 'robust' adds a bracketed-bisection fallback for numerical guardrails."
+        ),
+    )
     p.add_argument("--logJ-penalty", type=float, default=0.0,
                    help="Weight for log|J|^2 Jacobian regularizer. Prevents Jacobian hacking "
                         "under BAR/hybrid objectives by penalising large log-det-Jacobian values. "
@@ -1842,10 +1984,41 @@ def summarize_work_pair(w_forward: np.ndarray, w_reverse: np.ndarray) -> Dict[st
     }
 
 
+def summarize_weighted_work_pair(
+    w_forward: np.ndarray,
+    w_reverse: np.ndarray,
+    log_weights_forward: Optional[np.ndarray],
+    log_weights_reverse: Optional[np.ndarray],
+) -> Dict[str, Any]:
+    df, ddf = rwlib.weighted_bar_deltaf(
+        w_forward,
+        w_reverse,
+        log_weights_forward,
+        log_weights_reverse,
+    )
+    out: Dict[str, Any] = {
+        "deltaf": float(df),
+        "sigma": float(ddf),
+        "n_forward": int(np.isfinite(w_forward).sum()),
+        "n_reverse": int(np.isfinite(w_reverse).sum()),
+        "estimator": "weighted_bar",
+        "log_ratio": 0.0,
+        "balance_convention": "symmetric bridge over separately normalized weighted ensembles",
+        "state0_weight_diagnostics": rwlib.log_weight_diagnostics(log_weights_forward),
+        "state1_weight_diagnostics": rwlib.log_weight_diagnostics(log_weights_reverse),
+        "statistical_warning": (
+            "Weighted BAR assumes the supplied log weights correctly unbias each "
+            "enhanced-sampling trajectory to its target equilibrium endpoint."
+        ),
+    }
+    return out
+
+
 def _collect_direction_works(model, loader, *, state_from: int, state_to: int, direction: str, include_tfep: bool):
     records = {
         "dataset_sample_index": [],
         "trajectory_sample_index": [],
+        "log_weights": [],
         "raw_work": [],
         "u_from": [],
         "u_to_raw": [],
@@ -1866,6 +2039,8 @@ def _collect_direction_works(model, loader, *, state_from: int, state_to: int, d
 
         records["dataset_sample_index"].append(_to_numpy(batch["dataset_sample_index"]))
         records["trajectory_sample_index"].append(_to_numpy(batch["trajectory_sample_index"]))
+        if "log_weights" in batch:
+            records["log_weights"].append(_to_numpy(batch["log_weights"]))
         records["u_from"].append(_to_numpy(u_from))
         records["u_to_raw"].append(_to_numpy(u_to_raw))
         records["raw_work"].append(_to_numpy(u_to_raw - u_from))
@@ -1931,8 +2106,27 @@ def evaluate_bidirectional_map(
         "state1_state0": state1_state0,
         "raw": summarize_work_pair(state0_state1["raw_work"], state1_state0["raw_work"]),
     }
+    logw01 = state0_state1.get("log_weights", np.empty(0, dtype=float))
+    logw10 = state1_state0.get("log_weights", np.empty(0, dtype=float))
+    has_logw01 = len(logw01) == len(state0_state1["raw_work"]) and len(logw01) > 0
+    has_logw10 = len(logw10) == len(state1_state0["raw_work"]) and len(logw10) > 0
+    has_log_weights = has_logw01 or has_logw10
+    if has_log_weights:
+        out["raw_reweighted"] = summarize_weighted_work_pair(
+            state0_state1["raw_work"],
+            state1_state0["raw_work"],
+            logw01 if has_logw01 else None,
+            logw10 if has_logw10 else None,
+        )
     if include_tfep:
         out["tfep"] = summarize_work_pair(state0_state1["tfep_work"], state1_state0["tfep_work"])
+        if has_log_weights:
+            out["tfep_reweighted"] = summarize_weighted_work_pair(
+                state0_state1["tfep_work"],
+                state1_state0["tfep_work"],
+                logw01 if has_logw01 else None,
+                logw10 if has_logw10 else None,
+            )
     return out
 
 
@@ -2422,6 +2616,29 @@ def create_model_from_args(
         train_indices_0 = _load_index_array(args.state0_train_indices_file)
     if train_indices_1 is None:
         train_indices_1 = _load_index_array(args.state1_train_indices_file)
+    state0_log_weights, state0_reweight_metadata = _load_state_log_weights_from_args(args, 0)
+    state1_log_weights, state1_reweight_metadata = _load_state_log_weights_from_args(args, 1)
+    reweighting_enabled = state0_log_weights is not None or state1_log_weights is not None
+    reweighted_bar_weight_normalization = str(
+        getattr(args, "reweighted_bar_weight_normalization", "global")
+    ).lower()
+    reweighted_bar_global_stats = None
+    if reweighting_enabled and reweighted_bar_weight_normalization == "global":
+        reweighted_bar_global_stats = {
+            "state0": _global_training_weight_stats(
+                state0_log_weights,
+                train_indices_0,
+                label="state0",
+            ),
+            "state1": _global_training_weight_stats(
+                state1_log_weights,
+                train_indices_1,
+                label="state1",
+            ),
+        }
+        reweighted_bar_global_stats = {
+            key: value for key, value in reweighted_bar_global_stats.items() if value is not None
+        }
 
     shell_equiv_spec = None
 
@@ -2550,6 +2767,23 @@ def create_model_from_args(
             print(f"[box] no-fixed-box enabled; whole-residue wrapping will be applied for {len(wrap_blocks)} residue block(s) before OpenMM evaluation")
         print("[box] no-fixed-box enabled; each state will be evaluated in its own OpenMM worker process")
 
+    if reweighting_enabled:
+        print("[reweighting] enabled for enhanced-sampling trajectories")
+        if state0_reweight_metadata is not None:
+            print(
+                "[reweighting] state0: "
+                f"kind={state0_reweight_metadata['kind']} column={state0_reweight_metadata['column']} "
+                f"ESS/N={state0_reweight_metadata.get('ess_ratio', float('nan')):.4g}"
+            )
+        if state1_reweight_metadata is not None:
+            print(
+                "[reweighting] state1: "
+                f"kind={state1_reweight_metadata['kind']} column={state1_reweight_metadata['column']} "
+                f"ESS/N={state1_reweight_metadata.get('ess_ratio', float('nan')):.4g}"
+            )
+        if objective in ("bar", "hybrid") and not bool(getattr(args, "allow_reweighted_bar", False)):
+            print("[reweighting] BAR/hybrid objective requires --allow-reweighted-bar and will otherwise fail fast.")
+
     if objective in ("bar", "hybrid") and legacy_bar_lambda > 0.0:
         print("[objective] NOTE: --bar-lambda is a legacy KL regularizer and is ignored for objective='bar'/'hybrid'.")
     print(f"[objective] {_objective_mode_description(objective, lambda_bar=lambda_bar, legacy_bar_lambda=legacy_bar_lambda, logJ_penalty_weight=logJ_penalty_weight)}")
@@ -2558,7 +2792,7 @@ def create_model_from_args(
         f"objective={objective}, lambda_bar={lambda_bar}, "
         f"legacy_bar_lambda={legacy_bar_lambda}, legacy_bar_active={legacy_bar_active}, "
         f"bar_detach_df={bar_detach_df}, bar_warm_start={bar_warm_start}, "
-        f"logJ_penalty_weight={logJ_penalty_weight}"
+        f"bar_df_solver={args.bar_df_solver}, logJ_penalty_weight={logJ_penalty_weight}"
     )
     if stochastic_training_config is not None:
         print(
@@ -2595,9 +2829,13 @@ def create_model_from_args(
             bar_warm_start=bool(bar_warm_start),
             bar_max_iter=int(args.bar_max_iter),
             bar_tol=float(args.bar_tol),
+            bar_df_solver=str(args.bar_df_solver),
             bar_lambda=legacy_bar_lambda,
             logJ_penalty_weight=logJ_penalty_weight,
             stochastic_training_config=stochastic_training_config,
+            allow_reweighted_bar=bool(getattr(args, "allow_reweighted_bar", False)),
+            reweighted_bar_weight_normalization=reweighted_bar_weight_normalization,
+            reweighted_bar_global_stats=reweighted_bar_global_stats,
             shell_k1=k1,
             shell_k2=k2,
             shell_center=_as_indices_or_selection(shell_center) if shell_enabled else None,
@@ -2605,6 +2843,8 @@ def create_model_from_args(
             shell_oxygen_names=oxygen_names,
             train_indices_0=train_indices_0,
             train_indices_1=train_indices_1,
+            state0_log_weights=state0_log_weights,
+            state1_log_weights=state1_log_weights,
             wrap_box_eval=bool(args.no_fixed_box),
             wrap_residue_blocks=wrap_blocks,
         )
@@ -2636,9 +2876,13 @@ def create_model_from_args(
             bar_warm_start=bool(bar_warm_start),
             bar_max_iter=int(args.bar_max_iter),
             bar_tol=float(args.bar_tol),
+            bar_df_solver=str(args.bar_df_solver),
             bar_lambda=legacy_bar_lambda,
             logJ_penalty_weight=logJ_penalty_weight,
             stochastic_training_config=stochastic_training_config,
+            allow_reweighted_bar=bool(getattr(args, "allow_reweighted_bar", False)),
+            reweighted_bar_weight_normalization=reweighted_bar_weight_normalization,
+            reweighted_bar_global_stats=reweighted_bar_global_stats,
             shell_k1=k1,
             shell_k2=k2,
             shell_center=_as_indices_or_selection(shell_center) if shell_enabled else None,
@@ -2646,6 +2890,8 @@ def create_model_from_args(
             shell_oxygen_names=oxygen_names,
             train_indices_0=train_indices_0,
             train_indices_1=train_indices_1,
+            state0_log_weights=state0_log_weights,
+            state1_log_weights=state1_log_weights,
             wrap_box_eval=bool(args.no_fixed_box),
             wrap_residue_blocks=wrap_blocks,
         )
@@ -2677,9 +2923,13 @@ def create_model_from_args(
             bar_warm_start=bool(bar_warm_start),
             bar_max_iter=int(args.bar_max_iter),
             bar_tol=float(args.bar_tol),
+            bar_df_solver=str(args.bar_df_solver),
             bar_lambda=legacy_bar_lambda,
             logJ_penalty_weight=logJ_penalty_weight,
             stochastic_training_config=stochastic_training_config,
+            allow_reweighted_bar=bool(getattr(args, "allow_reweighted_bar", False)),
+            reweighted_bar_weight_normalization=reweighted_bar_weight_normalization,
+            reweighted_bar_global_stats=reweighted_bar_global_stats,
             shell_k1=k1,
             shell_k2=k2,
             shell_center=_as_indices_or_selection(shell_center) if shell_enabled else None,
@@ -2687,6 +2937,8 @@ def create_model_from_args(
             shell_oxygen_names=oxygen_names,
             train_indices_0=train_indices_0,
             train_indices_1=train_indices_1,
+            state0_log_weights=state0_log_weights,
+            state1_log_weights=state1_log_weights,
             wrap_box_eval=bool(args.no_fixed_box),
             wrap_residue_blocks=wrap_blocks,
             shell_equiv_spec=shell_equiv_spec,
@@ -2723,6 +2975,7 @@ def create_model_from_args(
         "legacy_bar_regularizer_active": legacy_bar_active,
         "legacy_bar_lambda": legacy_bar_lambda,
         "lambda_bar": lambda_bar,
+        "bar_df_solver": str(args.bar_df_solver),
         "logJ_penalty_weight": logJ_penalty_weight,
         "objective_mode_description": _objective_mode_description(
             objective,
@@ -2730,6 +2983,18 @@ def create_model_from_args(
             legacy_bar_lambda=legacy_bar_lambda,
             logJ_penalty_weight=logJ_penalty_weight,
         ),
+        "reweighting": {
+            "enabled": bool(reweighting_enabled),
+            "allow_reweighted_bar": bool(getattr(args, "allow_reweighted_bar", False)),
+            "training_weight_normalization": reweighted_bar_weight_normalization,
+            "training_global_stats": reweighted_bar_global_stats,
+            "state0": state0_reweight_metadata,
+            "state1": state1_reweight_metadata,
+            "estimator_warning": (
+                "Unweighted estimates from biased enhanced-sampling trajectories are diagnostics only; "
+                "use reweighted estimates for equilibrium free energies."
+            ) if reweighting_enabled else None,
+        },
         "stochastic_training": None if stochastic_training_config is None else {
             "enabled": bool(stochastic_training_config.enabled),
             "kernel": stochastic_training_config.kernel,
@@ -2754,6 +3019,13 @@ def build_trainer(args: argparse.Namespace, outdir: Path) -> L.Trainer:
     ckpt_dir = outdir / "checkpoints"
     ckpt_cb = ModelCheckpoint(dirpath=str(ckpt_dir), save_top_k=1, monitor="loss", mode="min", filename="best")
     logger = CSVLogger(save_dir=str(outdir / "logs"), name="tfep")
+    trainer_kwargs: Dict[str, Any] = {}
+    gradient_clip_val = float(getattr(args, "gradient_clip_val", 0.0) or 0.0)
+    if gradient_clip_val < 0.0:
+        raise ValueError("--gradient-clip-val must be non-negative")
+    if gradient_clip_val > 0.0:
+        trainer_kwargs["gradient_clip_val"] = gradient_clip_val
+        trainer_kwargs["gradient_clip_algorithm"] = str(getattr(args, "gradient_clip_algorithm", "norm"))
     return L.Trainer(
         max_epochs=int(args.epochs),
         accelerator=args.torch_accelerator,
@@ -2763,6 +3035,7 @@ def build_trainer(args: argparse.Namespace, outdir: Path) -> L.Trainer:
         plugins=[LightningEnvironment()],
         enable_progress_bar=True,
         log_every_n_steps=1,
+        **trainer_kwargs,
     )
 
 
@@ -2810,6 +3083,7 @@ def run_training(
     run_config["lambda_bar"] = float(ctx.get("lambda_bar", float(args.lambda_bar)))
     run_config["logJ_penalty_weight"] = float(ctx.get("logJ_penalty_weight", 0.0))
     run_config["objective_mode_description"] = str(ctx.get("objective_mode_description", ""))
+    run_config["reweighting"] = ctx.get("reweighting", {"enabled": False})
     if train_indices_0 is not None:
         run_config["train_indices_0_count"] = int(len(train_indices_0))
     elif args.state0_train_indices_file is not None:

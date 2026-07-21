@@ -172,10 +172,17 @@ class MixedTransformer(MAFTransformer):
         cumulative_log_det_J = 0.0
 
         # Split the parameters by transformer.
-        parameters = torch.tensor_split(parameters, self._parameters_split_indices, dim=1)
+        # torch.tensor_split requires split indices to live on CPU even when the
+        # tensor being split is on CUDA.
+        split_indices = self._parameters_split_indices.cpu()
+        parameters = torch.tensor_split(parameters, split_indices, dim=1)
 
         # Run transformers.
         for idx, (transformer, par) in enumerate(zip(self._transformers, parameters)):
+            # MixedTransformer historically stores child transformers in a plain
+            # list, so their buffers are not moved by module.to(device). Keep the
+            # transformer constants on the same device as this parameter block.
+            transformer = transformer.to(par.device)
             indices = getattr(self, f'_indices{idx}')
             if inverse:
                 y[:, indices], log_det_J = transformer.inverse(x[:, indices], par)

@@ -239,6 +239,35 @@ def test_trajectory_dataset_auxiliary(dt):
     assert torch.all(aux[:, 2] == expected_second_column)
 
 
+def test_trajectory_dataset_log_weights_follow_trajectory_indices():
+    """Per-frame log weights stay aligned through subsampling and subsets."""
+    universe = MDAnalysis.Universe(CHLOROMETHANE_PDB_FILE_PATH)
+    trajectory_dataset = TrajectoryDataset(
+        universe,
+        return_dataset_sample_index=True,
+        return_trajectory_sample_index=True,
+    )
+    log_weights = np.arange(len(universe.trajectory), dtype=np.float64) + 0.25
+    trajectory_dataset.set_log_weights(log_weights)
+    trajectory_dataset.subsample(0, 4, 2)
+    subset = TrajectorySubset(trajectory_dataset, indices=[0, 2])
+
+    data_loader = torch.utils.data.DataLoader(subset, batch_size=2, shuffle=False)
+    batch = next(iter(data_loader))
+
+    expected_traj_idx = np.asarray([0, 4], dtype=int)
+    assert np.allclose(batch["trajectory_sample_index"], expected_traj_idx)
+    assert np.allclose(batch["log_weights"], log_weights[expected_traj_idx])
+
+
+def test_trajectory_dataset_rejects_misaligned_log_weights():
+    universe = MDAnalysis.Universe(CHLOROMETHANE_PDB_FILE_PATH)
+    trajectory_dataset = TrajectoryDataset(universe)
+
+    with pytest.raises(ValueError, match="underlying trajectory length"):
+        trajectory_dataset.set_log_weights(np.zeros(len(universe.trajectory) - 1))
+
+
 # =============================================================================
 # TEST TRAJECTORY SUBSET
 # =============================================================================

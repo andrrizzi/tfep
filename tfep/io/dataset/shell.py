@@ -139,8 +139,17 @@ class SolvationShellPermutingTrajectoryDataset(TrajectoryDataset):
 
         if self.return_trajectory_sample_index:
             if self.trajectory_sample_indices is None:
-                sample["trajectory_sample_index"] = int(idx)
+                trajectory_sample_index = int(idx)
             else:
-                sample["trajectory_sample_index"] = int(self.trajectory_sample_indices[int(idx)])
+                trajectory_sample_index = int(self.trajectory_sample_indices[int(idx)])
+            sample["trajectory_sample_index"] = trajectory_sample_index
+        else:
+            trajectory_sample_index = int(idx) if self.trajectory_sample_indices is None else int(self.trajectory_sample_indices[int(idx)])
+
+        if self._log_weights is not None:
+            sample["log_weights"] = torch.tensor(
+                self._log_weights[int(trajectory_sample_index)],
+                dtype=torch.get_default_dtype(),
+            )
 
         return sample

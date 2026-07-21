@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from tfep.analysis import reweighting as rwlib
 from tfep.analysis import tbar_cv_bootstrap as cv_mod
 
 
@@ -30,8 +31,29 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Number of training frames per state. The remainder is held out for validation.",
     )
     parser.add_argument(
+        "--val-count",
+        type=int,
+        default=None,
+        help=(
+            "Optional number of held-out validation frames per state. If omitted, "
+            "all frames not selected for training are used, preserving historical behavior."
+        ),
+    )
+    parser.add_argument(
+        "--large-val-count",
+        type=int,
+        default=None,
+        help="Optional disjoint final-validation frame count per state.",
+    )
+    parser.add_argument(
+        "--reserve-count",
+        type=int,
+        default=0,
+        help="Optional disjoint reserve frame count per state.",
+    )
+    parser.add_argument(
         "--split-mode",
-        choices=["random", "blocked"],
+        choices=["random", "blocked", "time-stratified"],
         default="random",
         help="How the small training subset is chosen from each trajectory.",
     )
@@ -125,17 +147,116 @@ def complement_indices(n_samples: int, selected_indices: np.ndarray) -> np.ndarr
     return np.nonzero(mask)[0].astype(int)
 
 
+def choose_validation_indices(
+    candidate_indices: np.ndarray,
+    n_pick: Optional[int],
+    mode: str,
+    seed: int,
+) -> np.ndarray:
+    """Select a validation subset from the non-training candidates."""
+    candidates = np.asarray(candidate_indices, dtype=int)
+    if n_pick is None:
+        return candidates
+    n_pick = int(n_pick)
+    if n_pick < 1:
+        raise ValueError("--val-count must be >= 1 when provided")
+    if n_pick > len(candidates):
+        raise ValueError(
+            f"--val-count={n_pick} exceeds available non-training frames "
+            f"({len(candidates)})."
+        )
+    if n_pick == len(candidates):
+        return candidates
+    rng = np.random.default_rng(seed)
+    if mode == "random":
+        return np.sort(rng.choice(candidates, size=n_pick, replace=False).astype(int))
+    if mode == "blocked":
+        start = int(rng.integers(0, len(candidates) - n_pick + 1))
+        return candidates[start:start + n_pick].astype(int)
+    raise ValueError(f"Unsupported split mode: {mode}")
+
+
+def choose_time_stratified_partitions(
+    n_samples: int,
+    counts: Dict[str, int],
+    *,
+    seed: int,
+    n_strata: int = 100,
+) -> Dict[str, np.ndarray]:
+    """Split a trajectory exactly while spreading every partition over time."""
+    if any(int(value) < 0 for value in counts.values()):
+        raise ValueError("Four-way split counts must be non-negative")
+    if sum(int(value) for value in counts.values()) != int(n_samples):
+        raise ValueError(
+            f"Four-way split counts sum to {sum(counts.values())}, expected {n_samples}"
+        )
+    labels = list(counts)
+    strata = [np.asarray(x, dtype=int) for x in np.array_split(np.arange(n_samples, dtype=int), min(n_strata, n_samples))]
+    remaining = {label: int(counts[label]) for label in labels}
+    allocations: list[dict[str, int]] = []
+    remaining_samples = int(n_samples)
+    for stratum_idx, stratum in enumerate(strata):
+        size = int(len(stratum))
+        alloc: dict[str, int] = {}
+        slots = size
+        for label in labels[:-1]:
+            if stratum_idx == len(strata) - 1:
+                take = min(remaining[label], slots)
+            else:
+                target = remaining[label] * size / max(remaining_samples, 1)
+                take = min(remaining[label], slots, int(round(target)))
+            alloc[label] = int(take)
+            remaining[label] -= int(take)
+            slots -= int(take)
+        last = labels[-1]
+        take_last = min(remaining[last], slots)
+        alloc[last] = int(take_last)
+        remaining[last] -= int(take_last)
+        slots -= int(take_last)
+        # Fill rounding slack from partitions with the largest unmet fraction.
+        while slots > 0:
+            candidates = [label for label in labels if remaining[label] > 0]
+            if not candidates:
+                raise RuntimeError("Could not fill time-stratified split allocation")
+            label = max(candidates, key=lambda x: remaining[x])
+            alloc[label] += 1
+            remaining[label] -= 1
+            slots -= 1
+        allocations.append(alloc)
+        remaining_samples -= size
+    if any(remaining.values()):
+        raise RuntimeError(f"Time-stratified allocation left unassigned counts: {remaining}")
+
+    rng = np.random.default_rng(seed)
+    selected: dict[str, list[np.ndarray]] = {label: [] for label in labels}
+    for stratum, alloc in zip(strata, allocations):
+        shuffled = rng.permutation(stratum)
+        start = 0
+        for label in labels:
+            stop = start + alloc[label]
+            selected[label].append(shuffled[start:stop])
+            start = stop
+    return {
+        label: np.sort(np.concatenate(chunks).astype(int)) if chunks else np.empty(0, dtype=int)
+        for label, chunks in selected.items()
+    }
+
+
 def write_report(
     args: argparse.Namespace,
     analysis_dir: Path,
     summary: Dict[str, Any],
     convergence_rows: List[Dict[str, Any]],
 ) -> None:
-    raw_validation = summary["held_out"]["raw"]
-    tfep_validation = summary["held_out"]["tfep"]
+    reweighted_primary = bool(summary.get("analysis", {}).get("primary_estimator") == "reweighted")
+    raw_validation = summary["held_out"]["raw_reweighted"] if reweighted_primary else summary["held_out"]["raw"]
+    tfep_validation = summary["held_out"]["tfep_reweighted"] if reweighted_primary else summary["held_out"]["tfep"]
+    raw_diagnostics = summary["held_out"]["raw"]
+    tfep_diagnostics = summary["held_out"]["tfep"]
     snf_validation = summary["held_out"].get("stochastic_path_tfep")
     comparison = summary["comparison"]
     split = summary["split"]
+    estimator_label = "reweighted BAR" if reweighted_primary else "BAR"
 
     lines = [
         "# Bromomethane TFEP/TMBAR Small-Train Holdout Report",
@@ -151,15 +272,16 @@ def write_report(
         f"- Bootstrap block size: `{int(args.bootstrap_block_size)}`",
         f"- Training objective: `{args.objective}`",
         f"- Flow space: `{args.flow_space}`",
+        f"- Primary validation estimator: `{estimator_label}`",
         "",
         "## Held-Out Validation",
         "",
-        f"- Raw BAR on held-out validation: `deltaf = {raw_validation['deltaf']:.6f} kT`, `sigma = {raw_validation['sigma']}`",
-        f"- TFEP BAR on held-out validation: `deltaf = {tfep_validation['deltaf']:.6f} kT`, `sigma = {tfep_validation['sigma']}`",
-        f"- Raw BAR-consistent overlap: `{raw_validation.get('overlap', np.nan):.4f}`",
-        f"- TFEP BAR-consistent overlap: `{tfep_validation.get('overlap', np.nan):.4f}`",
-        f"- Raw direct overlap (w_F vs w_R): `{raw_validation.get('direct_overlap', np.nan):.4f}`",
-        f"- TFEP direct overlap (w_F vs w_R): `{tfep_validation.get('direct_overlap', np.nan):.4f}`",
+        f"- Raw {estimator_label} on held-out validation: `deltaf = {raw_validation['deltaf']:.6f} kT`, `sigma = {raw_validation.get('sigma', np.nan)}`",
+        f"- TFEP {estimator_label} on held-out validation: `deltaf = {tfep_validation['deltaf']:.6f} kT`, `sigma = {tfep_validation.get('sigma', np.nan)}`",
+        f"- Raw BAR-consistent overlap diagnostic: `{raw_diagnostics.get('overlap', np.nan):.4f}`",
+        f"- TFEP BAR-consistent overlap diagnostic: `{tfep_diagnostics.get('overlap', np.nan):.4f}`",
+        f"- Raw direct overlap diagnostic (w_F vs w_R): `{raw_diagnostics.get('direct_overlap', np.nan):.4f}`",
+        f"- TFEP direct overlap diagnostic (w_F vs w_R): `{tfep_diagnostics.get('direct_overlap', np.nan):.4f}`",
         f"- TFEP minus raw held-out deltaf: `{comparison['tfep_minus_raw_validation_deltaf']:.6f} kT`",
         f"- Held-out sigma ratio TFEP/raw: `{comparison['mean_sigma_ratio_tfep_over_raw']}`",
         f"- Held-out forward work std ratio TFEP/raw: `{comparison['mean_forward_std_ratio_tfep_over_raw']}`",
@@ -189,7 +311,7 @@ def write_report(
                 "",
                 "## Convergence Data",
                 "",
-                "`convergence.csv` reports repeated held-out subsampling curves for raw BAR and TFEP BAR. "
+                f"`convergence.csv` reports repeated held-out subsampling curves for raw {estimator_label} and TFEP {estimator_label}. "
                 "Use `deltaf_std` as a sample-efficiency proxy and `mean_abs_error_vs_raw_validation` as a practical "
                 "accuracy proxy relative to the full held-out raw-BAR baseline.",
             ]
@@ -232,29 +354,36 @@ def build_holdout_fold_row(
     tfep_summary: Dict[str, Any],
     raw_bootstrap: Dict[str, Any],
     tfep_bootstrap: Dict[str, Any],
+    *,
+    estimator_mode: str = "unweighted",
+    raw_diagnostics: Optional[Dict[str, Any]] = None,
+    tfep_diagnostics: Optional[Dict[str, Any]] = None,
     snf_summary: Optional[Dict[str, Any]] = None,
     snf_bootstrap: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    raw_diag = raw_diagnostics or raw_summary
+    tfep_diag = tfep_diagnostics or tfep_summary
     row = {
         "fold": 0,
+        "estimator_mode": estimator_mode,
         "train0": int(manifest["train_count_per_state"]),
         "val0": int(manifest["val0_count"]),
         "train1": int(manifest["train_count_per_state"]),
         "val1": int(manifest["val1_count"]),
         "raw_deltaf": float(raw_summary["deltaf"]),
-        "raw_sigma": float(raw_summary["sigma"]),
-        "raw_overlap": float(raw_summary.get("overlap", np.nan)),
-        "raw_direct_overlap": float(raw_summary.get("direct_overlap", np.nan)),
+        "raw_sigma": float(raw_summary.get("sigma", np.nan)),
+        "raw_overlap": float(raw_diag.get("overlap", np.nan)),
+        "raw_direct_overlap": float(raw_diag.get("direct_overlap", np.nan)),
         "tfep_deltaf": float(tfep_summary["deltaf"]),
-        "tfep_sigma": float(tfep_summary["sigma"]),
-        "tfep_overlap": float(tfep_summary.get("overlap", np.nan)),
-        "tfep_direct_overlap": float(tfep_summary.get("direct_overlap", np.nan)),
+        "tfep_sigma": float(tfep_summary.get("sigma", np.nan)),
+        "tfep_overlap": float(tfep_diag.get("overlap", np.nan)),
+        "tfep_direct_overlap": float(tfep_diag.get("direct_overlap", np.nan)),
         "raw_bootstrap_std": float(raw_bootstrap["std"]),
         "tfep_bootstrap_std": float(tfep_bootstrap["std"]),
-        "raw_forward_std": float(raw_summary["w_forward_std"]),
-        "raw_reverse_std": float(raw_summary["w_reverse_std"]),
-        "tfep_forward_std": float(tfep_summary["w_forward_std"]),
-        "tfep_reverse_std": float(tfep_summary["w_reverse_std"]),
+        "raw_forward_std": float(raw_diag["w_forward_std"]),
+        "raw_reverse_std": float(raw_diag["w_reverse_std"]),
+        "tfep_forward_std": float(tfep_diag["w_forward_std"]),
+        "tfep_reverse_std": float(tfep_diag["w_reverse_std"]),
     }
     if snf_summary is not None:
         row.update(
@@ -269,6 +398,53 @@ def build_holdout_fold_row(
             }
         )
     return row
+
+
+def weighted_convergence_curve(
+    method: str,
+    w01: np.ndarray,
+    w10: np.ndarray,
+    logw01: Optional[np.ndarray],
+    logw10: Optional[np.ndarray],
+    *,
+    sample_sizes: List[int],
+    n_repeats: int,
+    reference_deltaf: float,
+    seed: int,
+) -> List[Dict[str, Any]]:
+    rng = np.random.default_rng(int(seed))
+    w01 = np.asarray(w01, dtype=np.float64)
+    w10 = np.asarray(w10, dtype=np.float64)
+    lw01 = None if logw01 is None else np.asarray(logw01, dtype=np.float64)
+    lw10 = None if logw10 is None else np.asarray(logw10, dtype=np.float64)
+    rows: List[Dict[str, Any]] = []
+    for n in sample_sizes:
+        n_eff = int(min(n, len(w01), len(w10)))
+        if n_eff < 2:
+            continue
+        estimates: List[float] = []
+        for _ in range(int(n_repeats)):
+            idx01 = rng.choice(len(w01), size=n_eff, replace=False)
+            idx10 = rng.choice(len(w10), size=n_eff, replace=False)
+            df, _ = rwlib.weighted_bar_deltaf(
+                w01[idx01],
+                w10[idx10],
+                None if lw01 is None else lw01[idx01],
+                None if lw10 is None else lw10[idx10],
+            )
+            if np.isfinite(df):
+                estimates.append(float(df))
+        arr = np.asarray(estimates, dtype=np.float64)
+        rows.append({
+            "method": method,
+            "sample_size": int(n_eff),
+            "n_repeats": int(n_repeats),
+            "n_finite": int(arr.size),
+            "deltaf_mean": float(np.mean(arr)) if arr.size else float("nan"),
+            "deltaf_std": float(np.std(arr, ddof=1)) if arr.size > 1 else float("nan"),
+            "mean_abs_error_vs_raw_validation": float(np.mean(np.abs(arr - float(reference_deltaf)))) if arr.size else float("nan"),
+        })
+    return rows
 
 
 def main() -> None:
@@ -301,15 +477,44 @@ def main() -> None:
 
     seed0 = int(args.seed) + int(args.split_seed_offset)
     seed1 = int(args.seed) + int(args.split_seed_offset) + 17
-    train0 = choose_train_indices(n_state0, train_count, args.split_mode, seed0)
-    train1 = choose_train_indices(n_state1, train_count, args.split_mode, seed1)
-    val0 = complement_indices(n_state0, train0)
-    val1 = complement_indices(n_state1, train1)
+    val_seed0 = int(args.seed) + int(args.split_seed_offset) + 101
+    val_seed1 = int(args.seed) + int(args.split_seed_offset) + 118
+    use_four_way = args.large_val_count is not None or int(args.reserve_count) > 0
+    if use_four_way:
+        if args.val_count is None or args.large_val_count is None:
+            raise ValueError("Four-way splitting requires --val-count and --large-val-count")
+        counts = {
+            "train": train_count,
+            "small_validation": int(args.val_count),
+            "large_validation": int(args.large_val_count),
+            "reserve": int(args.reserve_count),
+        }
+        if args.split_mode != "time-stratified":
+            raise ValueError("Explicit four-way splitting currently requires --split-mode time-stratified")
+        split0 = choose_time_stratified_partitions(n_state0, counts, seed=seed0)
+        split1 = choose_time_stratified_partitions(n_state1, counts, seed=seed1)
+        train0, train1 = split0["train"], split1["train"]
+        val0, val1 = split0["small_validation"], split1["small_validation"]
+        large0, large1 = split0["large_validation"], split1["large_validation"]
+        reserve0, reserve1 = split0["reserve"], split1["reserve"]
+    else:
+        train0 = choose_train_indices(n_state0, train_count, args.split_mode, seed0)
+        train1 = choose_train_indices(n_state1, train_count, args.split_mode, seed1)
+        val0_candidates = complement_indices(n_state0, train0)
+        val1_candidates = complement_indices(n_state1, train1)
+        val0 = choose_validation_indices(val0_candidates, args.val_count, args.split_mode, val_seed0)
+        val1 = choose_validation_indices(val1_candidates, args.val_count, args.split_mode, val_seed1)
+        large0 = large1 = reserve0 = reserve1 = np.empty(0, dtype=int)
 
     np.save(analysis_dir / "state0_train_indices.npy", train0)
     np.save(analysis_dir / "state1_train_indices.npy", train1)
     np.save(analysis_dir / "state0_val_indices.npy", val0)
     np.save(analysis_dir / "state1_val_indices.npy", val1)
+    if use_four_way:
+        np.save(analysis_dir / "state0_large_val_indices.npy", large0)
+        np.save(analysis_dir / "state1_large_val_indices.npy", large1)
+        np.save(analysis_dir / "state0_reserve_indices.npy", reserve0)
+        np.save(analysis_dir / "state1_reserve_indices.npy", reserve1)
 
     manifest = {
         "analysis_dir": str(analysis_dir),
@@ -318,9 +523,19 @@ def main() -> None:
         "train_count_per_state": int(train_count),
         "val0_count": int(len(val0)),
         "val1_count": int(len(val1)),
+        "val_count_requested": None if args.val_count is None else int(args.val_count),
+        "large_val0_count": int(len(large0)),
+        "large_val1_count": int(len(large1)),
+        "reserve0_count": int(len(reserve0)),
+        "reserve1_count": int(len(reserve1)),
+        "large_val_count_requested": None if args.large_val_count is None else int(args.large_val_count),
+        "reserve_count_requested": int(args.reserve_count),
+        "partitions_disjoint": bool(use_four_way),
         "split_mode": args.split_mode,
         "state0_split_seed": int(seed0),
         "state1_split_seed": int(seed1),
+        "state0_val_seed": int(val_seed0),
+        "state1_val_seed": int(val_seed1),
         "train_fraction_state0": float(len(train0) / n_state0),
         "train_fraction_state1": float(len(train1) / n_state1),
     }
@@ -380,6 +595,17 @@ def main() -> None:
     raw_w10 = np.asarray(eval_result["state1_state0"]["raw_work"], dtype=np.float64)
     tfep_w01 = np.asarray(eval_result["state0_state1"]["tfep_work"], dtype=np.float64)
     tfep_w10 = np.asarray(eval_result["state1_state0"]["tfep_work"], dtype=np.float64)
+    state0_log_weights_arr = np.asarray(eval_result["state0_state1"].get("log_weights", []), dtype=np.float64)
+    state1_log_weights_arr = np.asarray(eval_result["state1_state0"].get("log_weights", []), dtype=np.float64)
+    state0_log_weights = state0_log_weights_arr if len(state0_log_weights_arr) == len(raw_w01) and len(state0_log_weights_arr) > 0 else None
+    state1_log_weights = state1_log_weights_arr if len(state1_log_weights_arr) == len(raw_w10) and len(state1_log_weights_arr) > 0 else None
+    reweighting_enabled = state0_log_weights is not None or state1_log_weights is not None
+    raw_reweighted_summary = dict(eval_result.get("raw_reweighted", {})) if reweighting_enabled else None
+    tfep_reweighted_summary = dict(eval_result.get("tfep_reweighted", {})) if reweighting_enabled else None
+    raw_reweighted_bootstrap = None
+    tfep_reweighted_bootstrap = None
+    raw_reweighted_bootstrap_samples = None
+    tfep_reweighted_bootstrap_samples = None
     snf_w01 = None
     snf_w10 = None
     snf_summary = None
@@ -411,6 +637,31 @@ def main() -> None:
         ci=float(args.bootstrap_ci),
         seed=int(args.seed) + 9000,
     )
+    if reweighting_enabled:
+        raw_weighted_boot = rwlib.weighted_bootstrap_bar_summary(
+            raw_w01,
+            raw_w10,
+            state0_log_weights,
+            state1_log_weights,
+            n_boot=int(args.bootstrap_replicates),
+            ci=float(args.bootstrap_ci),
+            seed=int(args.seed) + 15000,
+            block_size=int(args.bootstrap_block_size),
+        )
+        raw_reweighted_bootstrap = raw_weighted_boot.summary
+        raw_reweighted_bootstrap_samples = raw_weighted_boot.samples
+        tfep_weighted_boot = rwlib.weighted_bootstrap_bar_summary(
+            tfep_w01,
+            tfep_w10,
+            state0_log_weights,
+            state1_log_weights,
+            n_boot=int(args.bootstrap_replicates),
+            ci=float(args.bootstrap_ci),
+            seed=int(args.seed) + 19000,
+            block_size=int(args.bootstrap_block_size),
+        )
+        tfep_reweighted_bootstrap = tfep_weighted_boot.summary
+        tfep_reweighted_bootstrap_samples = tfep_weighted_boot.samples
     if snf_w01 is not None and snf_w10 is not None:
         snf_bootstrap, snf_bootstrap_samples = cv_mod.bootstrap_bar_summary(
             snf_w01,
@@ -436,38 +687,81 @@ def main() -> None:
         sample_sizes = [n for n in sample_sizes if n <= n_common]
 
     if sample_sizes:
-        convergence_rows.extend(
-            cv_mod.convergence_curve(
-                "raw_bar",
-                raw_w01,
-                raw_w10,
-                sample_sizes=sample_sizes,
-                n_repeats=int(args.convergence_replicates),
-                reference_deltaf=float(raw_summary["deltaf"]),
-                block_size=int(args.bootstrap_block_size),
-                seed=int(args.seed) + 23000,
+        if reweighting_enabled:
+            convergence_rows.extend(
+                weighted_convergence_curve(
+                    "raw_reweighted_bar",
+                    raw_w01,
+                    raw_w10,
+                    state0_log_weights,
+                    state1_log_weights,
+                    sample_sizes=sample_sizes,
+                    n_repeats=int(args.convergence_replicates),
+                    reference_deltaf=float(raw_reweighted_summary["deltaf"]),
+                    seed=int(args.seed) + 23000,
+                )
             )
-        )
-        convergence_rows.extend(
-            cv_mod.convergence_curve(
-                "tfep_bar",
-                tfep_w01,
-                tfep_w10,
-                sample_sizes=sample_sizes,
-                n_repeats=int(args.convergence_replicates),
-                reference_deltaf=float(raw_summary["deltaf"]),
-                block_size=int(args.bootstrap_block_size),
-                seed=int(args.seed) + 27000,
+            convergence_rows.extend(
+                weighted_convergence_curve(
+                    "tfep_reweighted_bar",
+                    tfep_w01,
+                    tfep_w10,
+                    state0_log_weights,
+                    state1_log_weights,
+                    sample_sizes=sample_sizes,
+                    n_repeats=int(args.convergence_replicates),
+                    reference_deltaf=float(raw_reweighted_summary["deltaf"]),
+                    seed=int(args.seed) + 27000,
+                )
             )
-        )
-        for row in convergence_rows:
-            row["mean_abs_error_vs_raw_validation"] = row.pop("mean_abs_error_vs_raw_full")
+        else:
+            convergence_rows.extend(
+                cv_mod.convergence_curve(
+                    "raw_bar",
+                    raw_w01,
+                    raw_w10,
+                    sample_sizes=sample_sizes,
+                    n_repeats=int(args.convergence_replicates),
+                    reference_deltaf=float(raw_summary["deltaf"]),
+                    block_size=int(args.bootstrap_block_size),
+                    seed=int(args.seed) + 23000,
+                )
+            )
+            convergence_rows.extend(
+                cv_mod.convergence_curve(
+                    "tfep_bar",
+                    tfep_w01,
+                    tfep_w10,
+                    sample_sizes=sample_sizes,
+                    n_repeats=int(args.convergence_replicates),
+                    reference_deltaf=float(raw_summary["deltaf"]),
+                    block_size=int(args.bootstrap_block_size),
+                    seed=int(args.seed) + 27000,
+                )
+            )
+            for row in convergence_rows:
+                row["mean_abs_error_vs_raw_validation"] = row.pop("mean_abs_error_vs_raw_full")
+
+    primary_estimator = "reweighted" if reweighting_enabled else "unweighted"
+    primary_raw_summary = raw_reweighted_summary if reweighting_enabled and raw_reweighted_summary else raw_summary
+    primary_tfep_summary = tfep_reweighted_summary if reweighting_enabled and tfep_reweighted_summary else tfep_summary
+    primary_raw_bootstrap = raw_reweighted_bootstrap if reweighting_enabled and raw_reweighted_bootstrap else raw_bootstrap
+    primary_tfep_bootstrap = tfep_reweighted_bootstrap if reweighting_enabled and tfep_reweighted_bootstrap else tfep_bootstrap
 
     comparison = cv_mod.pooled_summary([raw_summary], [tfep_summary])
-    comparison["tfep_minus_raw_validation_deltaf"] = float(tfep_summary["deltaf"] - raw_summary["deltaf"])
+    comparison["estimator_mode"] = primary_estimator
+    comparison["tfep_minus_raw_validation_deltaf"] = float(primary_tfep_summary["deltaf"] - primary_raw_summary["deltaf"])
+    comparison["unweighted_tfep_minus_raw_validation_deltaf"] = float(tfep_summary["deltaf"] - raw_summary["deltaf"])
+    if reweighting_enabled:
+        comparison["reweighted_tfep_minus_raw_validation_deltaf"] = float(
+            primary_tfep_summary["deltaf"] - primary_raw_summary["deltaf"]
+        )
+        comparison["mean_sigma_ratio_tfep_over_raw"] = float(
+            primary_tfep_bootstrap["std"] / primary_raw_bootstrap["std"]
+        ) if float(primary_raw_bootstrap["std"]) != 0.0 else float("nan")
     if snf_summary is not None:
-        comparison["snf_minus_raw_validation_deltaf"] = float(snf_summary["deltaf"] - raw_summary["deltaf"])
-        comparison["snf_minus_tfep_validation_deltaf"] = float(snf_summary["deltaf"] - tfep_summary["deltaf"])
+        comparison["snf_minus_raw_validation_deltaf"] = float(snf_summary["deltaf"] - primary_raw_summary["deltaf"])
+        comparison["snf_minus_tfep_validation_deltaf"] = float(snf_summary["deltaf"] - primary_tfep_summary["deltaf"])
         comparison["sigma_ratio_snf_over_raw"] = float(snf_summary["sigma"] / raw_summary["sigma"]) if float(raw_summary["sigma"]) != 0.0 else float("nan")
 
     summary = {
@@ -477,6 +771,12 @@ def main() -> None:
             "bootstrap_replicates": int(args.bootstrap_replicates),
             "bootstrap_block_size": int(args.bootstrap_block_size),
             "bootstrap_ci": float(args.bootstrap_ci),
+            "primary_estimator": primary_estimator,
+            "primary_estimator_note": (
+                "Enhanced-sampling log weights are present, so plots and fold metrics use raw_reweighted/tfep_reweighted estimates."
+                if reweighting_enabled else
+                "No enhanced-sampling log weights were present, so plots and fold metrics use ordinary unweighted BAR estimates."
+            ),
             "overlap_definition": "BAR-consistent histogram overlap of forward work w_F and sign-flipped reverse work -w_R",
             "direct_overlap_definition": "Direct histogram overlap of forward work w_F and reverse work w_R on their native axes",
         },
@@ -489,6 +789,20 @@ def main() -> None:
         },
         "comparison": comparison,
     }
+    if reweighting_enabled:
+        summary["reweighting"] = {
+            "enabled": True,
+            "state0": rwlib.log_weight_diagnostics(state0_log_weights),
+            "state1": rwlib.log_weight_diagnostics(state1_log_weights),
+            "statistical_note": (
+                "Unweighted raw/TFEP estimates from biased enhanced-sampling trajectories "
+                "are diagnostics only; use raw_reweighted/tfep_reweighted for equilibrium estimates."
+            ),
+        }
+        summary["held_out"]["raw_reweighted"] = raw_reweighted_summary
+        summary["held_out"]["tfep_reweighted"] = tfep_reweighted_summary
+        summary["held_out"]["raw_reweighted_bootstrap"] = raw_reweighted_bootstrap
+        summary["held_out"]["tfep_reweighted_bootstrap"] = tfep_reweighted_bootstrap
     if snf_summary is not None:
         summary["held_out"]["stochastic_path_tfep"] = snf_summary
         summary["held_out"]["stochastic_path_tfep_bootstrap"] = snf_bootstrap
@@ -508,10 +822,13 @@ def main() -> None:
         [
             build_holdout_fold_row(
                 manifest,
-                raw_summary,
-                tfep_summary,
-                raw_bootstrap,
-                tfep_bootstrap,
+                primary_raw_summary,
+                primary_tfep_summary,
+                primary_raw_bootstrap,
+                primary_tfep_bootstrap,
+                estimator_mode=primary_estimator,
+                raw_diagnostics=raw_summary,
+                tfep_diagnostics=tfep_summary,
                 snf_summary=snf_summary,
                 snf_bootstrap=snf_bootstrap,
             )
@@ -522,6 +839,7 @@ def main() -> None:
 
     if args.save_work_arrays:
         snf_arrays: Dict[str, np.ndarray] = {}
+        reweighted_arrays: Dict[str, np.ndarray] = {}
         arrays = {
             "state0_state1_traj_idx": eval_result["state0_state1"]["trajectory_sample_index"],
             "state1_state0_traj_idx": eval_result["state1_state0"]["trajectory_sample_index"],
@@ -532,6 +850,28 @@ def main() -> None:
             "raw_bootstrap_deltaf": raw_bootstrap_samples,
             "tfep_bootstrap_deltaf": tfep_bootstrap_samples,
         }
+        if reweighting_enabled:
+            if state0_log_weights is not None:
+                arrays["state0_log_weights"] = np.asarray(state0_log_weights, dtype=np.float64)
+            if state1_log_weights is not None:
+                arrays["state1_log_weights"] = np.asarray(state1_log_weights, dtype=np.float64)
+            arrays["raw_reweighted_deltaf"] = np.asarray(
+                [float(raw_reweighted_summary.get("deltaf", np.nan)) if raw_reweighted_summary else np.nan],
+                dtype=np.float64,
+            )
+            arrays["tfep_reweighted_deltaf"] = np.asarray(
+                [float(tfep_reweighted_summary.get("deltaf", np.nan)) if tfep_reweighted_summary else np.nan],
+                dtype=np.float64,
+            )
+            arrays["raw_reweighted_bootstrap_deltaf"] = np.asarray(raw_reweighted_bootstrap_samples, dtype=np.float64)
+            arrays["tfep_reweighted_bootstrap_deltaf"] = np.asarray(tfep_reweighted_bootstrap_samples, dtype=np.float64)
+            reweighted_arrays = {
+                key: np.asarray(value)
+                for key, value in arrays.items()
+                if key.startswith("state") and key.endswith("_log_weights")
+                or key.startswith("raw_reweighted")
+                or key.startswith("tfep_reweighted")
+            }
         if snf_w01 is not None and snf_w10 is not None:
             snf_arrays.update({
                 "snf_w01": snf_w01,
@@ -569,10 +909,12 @@ def main() -> None:
             tfep_w10,
             raw_bootstrap_samples,
             tfep_bootstrap_samples,
-            extra_arrays=snf_arrays,
+            extra_arrays={**reweighted_arrays, **snf_arrays},
         )
 
-    cv_mod.maybe_plot_bootstrap(raw_bootstrap_samples, tfep_bootstrap_samples, analysis_dir / "bootstrap_deltaf.png")
+    plot_raw_bootstrap_samples = raw_reweighted_bootstrap_samples if reweighting_enabled else raw_bootstrap_samples
+    plot_tfep_bootstrap_samples = tfep_reweighted_bootstrap_samples if reweighting_enabled else tfep_bootstrap_samples
+    cv_mod.maybe_plot_bootstrap(plot_raw_bootstrap_samples, plot_tfep_bootstrap_samples, analysis_dir / "bootstrap_deltaf.png")
     cv_mod.maybe_plot_convergence(
         convergence_rows,
         value_key="deltaf_std",

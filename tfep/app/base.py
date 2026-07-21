@@ -14,6 +14,7 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+import math
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import lightning
@@ -1085,7 +1086,11 @@ class TMBARMapBase(TFEPMapBase):
         bar_warm_start: bool = True,
         bar_max_iter: int = 25,
         bar_tol: float = 1e-10,
+        bar_df_solver: Literal['newton', 'robust'] = 'newton',
         logJ_penalty_weight: float = 0.0,
+        allow_reweighted_bar: bool = False,
+        reweighted_bar_weight_normalization: Literal['minibatch', 'global'] = 'minibatch',
+        reweighted_bar_global_stats: Optional[Dict[str, Dict[str, float]]] = None,
         stochastic_training_config: Optional[Any] = None,
         **kwargs,
     ):
@@ -1141,7 +1146,23 @@ class TMBARMapBase(TFEPMapBase):
         self._bar_warm_start = bool(bar_warm_start)
         self._bar_max_iter = int(bar_max_iter)
         self._bar_tol = float(bar_tol)
+        self._bar_df_solver = str(bar_df_solver).lower()
+        if self._bar_df_solver not in ('newton', 'robust'):
+            raise ValueError(
+                f"Unsupported bar_df_solver {bar_df_solver!r}. "
+                "Expected one of: 'newton', 'robust'."
+            )
         self._logJ_penalty_weight = float(logJ_penalty_weight)
+        self._allow_reweighted_bar = bool(allow_reweighted_bar)
+        self._reweighted_bar_weight_normalization = str(reweighted_bar_weight_normalization).lower()
+        if self._reweighted_bar_weight_normalization not in ('minibatch', 'global'):
+            raise ValueError(
+                "Unsupported reweighted_bar_weight_normalization "
+                f"{reweighted_bar_weight_normalization!r}. Expected 'minibatch' or 'global'."
+            )
+        self._reweighted_bar_global_stats = {
+            str(key): dict(value) for key, value in (reweighted_bar_global_stats or {}).items()
+        }
         from tfep.stochastic.training import StochasticTrainingConfig
         self._stochastic_training_config = StochasticTrainingConfig.from_any(stochastic_training_config)
         self._stochastic_training_config.validate()
@@ -1162,12 +1183,73 @@ class TMBARMapBase(TFEPMapBase):
         """Lightning method. Create both datasets and the flow."""
         self.dataset = self.create_dataset()
         self.dataset_2 = self.create_dataset_2()
+        if self._reweighted_bar_weight_normalization == 'global':
+            self._complete_reweighted_bar_global_stats()
 
         # Identify mapped/conditioning/fixed indices using the first dataset.
         self.determine_atom_indices()
 
         flow = self.configure_flow()
         self._flow = self.create_partial_flow(flow)
+
+    @staticmethod
+    def _uniform_reweighted_bar_stats(population_size: int) -> Dict[str, float]:
+        n = int(population_size)
+        if n <= 0:
+            raise ValueError("Global weighted BAR requires a positive training population")
+        return {
+            'population_size': n,
+            'log_normalizer': float(math.log(float(n))),
+            'ess': float(n),
+            'ess_ratio': 1.0,
+            'weighted': False,
+        }
+
+    def _complete_reweighted_bar_global_stats(self) -> None:
+        """Validate global constants against the two actual training datasets."""
+        for key, dataset in (('state0', self.dataset), ('state1', self.dataset_2)):
+            n_dataset = int(len(dataset))
+            stats = self._reweighted_bar_global_stats.get(key)
+            if stats is None:
+                stats = self._uniform_reweighted_bar_stats(n_dataset)
+                self._reweighted_bar_global_stats[key] = stats
+            n_stats = int(stats.get('population_size', -1))
+            if n_stats != n_dataset:
+                raise ValueError(
+                    f"Global weighted BAR {key} population size {n_stats} does not match "
+                    f"the training dataset size {n_dataset}"
+                )
+            for field in ('log_normalizer', 'ess'):
+                value = float(stats.get(field, float('nan')))
+                if not math.isfinite(value) or (field == 'ess' and value <= 0.0):
+                    raise ValueError(f"Invalid global weighted BAR {key} {field}: {value}")
+
+    def _global_reweighted_bar_terms(self, *, device, dtype) -> Optional[Dict[str, Any]]:
+        if self._reweighted_bar_weight_normalization != 'global':
+            return None
+        missing = [key for key in ('state0', 'state1') if key not in self._reweighted_bar_global_stats]
+        if missing:
+            raise RuntimeError(
+                "Global weighted BAR statistics were not initialized for " + ", ".join(missing)
+            )
+        state0 = self._reweighted_bar_global_stats['state0']
+        state1 = self._reweighted_bar_global_stats['state1']
+        ess0 = torch.as_tensor(float(state0['ess']), device=device, dtype=dtype)
+        ess1 = torch.as_tensor(float(state1['ess']), device=device, dtype=dtype)
+        return {
+            # ESS is a precision diagnostic, not an additive free-energy term.
+            'log_ratio': torch.zeros((), device=device, dtype=dtype),
+            'log_weight_normalizer_forward': torch.as_tensor(
+                float(state0['log_normalizer']), device=device, dtype=dtype
+            ),
+            'log_weight_normalizer_reverse': torch.as_tensor(
+                float(state1['log_normalizer']), device=device, dtype=dtype
+            ),
+            'population_size_forward': int(state0['population_size']),
+            'population_size_reverse': int(state1['population_size']),
+            'ess_forward': ess0,
+            'ess_reverse': ess1,
+        }
 
     def create_dataset_2(self):
         universe = self.create_universe_2()
@@ -1324,6 +1406,7 @@ class TMBARMapBase(TFEPMapBase):
                     'trajectory_sample_index': batch_data['trajectory_sample_index'],
                     'potential': u_to,
                     'log_det_J': log_det_J,
+                    **({'log_weights': log_weights} if log_weights is not None else {}),
                     **{k: v for k, v in result.items() if hasattr(v, 'shape') and v.shape == log_det_J.shape},
                 },
                 epoch_idx=self.trainer.current_epoch,
@@ -1361,29 +1444,101 @@ class TMBARMapBase(TFEPMapBase):
             *,
             w01: torch.Tensor,
             w10: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+            log_weights01: Optional[torch.Tensor] = None,
+            log_weights10: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[Any]]:
         """Compute BAR objective and detached df estimate for objective=bar/hybrid."""
         from tfep.regularizers import bar as barlib
+        from tfep.analysis import reweighting as rwlib
 
         n0 = int(w01.numel())
         n1 = int(w10.numel())
         log_ratio = self._log_sample_ratio(n0, n1, device=w01.device, dtype=w01.dtype)
+        weighted = log_weights01 is not None or log_weights10 is not None
+
+        if weighted:
+            global_terms = self._global_reweighted_bar_terms(device=w01.device, dtype=w01.dtype)
+            log_ratio = (
+                torch.zeros((), device=w01.device, dtype=w01.dtype)
+                if global_terms is None else global_terms['log_ratio']
+            )
+            global_kwargs = {} if global_terms is None else {
+                key: global_terms[key] for key in (
+                    'log_weight_normalizer_forward',
+                    'log_weight_normalizer_reverse',
+                    'population_size_forward',
+                    'population_size_reverse',
+                )
+            }
+
+            df_init = self._last_df_bar_obj if self._bar_warm_start else None
+            solver_info = None
+            if self._bar_df_solver == 'robust':
+                solver_info = rwlib.weighted_bar_robust_solve_detached(
+                    w01.detach(),
+                    w10.detach(),
+                    log_weights_forward=log_weights01.detach() if log_weights01 is not None else None,
+                    log_weights_reverse=log_weights10.detach() if log_weights10 is not None else None,
+                    log_ratio=log_ratio.detach(),
+                    df_init=df_init.detach() if df_init is not None else None,
+                    max_iter=self._bar_max_iter,
+                    tol=self._bar_tol,
+                    **global_kwargs,
+                )
+                df_bar = solver_info.df.detach()
+            else:
+                df_bar = rwlib.weighted_bar_newton_solve_detached(
+                    w01.detach(),
+                    w10.detach(),
+                    log_weights_forward=log_weights01.detach() if log_weights01 is not None else None,
+                    log_weights_reverse=log_weights10.detach() if log_weights10 is not None else None,
+                    log_ratio=log_ratio.detach(),
+                    df_init=df_init.detach() if df_init is not None else None,
+                    max_iter=self._bar_max_iter,
+                    tol=self._bar_tol,
+                    **global_kwargs,
+                ).detach()
+            self._last_df_bar_obj = df_bar
+
+            df_for_obj = df_bar.detach() if self._bar_detach_df else df_bar
+            bar_obj = rwlib.weighted_bar_objective(
+                w01,
+                w10,
+                df_for_obj,
+                log_ratio,
+                log_weights_forward=log_weights01,
+                log_weights_reverse=log_weights10,
+                **global_kwargs,
+            )
+            return bar_obj, df_bar, solver_info
 
         # Detached Newton solve (optionally warm-started).
         df_init = self._last_df_bar_obj if self._bar_warm_start else None
-        df_bar = barlib._bar_newton_solve_detached(
-            w01.detach(),
-            w10.detach(),
-            log_ratio=log_ratio.detach(),
-            df_init=df_init.detach() if df_init is not None else None,
-            max_iter=self._bar_max_iter,
-            tol=self._bar_tol,
-        ).detach()
+        solver_info = None
+        if self._bar_df_solver == 'robust':
+            solver_info = rwlib.weighted_bar_robust_solve_detached(
+                w01.detach(),
+                w10.detach(),
+                log_ratio=log_ratio.detach(),
+                df_init=df_init.detach() if df_init is not None else None,
+                max_iter=self._bar_max_iter,
+                tol=self._bar_tol,
+            )
+            df_bar = solver_info.df.detach()
+        else:
+            df_bar = barlib._bar_newton_solve_detached(
+                w01.detach(),
+                w10.detach(),
+                log_ratio=log_ratio.detach(),
+                df_init=df_init.detach() if df_init is not None else None,
+                max_iter=self._bar_max_iter,
+                tol=self._bar_tol,
+            ).detach()
         self._last_df_bar_obj = df_bar
 
         df_for_obj = df_bar.detach() if self._bar_detach_df else df_bar
         bar_obj = barlib.bar_objective(w01, w10, df_for_obj, log_ratio)
-        return bar_obj, df_bar
+        return bar_obj, df_bar, solver_info
 
     def _jacobian_penalty_term(self, logJ01: torch.Tensor, logJ10: torch.Tensor) -> torch.Tensor:
         """Quadratic penalty guarding against runaway Jacobian magnitudes."""
@@ -1393,6 +1548,155 @@ class TMBARMapBase(TFEPMapBase):
             device=logJ_sq.device,
             dtype=logJ_sq.dtype,
         ) * logJ_sq
+
+    def _log_finite_tensor_stats(self, name: str, values: torch.Tensor) -> None:
+        """Log passive diagnostics without altering the training objective."""
+        flat = torch.as_tensor(values).detach().reshape(-1)
+        finite = flat[torch.isfinite(flat)]
+        if finite.numel() == 0:
+            nan = torch.as_tensor(float("nan"), device=flat.device, dtype=flat.dtype)
+            self.log(f"{name}_mean", nan)
+            self.log(f"{name}_std", nan)
+            self.log(f"{name}_max_abs", nan)
+            return
+        self.log(f"{name}_mean", finite.mean())
+        self.log(f"{name}_std", finite.std(unbiased=False))
+        self.log(f"{name}_max_abs", finite.abs().max())
+
+    def _log_weight_training_diagnostics(
+            self,
+            name_suffix: str,
+            log_weights: Optional[torch.Tensor],
+            *,
+            n_samples: int,
+            device: torch.device,
+            dtype: torch.dtype,
+    ) -> None:
+        """Log ESS/span diagnostics for biased-training weights."""
+        if log_weights is None:
+            ess = torch.as_tensor(float(n_samples), device=device, dtype=dtype)
+            ess_ratio = torch.as_tensor(1.0, device=device, dtype=dtype)
+            span = torch.as_tensor(0.0, device=device, dtype=dtype)
+        else:
+            logw = torch.as_tensor(log_weights, device=device, dtype=dtype).detach().reshape(-1)
+            finite = logw[torch.isfinite(logw)]
+            if finite.numel() == 0:
+                ess = torch.as_tensor(float("nan"), device=device, dtype=dtype)
+                ess_ratio = torch.as_tensor(float("nan"), device=device, dtype=dtype)
+                span = torch.as_tensor(float("nan"), device=device, dtype=dtype)
+            else:
+                norm = finite - torch.logsumexp(finite, dim=0)
+                weights = torch.exp(norm)
+                ess = 1.0 / torch.sum(weights * weights)
+                ess_ratio = ess / torch.as_tensor(float(finite.numel()), device=device, dtype=dtype)
+                span = finite.max() - finite.min()
+        self.log(f"log_weight_ess{name_suffix}", ess)
+        self.log(f"log_weight_ess_ratio{name_suffix}", ess_ratio)
+        self.log(f"log_weight_span{name_suffix}", span)
+
+    def _bar_log_ratio_for_diagnostics(
+            self,
+            w01: torch.Tensor,
+            w10: torch.Tensor,
+            log_weights01: Optional[torch.Tensor],
+            log_weights10: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """Return the balance offset used by BAR training diagnostics."""
+        n0 = int(w01.numel())
+        n1 = int(w10.numel())
+        device = w01.device
+        dtype = w01.dtype
+        if log_weights01 is None and log_weights10 is None:
+            return self._log_sample_ratio(n0, n1, device=device, dtype=dtype).detach()
+
+        global_terms = self._global_reweighted_bar_terms(device=device, dtype=dtype)
+        if global_terms is not None:
+            return global_terms['log_ratio'].detach()
+
+        return torch.zeros((), device=device, dtype=dtype)
+
+    def _log_bar_training_diagnostics(
+            self,
+            *,
+            w01: torch.Tensor,
+            w10: torch.Tensor,
+            df_bar: torch.Tensor,
+            log_weights01: Optional[torch.Tensor],
+            log_weights10: Optional[torch.Tensor],
+    ) -> None:
+        """Log BAR/work diagnostics without changing estimator or gradients."""
+        self._log_finite_tensor_stats("w01", w01)
+        self._log_finite_tensor_stats("w10", w10)
+
+        has_reweighting = log_weights01 is not None or log_weights10 is not None
+        if has_reweighting:
+            self._log_weight_training_diagnostics(
+                "01",
+                log_weights01,
+                n_samples=int(w01.numel()),
+                device=w01.device,
+                dtype=w01.dtype,
+            )
+            self._log_weight_training_diagnostics(
+                "10",
+                log_weights10,
+                n_samples=int(w10.numel()),
+                device=w10.device,
+                dtype=w10.dtype,
+            )
+            global_terms = self._global_reweighted_bar_terms(device=w01.device, dtype=w01.dtype)
+            if global_terms is not None:
+                self.log('global_log_weight_ess01', global_terms['ess_forward'])
+                self.log('global_log_weight_ess10', global_terms['ess_reverse'])
+                self.log('global_bar_log_ratio', global_terms['log_ratio'])
+                self.log(
+                    'global_weight_normalization_enabled',
+                    torch.as_tensor(1.0, device=w01.device, dtype=w01.dtype),
+                )
+
+        log_ratio = self._bar_log_ratio_for_diagnostics(w01, w10, log_weights01, log_weights10)
+        df = torch.as_tensor(df_bar, device=w01.device, dtype=w01.dtype).detach().reshape(())
+        arg01 = w01.detach().reshape(-1) - df - log_ratio
+        arg10 = w10.detach().reshape(-1) + df + log_ratio
+
+        def _finite_max_abs(values: torch.Tensor) -> torch.Tensor:
+            finite = values[torch.isfinite(values)]
+            if finite.numel() == 0:
+                return torch.as_tensor(float("nan"), device=values.device, dtype=values.dtype)
+            return finite.abs().max()
+
+        self.log("bar_arg_forward_max_abs", _finite_max_abs(arg01))
+        self.log("bar_arg_reverse_max_abs", _finite_max_abs(arg10))
+
+    def _log_bar_solver_diagnostics(
+            self,
+            solver_info: Optional[Any],
+            df_bar: torch.Tensor,
+            *,
+            device: torch.device,
+            dtype: torch.dtype,
+    ) -> None:
+        """Log detached BAR solver diagnostics when the robust path is enabled."""
+        if self._bar_df_solver != 'robust':
+            return
+
+        def _scalar(value: float) -> torch.Tensor:
+            return torch.as_tensor(float(value), device=device, dtype=dtype)
+
+        self.log("bar_df_value", torch.as_tensor(df_bar, device=device, dtype=dtype).detach().reshape(()))
+        if solver_info is None:
+            self.log("bar_df_solver_used_fallback", _scalar(float("nan")))
+            self.log("bar_df_solver_converged", _scalar(float("nan")))
+            self.log("bar_df_solver_iterations", _scalar(float("nan")))
+            self.log("bar_df_solver_residual_abs", _scalar(float("nan")))
+            return
+        self.log("bar_df_solver_used_fallback", _scalar(1.0 if solver_info.used_fallback else 0.0))
+        self.log("bar_df_solver_converged", _scalar(1.0 if solver_info.converged else 0.0))
+        self.log("bar_df_solver_iterations", _scalar(float(solver_info.iterations)))
+        self.log(
+            "bar_df_solver_residual_abs",
+            torch.as_tensor(solver_info.residual_abs, device=device, dtype=dtype).detach().reshape(()),
+        )
 
     def training_step(self, batch, batch_idx):
         """Lightning method. Compute forward + reverse losses (and optional minibatch regularizer)."""
@@ -1414,12 +1718,20 @@ class TMBARMapBase(TFEPMapBase):
         if self._objective in ('bar', 'hybrid'):
             b0 = batch['batch_1']
             b1 = batch['batch_2']
+            logw0 = b0.get('log_weights', None)
+            if logw0 is None and 'bias' in b0:
+                logw0 = b0['bias'] / self._kT
+            logw1 = b1.get('log_weights', None)
+            if logw1 is None and 'bias' in b1:
+                logw1 = b1['bias'] / self._kT
+            has_reweighting = logw0 is not None or logw1 is not None
 
-            # (Optional) for now, refuse biased batches unless you implement weighted-BAR.
-            if ('log_weights' in b0) or ('bias' in b0) or ('log_weights' in b1) or ('bias' in b1):
+            # Reweighted BAR is experimental and must be explicitly selected so
+            # biased trajectories cannot silently enter the ordinary BAR path.
+            if has_reweighting and not self._allow_reweighted_bar:
                 raise NotImplementedError(
                     "BAR-matched objective currently assumes unbiased sampling in each state. "
-                    "If you need reweighting (bias/log_weights), implement weighted-BAR/MBAR."
+                    "Pass --allow-reweighted-bar to enable the experimental weighted BAR objective."
                 )
 
             # Safety if u_from wasn't returned for some reason
@@ -1453,10 +1765,30 @@ class TMBARMapBase(TFEPMapBase):
                     logJ10=logJ10,
                     u1_x1=u1_x1,
                 )
-            bar_obj, df_bar = self._bar_objective_term(w01=w01, w10=w10)
+            bar_obj, df_bar, solver_info = self._bar_objective_term(
+                w01=w01,
+                w10=w10,
+                log_weights01=logw0,
+                log_weights10=logw1,
+            )
+            self._log_bar_training_diagnostics(
+                w01=w01,
+                w10=w10,
+                df_bar=df_bar,
+                log_weights01=logw0,
+                log_weights10=logw1,
+            )
+            self._log_bar_solver_diagnostics(
+                solver_info,
+                df_bar,
+                device=bar_obj.device,
+                dtype=bar_obj.dtype,
+            )
 
             self.log('df_bar_obj', df_bar)
             self.log('bar_obj', bar_obj)
+            if has_reweighting:
+                self.log('reweighted_bar_enabled', torch.as_tensor(1.0, device=bar_obj.device, dtype=bar_obj.dtype))
             if snf_training is not None:
                 self.log('snf_df_bar_obj', df_bar)
                 self.log('snf_bar_obj', bar_obj)

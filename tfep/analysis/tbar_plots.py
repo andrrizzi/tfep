@@ -338,7 +338,24 @@ def extract_summary_views(summary: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict
         )
     if "held_out" in summary:
         held_out = summary.get("held_out", {})
-        comparison = summary.get("comparison", {})
+        comparison = dict(summary.get("comparison", {}))
+        use_reweighted = (
+            bool(summary.get("reweighting", {}).get("enabled"))
+            and isinstance(held_out.get("raw_reweighted"), dict)
+            and isinstance(held_out.get("tfep_reweighted"), dict)
+        )
+        if use_reweighted:
+            raw = held_out.get("raw_reweighted", {})
+            tfep = held_out.get("tfep_reweighted", {})
+            if np.isfinite(_maybe_float(raw.get("deltaf"))) and np.isfinite(_maybe_float(tfep.get("deltaf"))):
+                comparison["tfep_minus_raw_validation_deltaf"] = float(tfep["deltaf"]) - float(raw["deltaf"])
+            return (
+                raw,
+                tfep,
+                comparison,
+                "Holdout Summary (reweighted)",
+                "tfep_minus_raw_validation_deltaf",
+            )
         return (
             held_out.get("raw", {}),
             held_out.get("tfep", {}),
@@ -625,11 +642,19 @@ def work_arrays_from_file(path: Path) -> Optional[Dict[str, np.ndarray]]:
 
 
 def load_work_arrays(analysis_dir: Path) -> Tuple[Optional[Dict[str, np.ndarray]], Optional[str]]:
+    holdout_npz = analysis_dir / "validation_work_arrays.npz"
+    if holdout_npz.exists():
+        arrays = work_arrays_from_file(holdout_npz)
+        if arrays is not None and (
+            "raw_reweighted_bootstrap_deltaf" in arrays
+            or "tfep_reweighted_bootstrap_deltaf" in arrays
+        ):
+            return arrays, None
+
     pooled_npz = analysis_dir / "pooled_work_arrays.npz"
     if pooled_npz.exists():
         return work_arrays_from_file(pooled_npz), None
 
-    holdout_npz = analysis_dir / "validation_work_arrays.npz"
     if holdout_npz.exists():
         return work_arrays_from_file(holdout_npz), None
 
@@ -647,11 +672,26 @@ def array_with_fallback(arrays: Dict[str, np.ndarray], primary: str, fallback: O
 def plot_bootstrap_hist(arrays: Optional[Dict[str, np.ndarray]], out_path: Path, dpi: int) -> None:
     if arrays is None:
         return
-    series = [
-        ("raw_bootstrap_deltaf", "raw BAR", COLORS["raw"]),
-        ("tfep_bootstrap_deltaf", "TFEP BAR", COLORS["tfep"]),
-        ("snf_bootstrap_deltaf", "stochastic path TFEP", COLORS["snf"]),
-    ]
+    has_reweighted = (
+        "raw_reweighted_bootstrap_deltaf" in arrays
+        and "tfep_reweighted_bootstrap_deltaf" in arrays
+        and len(finite_values(arrays.get("raw_reweighted_bootstrap_deltaf", []))) > 0
+        and len(finite_values(arrays.get("tfep_reweighted_bootstrap_deltaf", []))) > 0
+    )
+    if has_reweighted:
+        series = [
+            ("raw_reweighted_bootstrap_deltaf", "raw reweighted BAR", COLORS["raw"]),
+            ("tfep_reweighted_bootstrap_deltaf", "TFEP reweighted BAR", COLORS["tfep"]),
+            ("snf_bootstrap_deltaf", "stochastic path TFEP", COLORS["snf"]),
+        ]
+        title = "Reweighted bootstrap deltaf distributions"
+    else:
+        series = [
+            ("raw_bootstrap_deltaf", "raw BAR", COLORS["raw"]),
+            ("tfep_bootstrap_deltaf", "TFEP BAR", COLORS["tfep"]),
+            ("snf_bootstrap_deltaf", "stochastic path TFEP", COLORS["snf"]),
+        ]
+        title = "Bootstrap deltaf distributions"
     finite_series = [
         (label, finite_values(arrays.get(key, [])), color)
         for key, label, color in series
@@ -665,7 +705,7 @@ def plot_bootstrap_hist(arrays: Optional[Dict[str, np.ndarray]], out_path: Path,
         plt.hist(values, bins=50, histtype="step", density=True, linewidth=1.8, color=color, label=label)
     plt.xlabel("deltaf (kT)")
     plt.ylabel("density")
-    plt.title("Bootstrap deltaf distributions")
+    plt.title(title)
     plt.legend()
     savefig(fig, out_path, dpi)
 
